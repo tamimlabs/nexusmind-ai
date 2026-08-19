@@ -5,11 +5,14 @@ Auto-switches when Google's 100/day limit is hit.
 
 from __future__ import annotations
 
+import re
 import time
+from urllib.parse import unquote
+
 import httpx
 
-from agent.core.executor import register_tool, ToolResult
 from agent.config import settings
+from agent.core.executor import ToolResult, register_tool
 
 # --- Google Custom Search Config ---
 _google_search_key = ""  # Set via env: GOOGLE_SEARCH_API_KEY
@@ -50,7 +53,17 @@ def _google_used():
     _google_daily_count += 1
 
 
+def _clean_ddg_url(url: str) -> str:
+    """Extract real URL from DuckDuckGo redirect wrapper."""
+    if "duckduckgo.com/l/" in url:
+        match = re.search(r"uddg=([^&]+)", url)
+        if match:
+            return unquote(match.group(1))
+    return url
+
+
 # --- Google Custom Search ---
+
 
 async def _search_google(query: str, num_results: int) -> str | None:
     """Try Google Custom Search. Returns None if unavailable or failed."""
@@ -70,7 +83,6 @@ async def _search_google(query: str, num_results: int) -> str | None:
             )
 
             if resp.status_code == 429 or "quotaExceeded" in resp.text:
-                # Limit hit — switch to DuckDuckGo permanently for today
                 global _google_daily_count
                 _google_daily_count = _google_daily_limit
                 return None
@@ -98,9 +110,9 @@ async def _search_google(query: str, num_results: int) -> str | None:
 
 # --- DuckDuckGo Fallback ---
 
+
 async def _search_duckduckgo(query: str, num_results: int) -> str:
     """DuckDuckGo Lite — unlimited free fallback."""
-    import re
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(
             "https://lite.duckduckgo.com/lite/",
@@ -110,26 +122,23 @@ async def _search_duckduckgo(query: str, num_results: int) -> str:
         resp.raise_for_status()
 
         text = resp.text
-
-        # Extract result links and snippets from the lite page
-        # DuckDuckGo lite uses simple HTML tables
         results = []
 
-        # Find result links: <a rel="nofollow" href="...">title</a>
+        # Extract result links: <a rel="nofollow" href="...">title</a>
         links = re.findall(r'<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>', text)
-        # Find snippets in <td> tags (class="result-snippet")
+        # Extract snippets in <td> tags (class="result-snippet")
         snippets = re.findall(r'class="result-snippet"[^>]*>(.*?)</td>', text, re.DOTALL)
 
         for i, (url, title) in enumerate(links[:num_results]):
             snippet = snippets[i].strip() if i < len(snippets) else ""
-            snippet = re.sub(r"<[^>]+>", "", snippet).strip()  # strip HTML from snippet
+            snippet = re.sub(r"<[^>]+>", "", snippet).strip()
             title = re.sub(r"<[^>]+>", "", title).strip()
+            url = _clean_ddg_url(url)
             results.append(f"{title}\n{snippet}\n{url}")
 
         if not results:
             # Fallback: plain text extraction
             for line in text.split("\n"):
-                line = line.strip()
                 line = re.sub(r"<[^>]+>", "", line).strip()
                 if line and len(line) > 20:
                     results.append(line)
@@ -140,6 +149,7 @@ async def _search_duckduckgo(query: str, num_results: int) -> str:
 
 
 # --- Main Tool ---
+
 
 @register_tool("web_search")
 async def web_search(query: str, num_results: int = 5, **_) -> ToolResult:
@@ -173,7 +183,6 @@ async def fetch_url(url: str, max_chars: int = 5000, **_) -> ToolResult:
             resp = await client.get(url, headers={"User-Agent": "NexusMind/1.0"})
             resp.raise_for_status()
 
-            import re
             content = resp.text
             content = re.sub(r"<script[^>]*>.*?</script>", "", content, flags=re.DOTALL)
             content = re.sub(r"<style[^>]*>.*?</style>", "", content, flags=re.DOTALL)
