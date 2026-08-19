@@ -2,6 +2,8 @@
 
 Combines OpenClaw's reasoning engine pattern with Hermes' self-improving loop.
 Flow: receive task -> check memory -> plan -> execute -> reflect -> store.
+
+Self-improvement: past reflections are extracted as lessons and fed into future planning.
 """
 
 from __future__ import annotations
@@ -26,6 +28,16 @@ class Orchestrator:
         self.memory = memory_store
         self._running = False
 
+    def _extract_lessons(self, goal: str) -> list[str]:
+        """Search memory for relevant past reflections and extract actionable lessons."""
+        reflections = self.memory.search(goal, top_k=5, category="reflection")
+        lessons = []
+        for r in reflections:
+            text = r.content.strip()
+            if text and len(text) > 10:
+                lessons.append(text)
+        return lessons
+
     async def handle_task(self, task: Task) -> Task:
         """Process a task from start to finish."""
         logger.info("Handling task [%s]: %s", task.id, task.goal[:100])
@@ -33,17 +45,27 @@ class Orchestrator:
         task.updated_at = datetime.now(timezone.utc)
 
         try:
+            # Check memory for similar past tasks
             similar = self.memory.search(task.goal, top_k=3, category="task_outcome")
             if similar:
                 logger.info("Found %d similar past tasks in memory", len(similar))
 
+            # Extract lessons from past reflections (self-improvement)
+            lessons = self._extract_lessons(task.goal)
+            if lessons:
+                logger.info("Applying %d past lessons to planning", len(lessons))
+
+            # Get available skills
             available_skills = [
                 e.metadata.get("skill_name", "")
                 for e in self.memory.get_by_category("skill")
             ]
-            task.steps = await plan_task(task, available_skills or None)
+
+            # Plan with lessons (self-improvement feeds into planning)
+            task.steps = await plan_task(task, available_skills or None, lessons or None)
             task.status = TaskStatus.EXECUTING
 
+            # Execute steps
             context: dict[str, Any] = {"task_id": task.id, "task_goal": task.goal}
             for step in task.steps:
                 logger.info("Executing step %d: %s", step.order, step.description[:80])
@@ -80,30 +102,34 @@ class Orchestrator:
     async def _self_reflect(self, task: Task) -> None:
         """Post-task reflection — adapted from Hermes' self-improvement loop.
 
-        After each task, the agent reflects on what happened and optionally
-        generates a reusable skill if the task involved a novel pattern.
+        After each task, the agent reflects on what happened and extracts
+        actionable lessons that influence future planning.
         """
         from agent.core.gemini_client import generate_content
 
         success = task.status == TaskStatus.COMPLETED
-        reflection_prompt = f"""You just completed a task. Reflect briefly.
+        reflection_prompt = f"""You just completed a task. Reflect and extract actionable lessons.
 
 Goal: {task.goal}
 Success: {success}
 Result: {(task.result or task.error or 'N/A')[:500]}
 Steps taken: {len(task.steps)}
 
-Answer in 2-3 sentences:
-1. What worked well or what failed?
-2. Is this a repeatable pattern worth saving as a skill?
-3. If yes, give a 1-line skill name and description."""
+Write 1-3 concise lessons learned. Each lesson should be:
+- A specific, actionable insight (not vague)
+- Something that would help plan a similar task better next time
+- Example: "When searching for recent news, always specify the year in the query"
+
+If nothing notable, say "No specific lessons learned."
+
+Keep response under 150 words."""
 
         try:
             reflection = await generate_content(
-                system="You are a self-improving AI agent. Be concise.",
+                system="You are a self-improving AI agent. Extract concrete lessons. Be concise.",
                 user=reflection_prompt,
-                temperature=0.4,
-                max_tokens=300,
+                temperature=0.3,
+                max_tokens=200,
             )
             self.memory.save_reflection(reflection)
             logger.debug("Self-reflection saved for task %s", task.id)

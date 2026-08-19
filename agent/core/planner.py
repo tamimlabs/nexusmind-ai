@@ -1,6 +1,7 @@
 """Task decomposition planner — breaks goals into executable steps.
 
 Inspired by OpenClaw's multi-step decomposition and Hermes' skill-based planning.
+Now includes self-improvement: past reflections influence future planning.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ Given a user goal, decompose it into a sequence of concrete, executable steps.
 Rules:
 - Each step must be specific and actionable
 - Order steps logically (dependencies first)
-- Use available tools when possible: web_search, read_file, write_file, execute_code, send_email, create_task
+- Use available tools when possible: web_search, read_file, write_file, execute_code, parse_json, summarize_text, extract_data
 - Estimate which tool each step requires
 - Return ONLY valid JSON array of steps
 
@@ -32,12 +33,13 @@ Output format (JSON):
 """
 
 
-async def plan_task(task: Task, available_skills: list[str] | None = None) -> list[TaskStep]:
+async def plan_task(task: Task, available_skills: list[str] | None = None, lessons: list[str] | None = None) -> list[TaskStep]:
     """Decompose a task into ordered steps using Gemini.
 
     Args:
         task: The task to plan.
         available_skills: Optional list of available skill names.
+        lessons: Past reflections/lessons learned from previous tasks.
 
     Returns:
         Ordered list of TaskStep objects.
@@ -49,8 +51,12 @@ async def plan_task(task: Task, available_skills: list[str] | None = None) -> li
     if available_skills:
         skills_context = f"\nAvailable skills: {', '.join(available_skills)}"
 
+    lessons_context = ""
+    if lessons:
+        lessons_context = "\n\nLESSONS FROM PAST TASKS:\n" + "\n".join(f"- {l}" for l in lessons[:5])
+
     user_prompt = f"""Goal: {task.goal}
-Context: {json.dumps(task.context) if task.context else 'None'}{skills_context}
+Context: {json.dumps(task.context) if task.context else 'None'}{skills_context}{lessons_context}
 
 Decompose this into executable steps. Return ONLY the JSON array."""
 
