@@ -1,0 +1,137 @@
+"""Cloud Pub/Sub event-driven task routing.
+
+Publishes task events and subscribes to external triggers (GitHub webhooks,
+Stripe events, etc.) to route them to the agent.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any, Callable, Awaitable
+
+from agent.config import settings
+
+logger = logging.getLogger(__name__)
+
+_publisher = None
+_subscriber = None
+
+
+def _get_publisher():
+    global _publisher
+    if _publisher is None:
+        from google.cloud import pubsub_v1
+        _publisher = pubsub_v1.PublisherClient()
+    return _publisher
+
+
+def _get_subscriber():
+    global _subscriber
+    if _subscriber is None:
+        from google.cloud import pubsub_v1
+        _subscriber = pubsub_v1.SubscriberClient()
+    return _subscriber
+
+
+# ── Publishing ────────────────────────────────────────────────────
+
+def publish_task_event(
+    task_id: str,
+    goal: str,
+    status: str,
+    priority: str = "medium",
+    context: dict[str, Any] | None = None,
+) -> str:
+    """Publish a task event to Pub/Sub.
+
+    Returns:
+        The published message ID.
+
+    """
+    publisher = _get_publisher()
+    topic_path = publisher.topic_path(settings.google_cloud_project, settings.pubsub_topic_tasks)
+
+    data = {
+        "task_id": task_id,
+        "goal": goal,
+        "status": status,
+        "priority": priority,
+        "context": context or {},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    future = publisher.publish(
+        topic_path,
+        data=json.dumps(data).encode("utf-8"),
+        task_id=task_id,
+        status=status,
+    )
+    message_id = future.result()
+    logger.info("Published task event: %s (message: %s)", task_id, message_id)
+    return message_id
+
+
+def publish_event(event_type: str, payload: dict[str, Any]) -> str:
+    """Publish a generic event (webhook trigger, etc.)."""
+    publisher = _get_publisher()
+    topic_path = publisher.topic_path(settings.google_cloud_project, settings.pubsub_topic_events)
+
+    data = {
+        "event_type": event_type,
+        "payload": payload,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    future = publisher.publish(
+        topic_path,
+        data=json.dumps(data).encode("utf-8"),
+        event_type=event_type,
+    )
+    return future.result()
+
+
+# ── Subscribing ───────────────────────────────────────────────────
+
+def subscribe_to_tasks(callback: Callable[[dict[str, Any]], Awaitable[None]]) -> Any:
+    """Subscribe to task events and process them.
+
+    Args:
+        callback: Async function to call with each parsed event.
+
+    Returns:
+        Streaming pull future (blocking).
+
+    """
+    subscriber = _get_subscriber()
+    subscription_path = subscriber.subscription_path(
+        settings.google_cloud_project,
+        settings.pubsub_subscription_tasks,
+    )
+
+    def _message_handler(message) -> None:
+        try:
+            data = json.loads(message.data.decode("utf-8"))
+            logger.info("Received task event: %s", data.get("task_id", "unknown"))
+            import asyncio
+            asyncio.run(callback(data))
+            message.ack()
+        except Exception:
+            logger.exception("Failed to process message")
+            message.nack()
+
+    future = subscriber.subscribe(subscription_path, callback=_message_handler)
+    logger.info("Subscribed to %s", subscription_path)
+    return future
+
+
+# ── Event Types (for webhook triggers) ───────────────────────────
+
+EVENT_GITHUB_COMMIT = "github.commit"
+EVENT_GITHUB_PR = "github.pull_request"
+EVENT_STRIPE_INVOICE = "stripe.invoice"
+EVENT_TICKET_CREATED = "ticket.created"
+EVENT_EMAIL_RECEIVED = "email.received"
+EVENT_CALENDAR_EVENT = "calendar.event"
+EVENT_CUSTOM = "custom"

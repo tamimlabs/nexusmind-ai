@@ -1,0 +1,77 @@
+"""Data processing skill — parse, transform, and analyze data."""
+
+from __future__ import annotations
+
+import json
+
+from agent.core.executor import register_tool, ToolResult
+
+
+@register_tool("parse_json")
+async def parse_json(data: str, **_) -> ToolResult:
+    """Parse a JSON string and return formatted output."""
+    try:
+        parsed = json.loads(data)
+        formatted = json.dumps(parsed, indent=2, default=str)
+        return ToolResult(
+            success=True,
+            output=formatted[:10000],
+            metadata={"type": type(parsed).__name__},
+        )
+    except json.JSONDecodeError as exc:
+        return ToolResult(success=False, output="", error=f"Invalid JSON: {exc}")
+
+
+@register_tool("summarize_text")
+async def summarize_text(text: str, max_length: int = 500, **_) -> ToolResult:
+    """Summarize text by extracting key sentences."""
+    sentences = [s.strip() for s in text.replace("\n", " ").split(".") if len(s.strip()) > 20]
+
+    if not sentences:
+        return ToolResult(success=True, output="No content to summarize.")
+
+    # Take first N sentences that fit within max_length
+    summary_parts = []
+    current_length = 0
+    for sentence in sentences:
+        if current_length + len(sentence) > max_length:
+            break
+        summary_parts.append(sentence)
+        current_length += len(sentence)
+
+    summary = ". ".join(summary_parts) + "." if summary_parts else sentences[0][:max_length]
+    return ToolResult(success=True, output=summary)
+
+
+@register_tool("extract_data")
+async def extract_data(text: str, keys: str = "", **_) -> ToolResult:
+    """Extract structured data from text using simple patterns."""
+    import re
+
+    results: dict[str, list[str]] = {}
+
+    # Emails
+    emails = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)
+    if emails:
+        results["emails"] = list(set(emails))
+
+    # URLs
+    urls = re.findall(r"https?://[^\s<>\"']+", text)
+    if urls:
+        results["urls"] = list(set(urls))
+
+    # Phone numbers (basic)
+    phones = re.findall(r"\+?[\d\s\-\(\)]{7,15}", text)
+    if phones:
+        results["phones"] = list(set(p.strip() for p in phones))
+
+    # Dates (basic)
+    dates = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)
+    if dates:
+        results["dates"] = list(set(dates))
+
+    if not results:
+        return ToolResult(success=True, output="No structured data found.")
+
+    output = json.dumps(results, indent=2)
+    return ToolResult(success=True, output=output, metadata={"fields_found": list(results.keys())})
