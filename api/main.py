@@ -1,6 +1,7 @@
 """REST API — FastAPI application with task submission, approval, and traceability.
 
 Powers the demo dashboard and provides endpoints for webhook triggers.
+Task execution is non-blocking — dashboard polls for live updates.
 """
 
 from __future__ import annotations
@@ -8,11 +9,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent.config import settings
@@ -36,6 +39,37 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve docs folder for logos
+docs_path = pathlib.Path(__file__).parent.parent / "docs"
+if docs_path.exists():
+    app.mount("/docs", StaticFiles(directory=str(docs_path)), name="docs")
+
+
+# ── Live Event Store ──────────────────────────────────────────────
+
+# Per-task live events that the dashboard polls
+_live_events: dict[str, list[dict[str, Any]]] = {}
+_live_tasks: dict[str, dict[str, Any]] = {}
+
+
+def _emit(task_id: str, event_type: str, message: str, detail: str = "") -> None:
+    """Emit a live event for the dashboard thinking panel."""
+    if task_id not in _live_events:
+        _live_events[task_id] = []
+    _live_events[task_id].append({
+        "type": event_type,
+        "message": message,
+        "detail": detail[:500],
+        "time": time.time(),
+    })
+
+
+def _update_task_status(task_id: str, status: str, **extra) -> None:
+    """Update live task status for polling."""
+    if task_id not in _live_tasks:
+        _live_tasks[task_id] = {}
+    _live_tasks[task_id].update({"status": status, "updated_at": time.time(), **extra})
 
 
 # ── Request/Response Models ───────────────────────────────────────
@@ -109,14 +143,67 @@ async def agent_status():
     }
 
 
-# ── Tasks ─────────────────────────────────────────────────────────
+# ── Tasks (Non-blocking) ─────────────────────────────────────────
 
 
-@app.post("/api/tasks", response_model=TaskResponse)
-async def submit_task(req: SubmitTaskRequest):
-    """Submit a new task for the agent to handle."""
+async def _run_task_background(task_id: str, task: Task) -> None:
+    """Run task in background and emit live events."""
     from agent.orchestrator import orchestrator
 
+    try:
+        _emit(task_id, "thinking", "Analyzing your goal...")
+        _update_task_status(task_id, "planning")
+
+        _emit(task_id, "thinking", "Breaking down into steps using Gemini Flash...")
+        await asyncio.sleep(0.3)  # Brief pause so UI shows the thinking
+
+        task = await orchestrator.handle_task(task)
+
+        _update_task_status(
+            task_id,
+            task.status.value,
+            result=task.result,
+            error=task.error,
+            steps_count=len(task.steps),
+            steps=[
+                {
+                    "id": s.id,
+                    "description": s.description,
+                    "tool_name": s.tool_name,
+                    "tool_args": s.tool_args,
+                    "status": s.status.value,
+                    "result": s.result,
+                    "error": s.error,
+                    "order": s.order,
+                }
+                for s in task.steps
+            ],
+        )
+
+        trace = get_trace(task_id)
+        if trace:
+            for step in task.steps:
+                trace.record_tool_call(
+                    step.tool_name or "planning",
+                    step.tool_args,
+                    step.result or step.error or "",
+                    step.status.value == "success",
+                )
+
+        if task.status == TaskStatus.COMPLETED:
+            _emit(task_id, "done", "Task completed successfully")
+        else:
+            _emit(task_id, "error", f"Task failed: {task.error or 'Unknown error'}")
+
+    except Exception as exc:
+        logger.exception("Background task %s failed", task_id)
+        _update_task_status(task_id, "failed", error=str(exc))
+        _emit(task_id, "error", f"Exception: {exc}")
+
+
+@app.post("/api/tasks")
+async def submit_task(req: SubmitTaskRequest):
+    """Submit a new task — returns immediately, runs in background."""
     priority = TaskPriority(req.priority) if req.priority in [p.value for p in TaskPriority] else TaskPriority.MEDIUM
     task = Task(goal=req.goal, priority=priority, context=req.context)
 
@@ -124,45 +211,49 @@ async def submit_task(req: SubmitTaskRequest):
     trace.start_span("task_received", kind="reasoning")
     trace.end_span("success")
 
+    _update_task_status(task.id, "pending", goal=task.goal)
+    _emit(task.id, "received", f"Goal: {task.goal}")
+
     try:
         publish_task_event(task.id, task.goal, "pending", priority=task.priority.value)
     except Exception:
         logger.debug("Pub/Sub publish skipped (not configured)")
 
-    task = await orchestrator.handle_task(task)
+    # Run in background — don't await
+    asyncio.create_task(_run_task_background(task.id, task))
 
-    for step in task.steps:
-        trace.record_tool_call(
-            step.tool_name or "planning",
-            step.tool_args,
-            step.result or step.error or "",
-            step.status.value == "success",
-        )
+    return {
+        "id": task.id,
+        "goal": task.goal,
+        "status": "pending",
+        "result": None,
+        "error": None,
+        "steps_count": 0,
+        "steps": [],
+        "trace": [],
+    }
 
-    steps_data = [
-        {
-            "id": s.id,
-            "description": s.description,
-            "tool_name": s.tool_name,
-            "tool_args": s.tool_args,
-            "status": s.status.value,
-            "result": s.result,
-            "error": s.error,
-            "order": s.order,
-        }
-        for s in task.steps
-    ]
 
-    return TaskResponse(
-        id=task.id,
-        goal=task.goal,
-        status=task.status.value,
-        result=task.result,
-        error=task.error,
-        steps_count=len(task.steps),
-        steps=steps_data,
-        trace=trace.get_chain(),
-    )
+@app.get("/api/tasks/live/{task_id}")
+async def get_task_live(task_id: str):
+    """Poll for live task updates + thinking events."""
+    events = _live_events.get(task_id, [])
+    status = _live_tasks.get(task_id, {"status": "unknown"})
+
+    # Also check trace for any new spans
+    trace = get_trace(task_id)
+    trace_chain = trace.get_chain() if trace else []
+
+    return {
+        "task_id": task_id,
+        "events": events,
+        "status": status.get("status", "unknown"),
+        "result": status.get("result"),
+        "error": status.get("error"),
+        "steps_count": status.get("steps_count", 0),
+        "steps": status.get("steps", []),
+        "trace": trace_chain,
+    }
 
 
 @app.get("/api/tasks", response_model=list[TaskResponse])
@@ -179,6 +270,21 @@ async def list_tasks():
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
 async def get_task(task_id: str):
     """Get a specific task with its trace."""
+    # Check live tasks first
+    live = _live_tasks.get(task_id)
+    if live:
+        trace = get_trace(task_id)
+        return TaskResponse(
+            id=task_id,
+            goal=live.get("goal", ""),
+            status=live.get("status", "unknown"),
+            result=live.get("result"),
+            error=live.get("error"),
+            steps_count=live.get("steps_count", 0),
+            steps=live.get("steps", []),
+            trace=trace.get_chain() if trace else [],
+        )
+
     trace = get_trace(task_id)
     try:
         from cloud.firestore.client import firestore_tasks
@@ -202,6 +308,16 @@ async def get_task(task_id: str):
 
 
 # ── Human-in-the-Loop ─────────────────────────────────────────────
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str):
+    """Delete a task from live store."""
+    _live_tasks.pop(task_id, None)
+    _live_events.pop(task_id, None)
+    _traces = __import__("agent.observability", fromlist=["_traces"])._traces
+    _traces.pop(task_id, None)
+    return {"deleted": True, "task_id": task_id}
 
 
 @app.get("/api/approvals")
@@ -277,10 +393,9 @@ async def receive_webhook(req: WebhookPayload):
     except Exception:
         pass
 
-    from agent.orchestrator import orchestrator
-    task = await orchestrator.handle_task(task)
+    asyncio.create_task(_run_task_background(task.id, task))
 
-    return {"task_id": task.id, "status": task.status.value}
+    return {"task_id": task.id, "status": "pending"}
 
 
 if __name__ == "__main__":

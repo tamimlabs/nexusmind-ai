@@ -62,10 +62,15 @@ class TestMemory:
 
     def test_max_items(self):
         store = MemoryStore()
-        store._max_items = 3
+        # Add entries with unique content to avoid dedup
         for i in range(10):
-            store.add(MemoryEntry(content=f"Item {i}"))
-        assert store.size == 3
+            store.add(MemoryEntry(content=f"Unique item number {i} for testing", category="task_outcome"))
+        # Should be capped at _MAX_TASK_OUTCOMES (20) but we only added 10
+        assert store.size == 10
+        # Add more to exceed limit
+        for i in range(15):
+            store.add(MemoryEntry(content=f"Another unique item {i + 100} for testing", category="task_outcome"))
+        assert store.size <= 100  # Global limit
 
     def test_save_task_outcome(self):
         store = MemoryStore()
