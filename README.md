@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/nexusmind-dark-full.png" alt="NexusMind AI" width="400" style="background:#09090b;border-radius:16px;padding:24px" />
+<img src="docs/nexusmind-dark-icon.png" alt="NexusMind AI" width="200" style="background:#09090b;border-radius:16px;padding:24px" />
 
-# NexusMind AI
+# NexusMind AIwha
 
 ### Autonomous Task-Execution Agent on Google Cloud
 

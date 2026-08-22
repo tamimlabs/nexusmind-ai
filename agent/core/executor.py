@@ -28,6 +28,7 @@ _high_risk_tools: set[str] = {"send_email", "execute_code", "run_command", "depl
 # Pending approvals — keyed by step ID
 _pending_approvals: dict[str, asyncio.Event] = {}
 _approval_results: dict[str, bool] = {}
+_approval_metadata: dict[str, dict[str, str]] = {}
 
 
 class ApprovalStatus(Enum):
@@ -65,6 +66,7 @@ def request_approval(step_id: str, description: str, tool_name: str) -> dict[str
     """
     event = asyncio.Event()
     _pending_approvals[step_id] = event
+    _approval_metadata[step_id] = {"tool_name": tool_name, "description": description}
     logger.warning("APPROVAL REQUIRED: [%s] %s — %s", step_id, tool_name, description)
     return {
         "status": "pending_approval",
@@ -79,6 +81,7 @@ def resolve_approval(step_id: str, approved: bool) -> None:
     if step_id in _pending_approvals:
         _approval_results[step_id] = approved
         _pending_approvals[step_id].set()
+        _approval_metadata.pop(step_id, None)
         logger.info("Approval %s for step %s", "granted" if approved else "denied", step_id)
 
 
@@ -97,7 +100,12 @@ async def wait_for_approval(step_id: str, timeout: float = 300) -> bool:
 def get_pending_approvals() -> list[dict[str, str]]:
     """Return all pending approvals for the dashboard."""
     return [
-        {"step_id": sid, "status": "pending"}
+        {
+            "step_id": sid,
+            "status": "pending",
+            "tool_name": _approval_metadata.get(sid, {}).get("tool_name", "Unknown"),
+            "description": _approval_metadata.get(sid, {}).get("description", ""),
+        }
         for sid in _pending_approvals
         if not _pending_approvals[sid].is_set()
     ]
