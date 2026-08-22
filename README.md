@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="docs/nexusmind-dark-icon.png" alt="NexusMind AI" width="200" style="background:#09090b;border-radius:16px;padding:24px" />
-
-# NexusMind AI
+<img src="docs/nexusmind-dark-full.png" alt="NexusMind AI" width="400" />
 
 ### Autonomous Task-Execution Agent on Google Cloud
 
@@ -12,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-21%20passing-brightgreen)](#testing)
 
-**Built for the [Google "All Things Agentic" Hackathon](https://allthingsagentic.devpost.com) — Track: The Taskmaster**
+**Built for the [Google "All Things Agentic" Hackathon](https://allthingsagentic.devpost.com) -- Track: The Taskmaster**
 
 </div>
 
@@ -22,64 +20,65 @@
 
 Most AI today waits for you to ask. **NexusMind AI doesn't.**
 
-It's an autonomous agent that receives goals — via API, webhooks, or a live dashboard — and handles multi-step workflows end-to-end without hand-holding. It plans, executes, self-corrects on failure, asks permission for risky actions, and learns from every task.
-
-### How It Works
-
-```
-Goal → Plan → Execute → Self-Correct → Learn → Result
-         ↑        ↓
-         └── Retry ┘
-```
-
-| Step | What Happens |
-|------|-------------|
-| **1. Plan** | Gemini Flash decomposes the goal into ordered, executable steps |
-| **2. Execute** | Tools run in sandboxed environments (web search, code, files, data) |
-| **3. Self-Correct** | On failure, Gemini analyzes the error, adjusts parameters, and retries |
-| **4. Approve** | High-risk actions (code exec, shell commands) pause for human one-click approval |
-| **5. Learn** | Outcomes and reflections are stored for future improvement |
-| **6. Trace** | Every reasoning step and tool call is recorded for the live dashboard |
+It's an autonomous agent that receives goals -- via API, webhooks, or a live dashboard -- and handles multi-step workflows end-to-end without hand-holding. It plans, executes, self-corrects on failure, asks permission for risky actions, and learns from every task.
 
 ---
 
 ## Architecture
 
 ```
-                    ┌──────────────────────────────┐
-                    │   Traceability Dashboard     │
-                    │   (Live reasoning chain UI)  │
-                    └──────────────┬───────────────┘
-                                   │
-┌──────────────┐    ┌──────────────▼──────────────┐    ┌──────────────┐
-│    GitHub     │───▶│       REST API (FastAPI)     │◀───│    Stripe     │
-│   Webhooks   │    │    POST /api/webhooks        │    │   Webhooks    │
-└──────────────┘    └──────────────┬──────────────┘    └──────────────┘
-                                   │
-                    ┌──────────────▼──────────────┐
-                    │     Cloud Pub/Sub            │
-                    │   (Event-Driven Routing)     │
-                    └──────────────┬──────────────┘
-                                   │
-                    ┌──────────────▼──────────────┐
-                    │       Orchestrator            │
-                    │   ┌──────────────────────┐   │
-                    │   │  Gemini 3.6 Planner  │───┼── Step decomposition
-                    │   │  Tool Executor       │───┼── Sandboxed execution
-                    │   │  Self-Correction     │───┼── Error → Gemini → Retry
-                    │   │  Approval Gate       │───┼── Human-in-the-loop
-                    │   │  Memory System       │───┼── Persistent context
-                    │   │  Trace Collector     │───┼── Reasoning chain
-                    │   │  Self-Improvement    │───┼── Post-task reflection
-                    │   └──────────────────────┘   │
-                    └──────────────┬──────────────┘
-                                   │
-              ┌────────────────────┼────────────────────┐
-              │                    │                    │
-     ┌────────▼────────┐  ┌───────▼────────┐  ┌───────▼────────┐
-     │    Firestore     │  │   Vertex AI    │  │   Cloud Run    │
-     │  (State/Memory)  │  │  (Gemini LLM)  │  │  (Deployment)  │
-     └─────────────────┘  └────────────────┘  └────────────────┘
+                        ┌──────────────────────────────┐
+                        │      Dashboard (Live UI)      │
+                        │   Reasoning chain + approvals  │
+                        └──────────────┬───────────────┘
+                                       │
+┌──────────────┐     ┌─────────────────▼─────────────────┐     ┌──────────────┐
+│   GitHub      │────>│       REST API (FastAPI)          │<────│   Stripe      │
+│   Webhooks    │     │    POST /api/webhooks             │     │   Webhooks    │
+└──────────────┘     └─────────────────┬─────────────────┘     └──────────────┘
+                                       │
+                        ┌──────────────▼──────────────┐
+                        │      Cloud Pub/Sub            │
+                        │    (Event-Driven Routing)     │
+                        └──────────────┬──────────────┘
+                                       │
+                        ┌──────────────▼──────────────┐
+                        │        Orchestrator           │
+                        │  ┌────────────────────────┐  │
+                        │  │  Gemini 3.6 Planner    │──┼-- Step decomposition
+                        │  │  Tool Executor         │──┼-- Sandboxed execution
+                        │  │  Self-Correction       │──┼-- Error -> Gemini -> Retry
+                        │  │  Approval Gate         │──┼-- Human-in-the-loop
+                        │  │  Memory System         │──┼-- Persistent context
+                        │  │  Trace Collector       │──┼-- Reasoning chain
+                        │  │  Self-Improvement      │──┼-- Post-task reflection
+                        │  └────────────────────────┘  │
+                        └──────────────┬──────────────┘
+                                       │
+              ┌────────────────────────┼────────────────────────┐
+              │                        │                        │
+     ┌────────▼────────┐     ┌────────▼────────┐     ┌────────▼────────┐
+     │    Firestore     │     │    Vertex AI     │     │    Cloud Run    │
+     │  (State/Memory)  │     │  (Gemini LLM)   │     │  (Deployment)   │
+     └─────────────────┘     └─────────────────┘     └─────────────────┘
+```
+
+---
+
+## The Agent Loop
+
+```
+   Goal --> Plan (Gemini) --> Execute Tool --> Success? --Yes--> Next Step
+              ^                                  |
+              |                                  No
+              |                                  v
+              +---- Self-Correct (Gemini) <-- Analyze Error
+                                                |
+                                          Approval Needed?
+                                          |            |
+                                         Yes           No
+                                          |            |
+                                     Pause & Wait   Auto Retry
 ```
 
 ---
@@ -90,7 +89,6 @@ Goal → Plan → Execute → Self-Correct → Learn → Result
 
 - Python 3.11+
 - A [Gemini API key](https://aistudio.google.com/apikey) (free tier works)
-- Google Cloud project (for full deployment)
 
 ### Local Setup
 
@@ -99,7 +97,7 @@ Goal → Plan → Execute → Self-Correct → Learn → Result
 git clone https://github.com/tamimlabs/nexusmind-ai.git
 cd nexusmind-ai
 
-# Create virtual environment (on D: drive recommended)
+# Create virtual environment
 python -m venv .venv
 .venv\Scripts\activate    # Windows
 # source .venv/bin/activate  # Linux/Mac
@@ -109,14 +107,18 @@ pip install .
 
 # Configure
 cp .env.example .env
-# Edit .env — add your Gemini API key(s), comma-separated for rotation
+# Edit .env -- add your Gemini API key(s), comma-separated for rotation
 
-# Run the agent CLI
-python -m agent.cli -i
-
-# Or start the API + dashboard
+# Run the API + dashboard
 python -m api.main
 # Open http://localhost:8080
+```
+
+### Cloud Shell (No GCP Account Needed)
+
+```bash
+# One command setup in Google Cloud Shell:
+bash <(curl -s https://raw.githubusercontent.com/tamimlabs/nexusmind-ai/master/scripts/setup_cloud_shell.sh)
 ```
 
 ### Deploy to Cloud Run
@@ -164,6 +166,23 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 
 ---
 
+## Available Tools
+
+| Tool | Description | Risk Level |
+|------|-------------|------------|
+| `web_search` | Search the web via Google/DuckDuckGo | Safe |
+| `fetch_url` | Fetch and parse web page content | Safe |
+| `read_file` | Read file contents | Safe |
+| `write_file` | Write content to a file | Safe |
+| `list_directory` | List files in a directory | Safe |
+| `parse_json` | Extract data from JSON | Safe |
+| `summarize_text` | Summarize long text with Gemini | Safe |
+| `extract_data` | Extract structured data from text | Safe |
+| `execute_code` | Run Python code in sandbox | **Approval Required** |
+| `run_command` | Run shell command | **Approval Required** |
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -188,7 +207,7 @@ nexusmind-ai/
 │   │   ├── planner.py              # Task decomposition via Gemini
 │   │   ├── executor.py             # Tool execution + self-correction
 │   │   ├── gemini_client.py        # Multi-key Gemini client
-│   │   └── memory.py               # In-memory memory store
+│   │   └── memory.py               # Hermes-inspired memory store
 │   ├── skills/
 │   │   ├── web_research/           # Web search + URL fetch
 │   │   ├── file_management/        # File read/write/list
@@ -204,7 +223,8 @@ nexusmind-ai/
 │   ├── pubsub/events.py            # Pub/Sub event routing
 │   └── cloud_run/                  # Dockerfile + cloudbuild.yaml
 ├── api/
-│   └── main.py                     # FastAPI app + dashboard UI
+│   ├── main.py                     # FastAPI app + background task runner
+│   └── dashboard.html              # Live traceability dashboard
 ├── tests/                          # 21 passing tests
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
 ├── pyproject.toml                  # Dependencies + tool config
@@ -222,10 +242,10 @@ nexusmind-ai/
 | Persistent cross-session memory | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Firestore-backed store with category filtering |
 | Self-improvement reflection | Hermes | Post-task Gemini reflection saves learnings |
 | Event-driven scheduling | Hermes | Cloud Pub/Sub replaces in-process cron |
-| Memory lifecycle (active → stale) | Hermes | Skill states with automatic transitions |
-| Self-correcting retry loops | Custom | Error analysis → Gemini → parameter adjustment → retry |
+| Memory lifecycle (active -> stale) | Hermes | Skill states with automatic transitions |
+| Self-correcting retry loops | Custom | Error analysis -> Gemini -> parameter adjustment -> retry |
 | Human-in-the-loop approval | Custom | Async approval gate with timeout for high-risk tools |
-| Transparent traceability | Custom | In-memory trace collector → live dashboard |
+| Transparent traceability | Custom | In-memory trace collector -> live dashboard |
 | Multi-key rotation | Custom | Round-robin with rate-limit backoff |
 
 ---
@@ -271,7 +291,7 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 - [x] Cloud Run deployment configs
 - [x] Firestore persistence layer
 - [x] Pub/Sub event routing
-- [ ] Live demo on Google Cloud *(pending GCP credits)*
+- [ ] Live demo on Google Cloud
 - [ ] Demo video recording
 - [ ] Devpost submission
 
@@ -285,7 +305,7 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 
 <div align="center">
 
-**Built for the [Google All Things Agentic Hackathon](https://allthingsagentic.devpost.com) — August 2026**
+**Built for the [Google All Things Agentic Hackathon](https://allthingsagentic.devpost.com) -- August 2026**
 
 Patterns adapted from [OpenClaw](https://github.com/openclaw/openclaw) and [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 
