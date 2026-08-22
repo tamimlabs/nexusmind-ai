@@ -22,6 +22,8 @@ Most AI today waits for you to ask. **NexusMind AI doesn't.**
 
 It's an autonomous agent that receives goals -- via API, webhooks, or a live dashboard -- and handles multi-step workflows end-to-end without hand-holding. It plans, executes, self-corrects on failure, asks permission for risky actions, and learns from every task.
 
+> **New to coding?** Check out our [Non-Coder User Guide](docs/user_guide.md) -- use NexusMind AI without writing any code.
+
 ---
 
 ## Architecture
