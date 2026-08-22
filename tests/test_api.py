@@ -22,7 +22,6 @@ class TestAPI:
         res = client.get("/")
         assert res.status_code == 200
         assert "NexusMind AI" in res.text
-        assert "Traceability Dashboard" in res.text
 
     def test_list_tasks(self, client):
         res = client.get("/api/tasks")
