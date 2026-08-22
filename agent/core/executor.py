@@ -10,7 +10,9 @@ Key hackathon features:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sys
 import tempfile
 from enum import Enum
 from pathlib import Path
@@ -138,7 +140,6 @@ If the error is unrecoverable (e.g. file doesn't exist, permission denied), retu
             temperature=0.2,
             max_tokens=500,
         )
-        import json
         response = response.strip()
         if response.startswith("```"):
             lines = response.split("\n")
@@ -193,7 +194,14 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
             return ToolResult(success=False, output="", error="Denied by human")
 
     # Execute with retry + self-correction
-    current_args = {**(context or {}), **step.tool_args}
+    # Resolve {{step_N_result}} templates from context, then merge step args (step args override)
+    resolved_args = {}
+    for k, v in (step.tool_args or {}).items():
+        if isinstance(v, str) and "{{" in v:
+            for ctx_key, ctx_val in (context or {}).items():
+                v = v.replace("{{" + ctx_key + "}}", str(ctx_val))
+        resolved_args[k] = v
+    current_args = dict(resolved_args)
     last_error = ""
 
     for attempt in range(1, MAX_RETRIES + 2):
@@ -248,7 +256,7 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
             f.flush()
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "python", f.name,
+                    sys.executable, f.name,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )

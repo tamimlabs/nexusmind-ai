@@ -48,17 +48,17 @@ def _create_function_tools() -> list[FunctionTool]:
         if tool_fn is None:
             continue
 
-        async def _make_wrapper(name: str, fn: Any) -> Any:
+        def _make_sync_wrapper(name: str, fn: Any) -> Any:
+            import functools
+            @functools.wraps(fn)
             async def wrapper(**kwargs: Any) -> str:
-                from agent.models import ToolResult as TR
-                result: TR = await fn(**kwargs)
+                result = await fn(**kwargs)
                 return result.output if result.success else f"Error: {result.error}"
             wrapper.__name__ = name
             wrapper.__doc__ = f"Execute the {name} tool"
             return wrapper
 
-        import asyncio
-        fn = asyncio.run(_make_wrapper(tool_name, tool_fn))
+        fn = _make_sync_wrapper(tool_name, tool_fn)
         adk_tools.append(FunctionTool(fn=fn))
 
     return adk_tools

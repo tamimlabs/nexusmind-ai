@@ -343,7 +343,7 @@ async def delete_task(task_id: str):
     """Delete a task from live store."""
     _live_tasks.pop(task_id, None)
     _live_events.pop(task_id, None)
-    _traces = __import__("agent.observability", fromlist=["_traces"])._traces
+    from agent.observability import _traces
     _traces.pop(task_id, None)
     return {"deleted": True, "task_id": task_id}
 

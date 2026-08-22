@@ -121,7 +121,12 @@ class Orchestrator:
                     return task
 
             task.status = TaskStatus.COMPLETED
-            task.result = context.get("step_0_result", "Task completed")
+            # Use the last step's result as the final result
+            if task.steps:
+                last_step = task.steps[-1]
+                task.result = last_step.result or "Task completed"
+            else:
+                task.result = context.get("step_0_result", "Task completed")
             task.updated_at = datetime.now(timezone.utc)
 
             # Only store outcome if the task was non-trivial and had multiple steps

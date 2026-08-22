@@ -6,6 +6,7 @@ Stripe events, etc.) to route them to the agent.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -114,8 +115,11 @@ def subscribe_to_tasks(callback: Callable[[dict[str, Any]], Awaitable[None]]) ->
         try:
             data = json.loads(message.data.decode("utf-8"))
             logger.info("Received task event: %s", data.get("task_id", "unknown"))
-            import asyncio
-            asyncio.run(callback(data))
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(callback(data))
+            else:
+                loop.run_until_complete(callback(data))
             message.ack()
         except Exception:
             logger.exception("Failed to process message")
