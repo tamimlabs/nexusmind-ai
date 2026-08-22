@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/nexusmind-dark.png" alt="NexusMind AI" width="120" style="background:#09090b;border-radius:16px;padding:16px" />
+<img src="docs/nexusmind-dark-full.png" alt="NexusMind AI" width="400" style="background:#09090b;border-radius:16px;padding:24px" />
 
 # NexusMind AI
 
