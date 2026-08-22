@@ -142,6 +142,18 @@
         .tool-risk{font-size:10px;font-weight:600;padding:2px 6px;border-radius:100px}.tool-risk.high{background:var(--ybg);color:var(--yellow)}.tool-risk.normal{background:var(--bg3);color:var(--t4)}
 
         @media(max-width:900px){.sidebar{width:60px}.sb-brand-name,.sb-brand-sub,.sb-section-title,.sb-nav span,.sb-nav .nb,.sstats{display:none}.sb-nav a{justify-content:center;padding:10px}.sb-status{padding:8px}}
+
+        .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:9999;opacity:0;animation:modalIn .15s ease forwards}
+        .modal{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rl);padding:24px;min-width:360px;max-width:440px;box-shadow:0 16px 48px rgba(0,0,0,.5);transform:scale(.95);animation:modalScale .15s ease forwards}
+        .modal-icon{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:16px}
+        .modal-icon.warn{background:var(--rbg);border:1px solid var(--rad)}.modal-icon.warn svg{color:var(--red)}
+        .modal-icon.info{background:var(--bbg);border:1px solid var(--bad)}.modal-icon.info svg{color:var(--blue)}
+        .modal-icon.err{background:var(--rbg);border:1px solid var(--rad)}.modal-icon.err svg{color:var(--red)}
+        .modal-title{font-size:15px;font-weight:600;color:var(--t1);margin-bottom:6px}
+        .modal-desc{font-size:13px;color:var(--t3);line-height:1.5;margin-bottom:20px}
+        .modal-actions{display:flex;gap:8px;justify-content:flex-end}
+        @keyframes modalIn{to{opacity:1}}
+        @keyframes modalScale{to{transform:scale(1)}}
     </style>
 </head>
 <body>
@@ -213,73 +225,113 @@
 const S={tasks:[],selected:null,page:'tasks',rtab:'trace',autoRefresh:false,pollInterval:null,agentStatus:null,approvals:[],memory:[],memFilter:'all',liveEvents:[],liveTaskId:null,livePoll:null};
 
 function esc(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML}
+
+/* ── Custom Modal ─────────────────────────────────────────────── */
+function showModal({type,title,message,confirmText='Confirm',cancelText='Cancel',onConfirm}){
+  const old=document.getElementById('modalRoot');if(old)old.remove();
+  const svgs={danger:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',error:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',info:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'};
+  const ic={danger:'warn',error:'err',info:'info'};
+  document.body.insertAdjacentHTML('beforeend',
+    '<div class="modal-overlay" id="modalRoot"><div class="modal"><div class="modal-icon '+(ic[type]||'info')+'">'+(svgs[type]||svgs.info)+'</div><div class="modal-title">'+esc(title)+'</div><div class="modal-desc">'+esc(message)+'</div><div class="modal-actions">'+(cancelText?'<button class="btn btn-g" onclick="closeModal()">'+esc(cancelText)+'</button>':'')+'<button class="btn '+(type==='danger'?'btn-d':'btn-p')+'" id="modalConfirmBtn">'+esc(confirmText)+'</button></div></div></div>');
+  document.getElementById('modalConfirmBtn').onclick=()=>{closeModal();if(onConfirm)onConfirm()};
+}
+function closeModal(){const m=document.getElementById('modalRoot');if(m)m.remove()}
+function modalConfirm(title,msg){return new Promise(r=>{showModal({type:'danger',title,message:msg,confirmText:'Delete',cancelText:'Cancel',onConfirm:()=>r(true)});document.onkeydown=e=>{if(e.key==='Escape'){closeModal();document.onkeydown=null;r(false)}}})}
+function modalAlert(title,msg,type){showModal({type:type||'info',title,message:msg,confirmText:'OK',cancelText:'',onConfirm(){}})}
+
+/* ── Navigation ───────────────────────────────────────────────── */
 function switchPage(p){S.page=p;document.querySelectorAll('.sb-nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===p)});document.getElementById('pageTitle').textContent={tasks:'Tasks',memory:'Memory',approvals:'Approvals',settings:'Settings'}[p];renderPage()}
 function switchRTab(t){S.rtab=t;document.querySelectorAll('.rpanel-tab').forEach((tab,i)=>{tab.classList.toggle('active',(i===0&&t==='trace')||(i===1&&t==='thinking')||(i===2&&t==='approvals'))});renderRPanel()}
 function renderPage(){const c=document.getElementById('pageContent');if(S.page==='tasks')renderTasksPage(c);else if(S.page==='memory')renderMemoryPage(c);else if(S.page==='approvals')renderApprovalsPage(c);else if(S.page==='settings')renderSettingsPage(c)}
 function renderRPanel(){const c=document.getElementById('rpanelBody');if(S.rtab==='trace')renderTracePanel(c);else if(S.rtab==='thinking')renderThinkingPanel(c);else renderApprovalPanel(c)}
 
+/* ── Task Views ───────────────────────────────────────────────── */
 function renderTasksPage(c){
-    let html=`<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div></div>`;
-    html+=`<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span></div>`;
-    html+=`<div class="task-list" id="taskListEl">`;
-    if(S.selected){html+=renderDetail(S.selected)}else if(S.tasks.length===0){html+=`<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>`}else{S.tasks.forEach(t=>{const active=S.selected&&S.selected.id===t.id;html+=`<div class="task-card${active?' sel':''}" onclick="selectTask('${t.id}')"><div class="tc-row"><div class="tc-goal">${esc(t.goal)}</div><span class="badge b-${t.status}">${t.status}</span></div><div class="tc-meta"><span>${t.steps_count} steps</span><span>${t.id.slice(0,8)}</span></div>${t.result?`<div class="tc-result">${esc(t.result.slice(0,300))}</div>`:''}${t.error?`<div class="tc-error">${esc(t.error)}</div>`:''}<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask('${t.id}')">Delete</button></div></div>`})}
-    html+=`</div>`;c.innerHTML=html;const inp=document.getElementById('goalInput');if(inp){inp.addEventListener('keypress',e=>{if(e.key==='Enter')submitTask()});inp.focus()}}
-function renderDetail(t){
-    let h=`<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">${esc(t.goal)}</div><span class="badge b-${t.status}">${t.status}</span><button class="btn btn-d btn-sm" onclick="deleteTask('${t.id}')">Delete</button></div>`;
-    if(S.liveEvents.length>0&&S.liveTaskId===t.id){h+=`<div class="detail-section"><div class="detail-label">Live Activity</div><div class="think-list">`;S.liveEvents.forEach(e=>{h+=`<div class="think-item ${esc(e.type)}"><div class="think-msg">${e.type==='thinking'?'<div class="spinner" style="width:10px;height:10px;border-width:1.5px"></div>':''}${esc(e.message)}</div>${e.detail?`<div class="think-detail">${esc(e.detail)}</div>`:''}</div>`});h+=`</div></div>`}
-    if(t.result)h+=`<div class="detail-section"><div class="detail-label">Result</div><div class="detail-code">${esc(t.result)}</div></div>`;
-    if(t.error)h+=`<div class="detail-section"><div class="detail-label">Error</div><div class="tc-error">${esc(t.error)}</div></div>`;
-    if(t.steps&&t.steps.length>0){h+=`<div class="detail-section"><div class="detail-label">Steps (${t.steps.length})</div><div class="timeline">`;t.steps.forEach((s,i)=>{const tc=s.tool_name?(s.tool_name==='execute_code'||s.tool_name==='run_command'?' high':''):'';h+=`<div class="tl-step"><div class="tl-dot ${s.status}"></div><div class="tl-card"><div class="tl-top"><div class="tl-desc">${esc(s.description)}</div><span class="tl-num">#${i+1}</span></div>${s.tool_name?`<div class="tl-tool${tc}">${esc(s.tool_name)}</div>`:''}${s.tool_args&&Object.keys(s.tool_args).length?`<div class="tl-expand" onclick="this.nextElementSibling.classList.toggle('show')">Show args</div><div class="tl-detail">${esc(JSON.stringify(s.tool_args,null,2))}</div>`:''}${s.result?`<div class="tc-result">${esc(s.result.slice(0,200))}</div>`:''}${s.error?`<div class="tc-error">${esc(s.error)}</div>`:''}</div></div>`});h+=`</div></div>`}
-    return h}
+  let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div></div>';
+  html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span></div>';
+  html+='<div class="task-list" id="taskListEl">';
+  if(S.selected){html+=renderDetail(S.selected)}
+  else if(S.tasks.length===0){html+='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}
+  else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;
+    html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}
+  html+='</div>';c.innerHTML=html;const inp=document.getElementById('goalInput');if(inp){inp.addEventListener('keypress',e=>{if(e.key==='Enter')submitTask()});inp.focus()}}
 
+function renderDetail(t){
+  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span><button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
+  if(S.liveEvents.length>0&&S.liveTaskId===t.id){h+='<div class="detail-section"><div class="detail-label">Live Activity</div><div class="think-list">';S.liveEvents.forEach(e=>{h+='<div class="think-item '+esc(e.type)+'"><div class="think-msg">'+(e.type==='thinking'?'<div class="spinner" style="width:10px;height:10px;border-width:1.5px"></div>':'')+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail">'+esc(e.detail)+'</div>':'')+'</div>'});h+='</div></div>'}
+  if(t.result)h+='<div class="detail-section"><div class="detail-label">Result</div><div class="detail-code">'+esc(t.result)+'</div></div>';
+  if(t.error)h+='<div class="detail-section"><div class="detail-label">Error</div><div class="tc-error">'+esc(t.error)+'</div></div>';
+  if(t.steps&&t.steps.length>0){h+='<div class="detail-section"><div class="detail-label">Steps ('+t.steps.length+')</div><div class="timeline">';t.steps.forEach((s,i)=>{const tc=s.tool_name&&(s.tool_name==='execute_code'||s.tool_name==='run_command')?' high':'';h+='<div class="tl-step"><div class="tl-dot '+s.status+'"></div><div class="tl-card"><div class="tl-top"><div class="tl-desc">'+esc(s.description)+'</div><span class="tl-num">#'+(i+1)+'</span></div>'+(s.tool_name?'<div class="tl-tool'+tc+'">'+esc(s.tool_name)+'</div>':'')+(s.tool_args&&Object.keys(s.tool_args).length?'<div class="tl-expand" onclick="this.nextElementSibling.classList.toggle(\'show\')">Show args</div><div class="tl-detail">'+esc(JSON.stringify(s.tool_args,null,2))+'</div>':'')+(s.result?'<div class="tc-result">'+esc(s.result.slice(0,200))+'</div>':'')+(s.error?'<div class="tc-error">'+esc(s.error)+'</div>':'')+'</div></div>'});h+='</div></div>'}
+  return h}
+
+/* ── Right Panel Views ────────────────────────────────────────── */
 function renderTracePanel(c){
-    if(!S.selected||!S.selected.trace||S.selected.trace.length===0){c.innerHTML=`<div class="empty empty-big">No trace data</div>`;return}
-    let h=`<div style="font-size:11px;color:var(--t5);margin-bottom:8px">${S.selected.trace.length} span${S.selected.trace.length!==1?'s':''}</div>`;
-    S.selected.trace.forEach(s=>{const detail=typeof s.output==='string'?s.output.slice(0,150):JSON.stringify(s.output||s.input||{}).slice(0,150);h+=`<div class="trace-item"><div class="ti-top"><div class="ti-name"><span class="ti-dot ${s.kind}"></span>${esc(s.name)}</div><span class="ti-time">${s.duration_ms||0}ms</span></div><div class="ti-detail">${esc(detail)}</div></div>`});c.innerHTML=h}
+  if(!S.selected||!S.selected.trace||!S.selected.trace.length){c.innerHTML='<div class="empty empty-big">No trace data</div>';return}
+  let h='<div style="font-size:11px;color:var(--t5);margin-bottom:8px">'+S.selected.trace.length+' span'+(S.selected.trace.length!==1?'s':'')+'</div>';
+  S.selected.trace.forEach(s=>{const d=typeof s.output==='string'?s.output.slice(0,150):JSON.stringify(s.output||s.input||{}).slice(0,150);h+='<div class="trace-item"><div class="ti-top"><div class="ti-name"><span class="ti-dot '+s.kind+'"></span>'+esc(s.name)+'</div><span class="ti-time">'+(s.duration_ms||0)+'ms</span></div><div class="ti-detail">'+esc(d)+'</div></div>'});c.innerHTML=h}
 
 function renderThinkingPanel(c){
-    const evs=S.liveEvents||[];
-    if(evs.length===0){c.innerHTML=`<div class="empty empty-big">No live events yet<div class="empty-sub">Submit a task to see agent thinking</div></div>`;return}
-    let h=`<div style="font-size:11px;color:var(--t5);margin-bottom:8px">${evs.length} event${evs.length!==1?'s':''}</div><div class="think-list">`;
-    evs.forEach(e=>{h+=`<div class="think-item ${esc(e.type)}"><div class="think-msg">${e.type==='thinking'?'<div class="spinner" style="width:10px;height:10px;border-width:1.5px"></div>':''}${esc(e.message)}</div>${e.detail?`<div class="think-detail">${esc(e.detail)}</div>`:''}<div class="think-time">${new Date(e.time*1000).toLocaleTimeString()}</div></div>`});
-    h+=`</div>`;c.innerHTML=h;c.scrollTop=c.scrollHeight}
+  const evs=S.liveEvents||[];
+  if(!evs.length){c.innerHTML='<div class="empty empty-big">No live events yet<div class="empty-sub">Submit a task to see agent thinking</div></div>';return}
+  let h='<div style="font-size:11px;color:var(--t5);margin-bottom:8px">'+evs.length+' event'+(evs.length!==1?'s':'')+'</div><div class="think-list">';
+  evs.forEach(e=>{h+='<div class="think-item '+esc(e.type)+'"><div class="think-msg">'+(e.type==='thinking'?'<div class="spinner" style="width:10px;height:10px;border-width:1.5px"></div>':'')+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
+  h+='</div>';c.innerHTML=h;c.scrollTop=c.scrollHeight}
 
 function renderApprovalPanel(c){
-    if(S.approvals.length===0){c.innerHTML=`<div class="empty empty-big">No pending approvals</div>`;return}
-    let h='';S.approvals.forEach(a=>{h+=`<div class="approval-card"><div class="ac-desc"><strong>${esc(a.tool_name||'Unknown')}</strong><br>${esc(a.description||a.step_id)}</div><div class="ac-actions"><button class="btn btn-p btn-sm" onclick="resolveApproval('${a.step_id}',true)">Approve</button><button class="btn btn-d btn-sm" onclick="resolveApproval('${a.step_id}',false)">Deny</button></div></div>`});c.innerHTML=h}
+  if(!S.approvals.length){c.innerHTML='<div class="empty empty-big">No pending approvals</div>';return}
+  let h='';S.approvals.forEach(a=>{h+='<div class="approval-card"><div class="ac-desc"><strong>'+esc(a.tool_name||'Unknown')+'</strong><br>'+esc(a.description||a.step_id)+'</div><div class="ac-actions"><button class="btn btn-p btn-sm" onclick="resolveApproval(\''+a.step_id+'\',true)">Approve</button><button class="btn btn-d btn-sm" onclick="resolveApproval(\''+a.step_id+'\',false)">Deny</button></div></div>'});c.innerHTML=h}
 
+/* ── Memory Page ──────────────────────────────────────────────── */
 function renderMemoryPage(c){
-    let h=`<div class="input-card"><div class="mem-search"><input class="input-field" id="memSearch" placeholder="Search memory..." /><button class="btn btn-g" onclick="searchMemory()">Search</button></div><div class="mem-filters"><button class="mem-filter${S.memFilter==='all'?' active':''}" onclick="filterMem('all')">All</button><button class="mem-filter${S.memFilter==='reflection'?' active':''}" onclick="filterMem('reflection')">Reflections</button><button class="mem-filter${S.memFilter==='task_outcome'?' active':''}" onclick="filterMem('task_outcome')">Task Outcomes</button><button class="mem-filter${S.memFilter==='skill'?' active':''}" onclick="filterMem('skill')">Skills</button></div></div>`;
-    h+=`<div class="task-list">`;if(S.memory.length===0){h+=`<div class="empty empty-big">No memory entries yet</div>`}else{S.memory.forEach(m=>{h+=`<div class="mem-card"><div class="mem-content">${esc(m.content.slice(0,300))}</div><span class="mem-cat ${m.category}">${m.category}</span></div>`})}
-    h+=`</div>`;c.innerHTML=h;const inp=document.getElementById('memSearch');if(inp)inp.addEventListener('keypress',e=>{if(e.key==='Enter')searchMemory()})}
+  let h='<div class="input-card"><div class="mem-search"><input class="input-field" id="memSearch" placeholder="Search memory..." /><button class="btn btn-g" onclick="searchMemory()">Search</button></div><div class="mem-filters"><button class="mem-filter'+(S.memFilter==='all'?' active':'')+'" onclick="filterMem(\'all\')">All</button><button class="mem-filter'+(S.memFilter==='reflection'?' active':'')+'" onclick="filterMem(\'reflection\')">Reflections</button><button class="mem-filter'+(S.memFilter==='task_outcome'?' active':'')+'" onclick="filterMem(\'task_outcome\')">Task Outcomes</button><button class="mem-filter'+(S.memFilter==='skill'?' active':'')+'" onclick="filterMem(\'skill\')">Skills</button></div></div>';
+  h+='<div class="task-list">';if(!S.memory.length){h+='<div class="empty empty-big">No memory entries yet</div>'}else{S.memory.forEach(m=>{h+='<div class="mem-card"><div class="mem-content">'+esc(m.content.slice(0,300))+'</div><span class="mem-cat '+m.category+'">'+m.category+'</span></div>'})}
+  h+='</div>';c.innerHTML=h;const inp=document.getElementById('memSearch');if(inp)inp.addEventListener('keypress',e=>{if(e.key==='Enter')searchMemory()})}
 
 function renderApprovalsPage(c){
-    let h=`<div class="task-list">`;if(S.approvals.length===0){h+=`<div class="empty empty-big">No pending approvals</div>`}else{S.approvals.forEach(a=>{h+=`<div class="approval-card"><div class="ac-desc"><strong>${esc(a.tool_name||'Unknown')}</strong><br>${esc(a.description||a.step_id)}</div><div class="ac-actions"><button class="btn btn-p btn-sm" onclick="resolveApproval('${a.step_id}',true)">Approve</button><button class="btn btn-d btn-sm" onclick="resolveApproval('${a.step_id}',false)">Deny</button></div></div>`})}
-    h+=`</div>`;c.innerHTML=h}
+  let h='<div class="task-list">';if(!S.approvals.length){h+='<div class="empty empty-big">No pending approvals</div>'}else{S.approvals.forEach(a=>{h+='<div class="approval-card"><div class="ac-desc"><strong>'+esc(a.tool_name||'Unknown')+'</strong><br>'+esc(a.description||a.step_id)+'</div><div class="ac-actions"><button class="btn btn-p btn-sm" onclick="resolveApproval(\''+a.step_id+'\',true)">Approve</button><button class="btn btn-d btn-sm" onclick="resolveApproval(\''+a.step_id+'\',false)">Deny</button></div></div>'})}
+  h+='</div>';c.innerHTML=h}
 
 function renderSettingsPage(c){
-    let h=`<div class="input-card"><div class="setting-row"><div><div class="setting-label">Auto Refresh</div><div class="setting-desc">Poll agent status every 10 seconds</div></div><button class="toggle${S.autoRefresh?' on':''}" onclick="toggleAutoRefresh()"></button></div><div class="setting-row"><div><div class="setting-label">API Status</div><div class="setting-desc" id="apiStatus">Checking...</div></div><div style="display:flex;align-items:center;gap:6px"><div class="sdot on" id="apiDot"></div><span style="font-size:12px;color:var(--t3)" id="apiText">Connected</span></div></div><div class="setting-row"><div><div class="setting-label">Model</div><div class="setting-desc" id="settingModel">--</div></div></div></div>`;
-    h+=`<div class="input-card"><div class="detail-label" style="margin-bottom:12px">Registered Tools</div><div id="toolsList"></div></div>`;
-    c.innerHTML=h;
-    document.getElementById('settingModel').textContent=S.agentStatus?S.agentStatus.model:'--';
-    const tl=document.getElementById('toolsList');if(S.agentStatus&&S.agentStatus.tools){tl.innerHTML=S.agentStatus.tools.map(t=>`<div class="tool-item"><span class="tool-name">${esc(t.name)}</span><span class="tool-risk ${t.risk}">${t.risk}</span></div>`).join('')}}
+  let h='<div class="input-card"><div class="setting-row"><div><div class="setting-label">Auto Refresh</div><div class="setting-desc">Poll agent status every 10 seconds</div></div><button class="toggle'+(S.autoRefresh?' on':'')+'" onclick="toggleAutoRefresh()"></button></div><div class="setting-row"><div><div class="setting-label">API Status</div><div class="setting-desc" id="apiStatus">Checking...</div></div><div style="display:flex;align-items:center;gap:6px"><div class="sdot on" id="apiDot"></div><span style="font-size:12px;color:var(--t3)" id="apiText">Connected</span></div></div><div class="setting-row"><div><div class="setting-label">Model</div><div class="setting-desc" id="settingModel">--</div></div></div></div>';
+  h+='<div class="input-card"><div class="detail-label" style="margin-bottom:12px">Registered Tools</div><div id="toolsList"></div></div>';
+  c.innerHTML=h;document.getElementById('settingModel').textContent=S.agentStatus?S.agentStatus.model:'--';
+  const tl=document.getElementById('toolsList');if(S.agentStatus&&S.agentStatus.tools){tl.innerHTML=S.agentStatus.tools.map(t=>'<div class="tool-item"><span class="tool-name">'+esc(t.name)+'</span><span class="tool-risk '+t.risk+'">'+t.risk+'</span></div>').join('')}}
 
-async function submitTask(){const inp=document.getElementById('goalInput');if(!inp)return;const goal=inp.value.trim();if(!goal)return;const btn=document.getElementById('submitBtn');const lb=document.getElementById('loadingBar');btn.disabled=true;lb.style.display='flex';try{const res=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal})});const task=await res.json();S.tasks.unshift(task);S.selected=task;document.getElementById('taskCount').textContent=S.tasks.length;renderPage();renderTracePanel(document.getElementById('rpanelBody'));startLivePoll(task.id);switchRTab('thinking')}catch(e){alert('Error: '+e.message)}finally{btn.disabled=false;lb.style.display='none';if(document.getElementById('goalInput'))document.getElementById('goalInput').value=''}}
+/* ── Actions ──────────────────────────────────────────────────── */
+async function submitTask(){
+  const inp=document.getElementById('goalInput');if(!inp)return;const goal=inp.value.trim();if(!goal)return;
+  const btn=document.getElementById('submitBtn');const lb=document.getElementById('loadingBar');btn.disabled=true;lb.style.display='flex';
+  try{const res=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal})});const task=await res.json();S.tasks.unshift(task);S.selected=task;document.getElementById('taskCount').textContent=S.tasks.length;renderPage();renderTracePanel(document.getElementById('rpanelBody'));startLivePoll(task.id);switchRTab('thinking')}
+  catch(e){modalAlert('Error',e.message,'error')}
+  finally{btn.disabled=false;lb.style.display='none';if(document.getElementById('goalInput'))document.getElementById('goalInput').value=''}}
+
 function selectTask(id){S.selected=S.tasks.find(t=>t.id===id)||null;renderPage();if(S.selected&&S.selected.id===S.liveTaskId&&S.liveEvents.length>0){renderRPanel()}else if(S.selected){renderTracePanel(document.getElementById('rpanelBody'))}}
+
 async function resolveApproval(id,approved){await fetch('/api/approvals/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({approved})});S.approvals=S.approvals.filter(a=>a.step_id!==id);document.getElementById('approvalCount').textContent=S.approvals.length;renderPage();renderApprovalPanel(document.getElementById('rpanelBody'))}
-async function deleteTask(id){if(!confirm('Delete this task?'))return;try{await fetch('/api/tasks/'+id,{method:'DELETE'});S.tasks=S.tasks.filter(t=>t.id!==id);if(S.selected&&S.selected.id===id){S.selected=null}document.getElementById('taskCount').textContent=S.tasks.length;stopLivePoll();renderPage();if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'))}catch(e){}}
+
+async function deleteTask(id){
+  const ok=await modalConfirm('Delete Task','Are you sure you want to delete this task?');
+  if(!ok)return;
+  try{await fetch('/api/tasks/'+id,{method:'DELETE'});S.tasks=S.tasks.filter(t=>t.id!==id);if(S.selected&&S.selected.id===id){S.selected=null}document.getElementById('taskCount').textContent=S.tasks.length;if(S.liveTaskId===id)stopLivePoll();renderPage();if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'))}catch(e){}}
+
 async function searchMemory(){const q=document.getElementById('memSearch');const query=q?q.value:'';try{const res=await fetch('/api/memory?query='+encodeURIComponent(query)+(S.memFilter!=='all'?'&category='+S.memFilter:''));S.memory=await res.json();renderPage()}catch(e){}}
 function filterMem(f){S.memFilter=f;searchMemory()}
 function toggleAutoRefresh(){S.autoRefresh=!S.autoRefresh;const t=document.getElementById('autoToggle');if(t)t.classList.toggle('on',S.autoRefresh);if(S.autoRefresh){S.pollInterval=setInterval(()=>{refreshAgentStatus();refreshApprovals()},10000);refreshAgentStatus();refreshApprovals()}else if(S.pollInterval){clearInterval(S.pollInterval);S.pollInterval=null}}
-async function refreshAgentStatus(){try{const res=await fetch('/api/agent/status');const s=await res.json();S.agentStatus=s;document.getElementById('toolCount').textContent=s.tools_count;document.getElementById('memSize').textContent=s.memory_size;document.getElementById('agentModel').textContent=s.model;const total=Object.values(s.memory_categories).reduce((a,b)=>a+b,0);document.getElementById('memCount').textContent=total;document.getElementById('apiText').textContent='Connected';document.getElementById('apiDot').className='sdot on'}catch(e){document.getElementById('apiText').textContent='Disconnected';document.getElementById('apiDot').className='sdot off'}}
-async function refreshApprovals(){try{const res=await fetch('/api/approvals');S.approvals=await res.json();const count=S.approvals.length;document.getElementById('approvalCount').textContent=count;const badge=document.querySelector('[data-page="approvals"] .nb');if(badge){badge.classList.toggle('alert',count>0)}if(S.rtab==='approvals')renderApprovalPanel(document.getElementById('rpanelBody'))}catch(e){}}
-function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks()}
-async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=await res.json();if(tasks.length>0){S.tasks=tasks;document.getElementById('taskCount').textContent=S.tasks.length;renderPage()}}catch(e){}}
 
+async function refreshAgentStatus(){try{const res=await fetch('/api/agent/status');const s=await res.json();S.agentStatus=s;document.getElementById('toolCount').textContent=s.tools_count;document.getElementById('memSize').textContent=s.memory_size;document.getElementById('agentModel').textContent=s.model;const total=Object.values(s.memory_categories).reduce((a,b)=>a+b,0);document.getElementById('memCount').textContent=total;document.getElementById('apiText').textContent='Connected';document.getElementById('apiDot').className='sdot on'}catch(e){document.getElementById('apiText').textContent='Disconnected';document.getElementById('apiDot').className='sdot off'}}
+
+async function refreshApprovals(){try{const res=await fetch('/api/approvals');S.approvals=await res.json();const count=S.approvals.length;document.getElementById('approvalCount').textContent=count;const badge=document.querySelector('[data-page="approvals"] .nb');if(badge)badge.classList.toggle('alert',count>0);if(S.rtab==='approvals')renderApprovalPanel(document.getElementById('rpanelBody'))}catch(e){}}
+
+function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks()}
+
+async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=await res.json();if(tasks.length>0){S.tasks=tasks;document.getElementById('taskCount').textContent=S.tasks.length;if(S.page==='tasks'&&!S.selected)renderPage()}}catch(e){}}
+
+/* ── Live Polling ─────────────────────────────────────────────── */
 function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500)}
 function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}S.liveTaskId=null}
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result;t.error=d.error;t.steps_count=d.steps_count;t.steps=d.steps;t.trace=d.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id){if(S.page==='tasks')renderPage()}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll()}}catch(e){}}
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.trace=d.trace||t.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks')renderPage();if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll()}}catch(e){}}
 
+/* ── Init ─────────────────────────────────────────────────────── */
 setInterval(refreshApprovals,3000);
 document.addEventListener('DOMContentLoaded',()=>{renderPage();refreshAgentStatus();refreshApprovals();loadTasks()});
 </script>

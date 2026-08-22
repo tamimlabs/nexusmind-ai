@@ -2,7 +2,7 @@
 
 <img src="docs/nexusmind-dark-icon.png" alt="NexusMind AI" width="200" style="background:#09090b;border-radius:16px;padding:24px" />
 
-# NexusMind AIwha
+# NexusMind AI
 
 ### Autonomous Task-Execution Agent on Google Cloud
 

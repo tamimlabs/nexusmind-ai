@@ -37,8 +37,9 @@ RULES:
 4. Use the RIGHT tool for the job — web_search for searching, fetch_url for URLs, etc.
 5. For research tasks: use web_search first, then fetch_url on results
 6. For file tasks: use read_file/write_file
-7. For code tasks: use execute_code
-8. Return ONLY valid JSON array
+7. For analysis/computation: prefer summarize_text, parse_json, or extract_data over running code
+8. AVOID execute_code and run_command unless ABSOLUTELY NECESSARY — they require human approval and block execution. Use them only when NO other tool can accomplish the step
+9. Return ONLY valid JSON array
 
 OUTPUT FORMAT (JSON array):
 [

@@ -152,18 +152,30 @@ async def _run_task_background(task_id: str, task: Task) -> None:
 
     try:
         _emit(task_id, "thinking", "Analyzing your goal...")
-        _update_task_status(task_id, "planning")
+        _update_task_status(task_id, "planning", goal=task.goal)
 
         _emit(task_id, "thinking", "Breaking down into steps using Gemini Flash...")
-        await asyncio.sleep(0.3)  # Brief pause so UI shows the thinking
+        await asyncio.sleep(0.3)
 
         task = await orchestrator.handle_task(task)
+
+        # Emit per-step events so thinking panel shows progress
+        if task.steps:
+            _emit(task_id, "thinking", f"Planned {len(task.steps)} steps")
+            for i, step in enumerate(task.steps):
+                status_type = {"success": "done", "failed": "error"}.get(step.status.value, "thinking")
+                step_msg = f"Step {i+1}: {step.description[:80]}"
+                if step.tool_name:
+                    step_msg += f" [{step.tool_name}]"
+                _emit(task_id, status_type, step_msg,
+                      step.result[:200] if step.result else (step.error[:200] if step.error else ""))
 
         _update_task_status(
             task_id,
             task.status.value,
             result=task.result,
             error=task.error,
+            goal=task.goal,
             steps_count=len(task.steps),
             steps=[
                 {
@@ -258,13 +270,29 @@ async def get_task_live(task_id: str):
 
 @app.get("/api/tasks", response_model=list[TaskResponse])
 async def list_tasks():
-    """List recent tasks."""
+    """List recent tasks — merges live tasks + Firestore."""
+    live = []
+    for tid, data in _live_tasks.items():
+        live.append(TaskResponse(
+            id=tid,
+            goal=data.get("goal", ""),
+            status=data.get("status", "unknown"),
+            result=data.get("result"),
+            error=data.get("error"),
+            steps_count=data.get("steps_count", 0),
+            steps=data.get("steps", []),
+        ))
+
     try:
         from cloud.firestore.client import firestore_tasks
-        tasks = firestore_tasks.list_tasks(limit=20)
-        return [TaskResponse(**t) for t in tasks]
+        fs_tasks = firestore_tasks.list_tasks(limit=20)
+        for t in fs_tasks:
+            if t.get("id") not in {lt.id for lt in live}:
+                live.append(TaskResponse(**t))
     except Exception:
-        return []
+        pass
+
+    return live
 
 
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse)
