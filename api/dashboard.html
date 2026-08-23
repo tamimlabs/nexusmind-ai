@@ -404,6 +404,10 @@ async function removeWatcher(id){const ok=await modalConfirm('Remove Watcher','T
 
 async function refreshWatchers(){try{const res=await fetch('/api/watchers');S.watchers=await res.json();document.getElementById('watcherCount').textContent=S.watchers.length;if(S.page==='watchers')renderPage()}catch(e){}}
 
+async function refreshMemoryCount(){try{const res=await fetch('/api/memory');S.memory=await res.json();document.getElementById('memCount').textContent=S.memory.length;if(S.page==='memory')renderMemoryPage(document.getElementById('pageContent'))}catch(e){}}
+
+async function refreshCredCount(){try{const res=await fetch('/api/credentials');const creds=await res.json();let total=0,configured=0;Object.values(creds).forEach(fields=>{fields.forEach(f=>{total++;if(f.configured)configured++})});document.getElementById('credCount').textContent=configured+'/'+total}catch(e){}}
+
 /* ── Credentials Page ───────────────────────────────────────── */
 let S_creds={};
 async function renderCredentialsPage(c){
@@ -476,7 +480,7 @@ async function refreshAgentStatus(){try{const res=await fetch('/api/agent/status
 
 async function refreshApprovals(){try{const res=await fetch('/api/approvals');S.approvals=await res.json();const count=S.approvals.length;document.getElementById('approvalCount').textContent=count;const badge=document.querySelector('[data-page="approvals"] .nb');if(badge)badge.classList.toggle('alert',count>0);if(S.rtab==='approvals')renderApprovalPanel(document.getElementById('rpanelBody'))}catch(e){}}
 
-function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks()}
+function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks();refreshMemoryCount()}
 
 async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=await res.json();if(tasks.length>0){S.tasks=tasks;document.getElementById('taskCount').textContent=S.tasks.length;if(S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}}}catch(e){}}
 
@@ -485,12 +489,12 @@ function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selec
 /* ── Live Polling ─────────────────────────────────────────────── */
 function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500)}
 function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}S.liveTaskId=null}
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.trace=d.trace||t.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}if(['completed','failed'].includes(d.status)){stopLivePoll();S.liveEvents=[];refreshAll()}}catch(e){}}
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.trace=d.trace||t.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}if(['completed','failed'].includes(d.status)){stopLivePoll();S.liveEvents=[];refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
 
 /* ── Init ─────────────────────────────────────────────────────── */
 setInterval(refreshApprovals,3000);
 setInterval(refreshWatchers,10000);
-document.addEventListener('DOMContentLoaded',()=>{renderPage();refreshAgentStatus();refreshApprovals();loadTasks();refreshWatchers()});
+document.addEventListener('DOMContentLoaded',()=>{renderPage();refreshAgentStatus();refreshApprovals();loadTasks();refreshWatchers();refreshMemoryCount();refreshCredCount()});
 </script>
 </body>
 </html>
