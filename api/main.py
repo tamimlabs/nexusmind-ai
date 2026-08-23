@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from agent.config import settings
+import agent.config as _cfg
 from agent.core.executor import get_pending_approvals, list_tools, resolve_approval
 from agent.core.memory import memory_store
 from agent.models import Task, TaskPriority, TaskStatus
@@ -150,7 +150,7 @@ async def agent_status():
     high_risk = ["execute_code", "run_command"]
     return {
         "online": True,
-        "model": settings.gemini_model,
+        "model": _cfg.settings.gemini_model,
         "tools": [
             {"name": t, "risk": "high" if t in high_risk else "normal"}
             for t in tools
@@ -390,7 +390,7 @@ async def get_approval_mode():
     """Get current approval mode and Telegram status."""
     from agent.telegram import get_config_status
     return {
-        "mode": settings.approval_mode,
+        "mode": _cfg.settings.approval_mode,
         "telegram": get_config_status(),
     }
 
@@ -405,7 +405,7 @@ async def set_approval_mode(req: ApprovalModeRequest):
     if req.mode not in ("always", "smart", "never"):
         raise HTTPException(status_code=400, detail="Mode must be 'always', 'smart', or 'never'")
     # Update runtime setting
-    settings.approval_mode = req.mode
+    _cfg.settings.approval_mode = req.mode
     return {"mode": req.mode, "message": f"Approval mode set to {req.mode}"}
 
 
@@ -436,11 +436,11 @@ async def setup_telegram_webhook():
 
     from agent.telegram import _get_api_url
 
-    if not settings.telegram_bot_token:
+    if not _cfg.settings.telegram_bot_token:
         raise HTTPException(status_code=400, detail="Telegram bot token not configured")
 
     # Determine webhook URL from request
-    webhook_url = f"https://nexusmind-ai-{settings.google_cloud_project}.a.run.app/api/telegram/webhook"
+    webhook_url = f"https://nexusmind-ai-{_cfg.settings.google_cloud_project}.a.run.app/api/telegram/webhook"
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -551,4 +551,4 @@ async def receive_webhook(req: WebhookPayload):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=settings.api_host, port=settings.api_port)
+    uvicorn.run(app, host=_cfg.settings.api_host, port=_cfg.settings.api_port)

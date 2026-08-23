@@ -253,7 +253,8 @@ function renderRPanel(){const c=document.getElementById('rpanelBody');if(S.rtab=
 
 /* ── Task Views ───────────────────────────────────────────────── */
 function renderTasksPage(c){
-  let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div></div>';
+  const prevVal=document.getElementById('goalInput')?document.getElementById('goalInput').value:'';
+  let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." value="'+esc(prevVal)+'" /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div></div>';
   html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span></div>';
   html+='<div class="task-list" id="taskListEl">';
   if(S.selected){html+=renderDetail(S.selected)}
@@ -477,12 +478,14 @@ async function refreshApprovals(){try{const res=await fetch('/api/approvals');S.
 
 function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks()}
 
-async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=await res.json();if(tasks.length>0){S.tasks=tasks;document.getElementById('taskCount').textContent=S.tasks.length;if(S.page==='tasks'&&!S.selected)renderPage()}}catch(e){}}
+async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=await res.json();if(tasks.length>0){S.tasks=tasks;document.getElementById('taskCount').textContent=S.tasks.length;if(S.page==='tasks'&&!S.selected){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}}}catch(e){}}
+
+function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selected)}else if(S.tasks.length===0){html='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}el.innerHTML=html}
 
 /* ── Live Polling ─────────────────────────────────────────────── */
 function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500)}
 function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}S.liveTaskId=null}
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.trace=d.trace||t.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks')renderPage();if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll()}}catch(e){}}
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.trace=d.trace||t.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll()}}catch(e){}}
 
 /* ── Init ─────────────────────────────────────────────────────── */
 setInterval(refreshApprovals,3000);

@@ -172,10 +172,10 @@ async def save_credentials(req: SaveCredentialsRequest):
 
     if to_save:
         _write_env(to_save)
-        # Reload settings
-        global settings
-        # Force reload by creating new Settings instance
         os.environ.update(to_save)
+        # Reload the global settings singleton used by orchestrator/executor
+        import agent.config
+        agent.config.settings = agent.config.Settings()
 
     return {"saved": list(to_save.keys()), "count": len(to_save)}
 
