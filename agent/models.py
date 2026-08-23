@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -60,8 +60,8 @@ class Task(BaseModel):
     status: TaskStatus = TaskStatus.PENDING
     task_mode: TaskMode = TaskMode.ONE_SHOT
     context: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     result: str | None = None
     error: str | None = None
     steps: list[TaskStep] = Field(default_factory=list)
@@ -98,7 +98,7 @@ class MemoryEntry(BaseModel):
     category: str = "general"  # general, skill, task_outcome, reflection
     embedding: list[float] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SkillDefinition(BaseModel):
@@ -140,4 +140,4 @@ class WatcherState(BaseModel):
         description="Recently seen external event IDs, used for deduplication",
     )
     error: str | None = None
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

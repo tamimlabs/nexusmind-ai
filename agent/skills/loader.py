@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import importlib
 import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

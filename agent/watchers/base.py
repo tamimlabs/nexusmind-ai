@@ -5,7 +5,7 @@ import abc
 import asyncio
 import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ class BaseWatcher(abc.ABC):
 
         while self._running:
             try:
-                self._last_check = datetime.now(timezone.utc)
+                self._last_check = datetime.now(UTC)
                 events = await self.check_for_events()
 
                 for event in events:

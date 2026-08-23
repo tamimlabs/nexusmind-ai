@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -52,7 +52,7 @@ class TraceSpan:
             "output": self.output_data,
             "metadata": self.metadata,
             "parent_id": self.parent_id,
-            "timestamp": datetime.fromtimestamp(self.start_time, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(self.start_time, tz=UTC).isoformat(),
         }
 
 

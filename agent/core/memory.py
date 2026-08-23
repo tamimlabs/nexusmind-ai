@@ -9,10 +9,7 @@ Inspired by Hermes Agent's curated memory approach:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any
 
-from agent.config import settings
 from agent.models import MemoryEntry
 
 logger = logging.getLogger(__name__)

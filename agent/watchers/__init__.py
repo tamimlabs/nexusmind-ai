@@ -26,8 +26,8 @@ __all__ = [
     "GitLabWatcher",
     "HackerNewsWatcher",
     "JiraWatcher",
-    "RedditWatcher",
     "RSSWatcher",
+    "RedditWatcher",
     "SlackWatcher",
     "WebhookWatcher",
 ]

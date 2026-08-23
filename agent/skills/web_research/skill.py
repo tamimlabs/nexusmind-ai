@@ -11,7 +11,6 @@ from urllib.parse import unquote
 
 import httpx
 
-from agent.config import settings
 from agent.core.executor import ToolResult, register_tool
 
 # --- Google Custom Search Config ---

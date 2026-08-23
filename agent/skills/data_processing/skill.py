@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from agent.core.executor import register_tool, ToolResult
+from agent.core.executor import ToolResult, register_tool
 
 
 @register_tool("parse_json")
