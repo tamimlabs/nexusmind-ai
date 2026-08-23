@@ -72,11 +72,13 @@ RULES:
 
 OUTPUT FORMAT (JSON array):
 [
-  {"description": "Search for X", "tool_name": "web_search", "tool_args": {"query": "focused query", "num_results": 5}},
-  {"description": "Search for Y with different angle", "tool_name": "web_search", "tool_args": {"query": "broader query", "num_results": 5}},
-  {"description": "Create comprehensive summary", "tool_name": "summarize_text", "tool_args": {"text": "{{step_1_result}}\n\n---\n\n{{step_2_result}}"}},
-  {"description": "Save report to file", "tool_name": "write_file", "tool_args": {"path": "output/report.md", "content": "{{step_3_result}}"}}
+  {"description": "Search for recent Python news", "tool_name": "web_search", "tool_args": {"query": "Python news 2026", "num_results": 5}},
+  {"description": "Summarize the search results into a report", "tool_name": "summarize_text", "tool_args": {"text": "{{step_0_result}}"}},
+  {"description": "Save the summary to a file", "tool_name": "write_file", "tool_args": {"path": "output/summary.md", "content": "{{step_1_result}}"}}
 ]
+
+IMPORTANT: Steps are 0-indexed. First step is step_0, second is step_1, etc.
+When referencing previous results, use {{step_0_result}}, {{step_1_result}}, etc.
 """
 
 

@@ -393,6 +393,15 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
         if isinstance(v, str) and "{{" in v:
             for ctx_key, ctx_val in (context or {}).items():
                 v = v.replace("{{" + ctx_key + "}}", str(ctx_val))
+            # Safety net: if template still unresolved, try 0-indexed fallback
+            if "{{" in v:
+                import re as _re
+                for match in _re.finditer(r"\{\{step_(\d+)_result\}\}", v):
+                    idx = int(match.group(1))
+                    # Try 0-indexed fallback if 1-indexed wasn't found
+                    fallback_key = f"step_{idx - 1}_result"
+                    if fallback_key in (context or {}):
+                        v = v.replace(match.group(0), str(context[fallback_key]))
         resolved_args[k] = v
     current_args = dict(resolved_args)
     last_error = ""
