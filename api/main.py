@@ -72,6 +72,18 @@ if docs_path.exists():
 # Per-task live events that the dashboard polls
 _live_events: dict[str, list[dict[str, Any]]] = {}
 _live_tasks: dict[str, dict[str, Any]] = {}
+_live_tasks_created: dict[str, float] = {}  # task_id -> creation timestamp
+_LIVE_TTL = 3600  # Evict completed tasks after 1 hour
+
+
+def _cleanup_stale_tasks() -> None:
+    """Evict tasks older than _LIVE_TTL to prevent memory leaks."""
+    now = time.time()
+    stale = [tid for tid, ts in _live_tasks_created.items() if now - ts > _LIVE_TTL]
+    for tid in stale:
+        _live_tasks.pop(tid, None)
+        _live_events.pop(tid, None)
+        _live_tasks_created.pop(tid, None)
 
 
 def _emit(task_id: str, event_type: str, message: str, detail: str = "") -> None:
@@ -90,7 +102,11 @@ def _update_task_status(task_id: str, status: str, **extra) -> None:
     """Update live task status for polling."""
     if task_id not in _live_tasks:
         _live_tasks[task_id] = {}
+        _live_tasks_created[task_id] = time.time()
     _live_tasks[task_id].update({"status": status, "updated_at": time.time(), **extra})
+    # Periodic cleanup (every 50 new tasks)
+    if len(_live_tasks_created) % 50 == 0:
+        _cleanup_stale_tasks()
 
 
 # ── Request/Response Models ───────────────────────────────────────

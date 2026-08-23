@@ -60,7 +60,8 @@ class KeyRotator:
         wait_time = self._cooldowns[best_key] - now
         if wait_time > 0:
             logger.warning("All keys in cooldown. Waiting %.1fs for next key", wait_time)
-            time.sleep(min(wait_time, 5))
+            # Note: this is called from sync context in _get_next_key
+            # The caller should handle async waiting if needed
         return best_key
 
     def mark_rate_limited(self, key: str, retry_after: float = 60) -> None:
@@ -113,6 +114,12 @@ async def generate_content(
 
     for attempt in range(min(rotator.key_count, 3)):
         client, key_used = rotator.get_client()
+
+        # If all keys in cooldown, async wait before trying
+        if rotator.active_keys == 0:
+            shortest = min(rotator._cooldowns.values()) - time.time()
+            if shortest > 0:
+                await asyncio.sleep(min(shortest, 5))
 
         def _call() -> str:
             contents = []

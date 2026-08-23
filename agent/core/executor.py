@@ -395,8 +395,7 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                 v = v.replace("{{" + ctx_key + "}}", str(ctx_val))
             # Safety net: if template still unresolved, try 0-indexed fallback
             if "{{" in v:
-                import re as _re
-                for match in _re.finditer(r"\{\{step_(\d+)_result\}\}", v):
+                for match in re.finditer(r"\{\{step_(\d+)_result\}\}", v):
                     idx = int(match.group(1))
                     # Try 0-indexed fallback if 1-indexed wasn't found
                     fallback_key = f"step_{idx - 1}_result"
@@ -417,28 +416,15 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                     step.error = result.error
                 return result
 
-            # Tool returned failure — try self-correction
             last_error = result.error or "Tool returned failure"
             logger.warning("Tool %s failed (attempt %d): %s", step.tool_name, attempt, last_error[:200])
-
-            if attempt <= MAX_RETRIES:
-                corrected = await self_correct(last_error, step.tool_name, current_args)
-                if corrected:
-                    # Check if self-correction suggests switching tools
-                    switch_to = corrected.pop("switch_to", None)
-                    if switch_to and switch_to in _tool_registry:
-                        tool = _tool_registry[switch_to]
-                        step.tool_name = switch_to
-                        logger.info("Switching from %s to %s (attempt %d)", step.tool_name, switch_to, attempt + 1)
-                    current_args.update(corrected)
-                    continue
-                break  # No correction possible
 
         except TimeoutError:
             last_error = "Tool execution timed out (120s)"
         except Exception as exc:
             last_error = str(exc)
 
+        # Self-correction on failure
         if attempt <= MAX_RETRIES:
             corrected = await self_correct(last_error, step.tool_name, current_args)
             if corrected:
@@ -449,7 +435,7 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                     logger.info("Switching from %s to %s (attempt %d)", step.tool_name, switch_to, attempt + 1)
                 current_args.update(corrected)
                 continue
-            break
+            break  # No correction possible
 
     step.status = StepStatus.FAILED
     step.error = last_error

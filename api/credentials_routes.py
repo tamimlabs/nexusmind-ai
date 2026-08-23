@@ -71,7 +71,9 @@ def _read_env() -> dict[str, str]:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
-                env[key.strip()] = value.strip().strip('"').strip("'")
+                # Strip optional quotes (both old and new format)
+                value = value.strip().strip('"').strip("'")
+                env[key.strip()] = value
     return env
 
 
@@ -91,7 +93,8 @@ def _write_env(data: dict[str, str]) -> None:
             key = key.strip()
             existing_keys.add(key)
             if key in data:
-                new_lines.append(f'{key}="{data[key]}"')
+                # Don't wrap in quotes — raw value preserves correctly
+                new_lines.append(f'{key}={data[key]}')
             else:
                 new_lines.append(line)
         else:
@@ -100,7 +103,7 @@ def _write_env(data: dict[str, str]) -> None:
     # Add new keys that weren't in the file
     for key, value in data.items():
         if key not in existing_keys and value:
-            new_lines.append(f'{key}="{value}"')
+            new_lines.append(f'{key}={value}')
 
     _ENV_FILE.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
