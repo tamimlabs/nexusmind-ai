@@ -135,20 +135,71 @@ bash scripts/deploy.sh
 
 ---
 
-## API Reference
+## Always-Awake Event-Driven Watchers
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/` | Traceability dashboard (live UI) |
-| `GET` | `/api/health` | Health check |
-| `POST` | `/api/tasks` | Submit a goal for the agent |
-| `GET` | `/api/tasks` | List recent tasks |
-| `GET` | `/api/tasks/{id}` | Get task details + reasoning trace |
-| `GET` | `/api/approvals` | List pending human approvals |
-| `POST` | `/api/approvals/{id}` | Approve or deny a high-risk action |
-| `POST` | `/api/webhooks` | Receive external events (GitHub, Stripe, etc.) |
-| `GET` | `/api/traces` | List all execution traces |
-| `GET` | `/api/traces/{id}` | Get detailed trace for a task |
+NexusMind can monitor external platforms and react to events automatically -- no manual polling needed.
+
+### Supported Platforms
+
+| Platform | What It Monitors |
+|----------|-----------------|
+| **GitHub** | New PRs, issues |
+| **GitLab** | New merge requests, issues |
+| **Slack** | Channel messages, mentions |
+| **Discord** | Channel messages |
+| **Jira** | New/updated issues |
+| **Reddit** | New posts in subreddits |
+| **Hacker News** | New stories, comments |
+| **Email (IMAP)** | Inbox messages |
+| **RSS/Atom** | Feed items |
+| **Cron** | Scheduled tasks |
+| **Custom Webhook** | Any HTTP event |
+
+### How It Works
+
+1. User creates a watcher via Dashboard or API
+2. Watcher polls the platform every N minutes (configurable)
+3. When new events are detected, agent is triggered automatically
+4. Agent processes the event (reviews PR, summarizes article, etc.)
+5. Token-efficient: only calls Gemini when there's actual work to do
+
+### Example: Monitor GitHub PRs
+
+```bash
+curl -X POST http://localhost:8080/api/watchers \
+  -H "Content-Type: application/json" \
+  -d '{"type": "github", "config": {"repo": "owner/repo", "interval_seconds": 300}}'
+```
+
+---
+
+## Unified Credentials Settings
+
+Manage all API keys and secrets in one place via the Dashboard:
+
+| Category | Fields |
+|----------|--------|
+| AI & LLM | Gemini API Keys, Model |
+| Google Cloud | Project ID, Region |
+| Web Search | Google Search API Key, CX |
+| GitHub | Personal Access Token |
+| GitLab | Token, Base URL |
+| Slack | Bot Token |
+| Discord | Bot Token |
+| Jira | Domain, Email, API Token |
+| Email (IMAP) | Server, Address, Password |
+
+Credentials are stored in `.env` (gitignored) and never exposed to the frontend in plain text.
+
+---
+| `GET` | `/api/watchers` | List active event watchers |
+| `POST` | `/api/watchers` | Create a new watcher |
+| `POST` | `/api/watchers/{id}/start` | Start a stopped watcher |
+| `POST` | `/api/watchers/{id}/stop` | Stop a running watcher |
+| `DELETE` | `/api/watchers/{id}` | Remove a watcher |
+| `GET` | `/api/credentials` | List all API keys and credentials |
+| `POST` | `/api/credentials` | Save credentials to .env |
+| `DELETE` | `/api/credentials/{key}` | Remove a credential |
 
 ### Example: Submit a Task
 
@@ -197,6 +248,7 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 | **API** | FastAPI + Uvicorn |
 | **Language** | Python 3.11+ |
 | **Testing** | pytest + pytest-asyncio |
+| **Watchers** | 11 platforms (GitHub, GitLab, Slack, Discord, Jira, Reddit, HN, Email, RSS, Cron, Webhook) |
 
 ---
 
@@ -214,11 +266,24 @@ nexusmind-ai/
 │   │   ├── web_research/           # Web search + URL fetch
 │   │   ├── file_management/        # File read/write/list
 │   │   └── data_processing/        # JSON, summarization, extraction
+│   ├── watchers/                   # Always-awake event monitors
+│   │   ├── base.py                 # Abstract watcher with poll loop
+│   │   ├── github.py               # GitHub PR/issue watcher
+│   │   ├── gitlab.py               # GitLab MR/issue watcher
+│   │   ├── slack.py                # Slack channel watcher
+│   │   ├── discord.py              # Discord channel watcher
+│   │   ├── jira.py                 # Jira issue watcher
+│   │   ├── reddit.py               # Reddit subreddit watcher
+│   │   ├── hackernews.py           # Hacker News story watcher
+│   │   ├── email_watcher.py        # Email inbox watcher
+│   │   ├── rss.py                  # RSS/Atom feed watcher
+│   │   ├── cron.py                 # Scheduled task watcher
+│   │   ├── webhook.py              # Custom webhook watcher
+│   │   └── manager.py              # Watcher lifecycle manager
 │   ├── orchestrator.py             # Main agent loop + self-improvement
 │   ├── observability.py            # Trace collector for dashboard
 │   ├── models.py                   # Pydantic data models
-│   ├── config.py                   # Environment-based settings
-│   └── cli.py                      # Interactive CLI
+│   └── config.py                   # Environment-based settings
 ├── cloud/                          # Google Cloud integrations
 │   ├── vertex_ai/agent.py          # Google ADK agent wrapper
 │   ├── firestore/client.py         # Firestore persistence layer
@@ -226,7 +291,9 @@ nexusmind-ai/
 │   └── cloud_run/                  # Dockerfile + cloudbuild.yaml
 ├── api/
 │   ├── main.py                     # FastAPI app + background task runner
-│   └── dashboard.html              # Live traceability dashboard
+│   ├── dashboard.html              # Live traceability dashboard
+│   ├── watcher_routes.py           # Watcher CRUD API endpoints
+│   └── credentials_routes.py       # Credentials management API
 ├── tests/                          # 21 passing tests
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
 ├── pyproject.toml                  # Dependencies + tool config
@@ -274,6 +341,18 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 | `GEMINI_MODEL` | Yes | Model name (default: `gemini-3.6-flash`) |
 | `GOOGLE_CLOUD_PROJECT` | For cloud | GCP project ID |
 | `GOOGLE_CLOUD_REGION` | For cloud | GCP region (default: `us-central1`) |
+| `GOOGLE_SEARCH_API_KEY` | No | Google Custom Search API key |
+| `GOOGLE_SEARCH_CX` | No | Google Custom Search engine ID |
+| `GITHUB_TOKEN` | No | GitHub Personal Access Token |
+| `GITLAB_TOKEN` | No | GitLab Personal Access Token |
+| `SLACK_BOT_TOKEN` | No | Slack Bot Token (`xoxb-...`) |
+| `DISCORD_BOT_TOKEN` | No | Discord Bot Token |
+| `JIRA_DOMAIN` | No | Jira domain (e.g., `company.atlassian.net`) |
+| `JIRA_EMAIL` | No | Jira account email |
+| `JIRA_TOKEN` | No | Jira API token |
+| `EMAIL_IMAP_SERVER` | No | IMAP server (e.g., `imap.gmail.com`) |
+| `EMAIL_ADDRESS` | No | Email address |
+| `EMAIL_PASSWORD` | No | App password for email |
 | `API_PORT` | No | API port (default: `8080`) |
 | `ENVIRONMENT` | No | `development` or `production` |
 
@@ -293,6 +372,8 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 - [x] Cloud Run deployment configs
 - [x] Firestore persistence layer
 - [x] Pub/Sub event routing
+- [x] Always-awake watcher system (11 platforms)
+- [x] Unified credentials settings page
 - [ ] Live demo on Google Cloud
 - [ ] Demo video recording
 - [ ] Devpost submission

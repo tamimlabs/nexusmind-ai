@@ -101,9 +101,10 @@ nexusmind-ai/
 ├── agent/              # Core agent logic
 │   ├── core/           # Planner, executor, memory, Gemini client
 │   ├── skills/         # Modular skill plugins
+│   ├── watchers/       # Always-awake event monitors (11 platforms)
 │   └── orchestrator.py # Main agent loop
 ├── cloud/              # Google Cloud integrations
-├── api/                # REST API + dashboard
+├── api/                # REST API + dashboard + credentials
 ├── tests/              # Test suite
 └── scripts/            # Deployment scripts
 ```
@@ -115,6 +116,15 @@ nexusmind-ai/
 3. Register tools using `@register_tool` decorator
 4. Add tests in `tests/`
 5. Update documentation if needed
+
+## Adding a New Watcher
+
+1. Create a new file in `agent/watchers/your_watcher.py`
+2. Inherit from `BaseWatcher`
+3. Implement `check_for_events()` and `process_event()`
+4. Register in `agent/watchers/manager.py` `_WATCHER_TYPES` dict
+5. Add to `agent/watchers/__init__.py` exports
+6. Add tests in `tests/`
 
 ## Questions?
 

@@ -81,20 +81,45 @@ NexusMind can be triggered by external events via Google Cloud Pub/Sub:
 - Calendar event → auto-prepare meeting briefs
 - Any HTTP endpoint → instant task creation
 
-### 8. Traceability Dashboard
+### 8. Always-Awake Watchers (11 Platforms)
+Unlike traditional agents that sleep between tasks, NexusMind can monitor platforms 24/7 and react automatically:
+
+| Platform | What It Monitors |
+|----------|-----------------|
+| GitHub | New PRs, issues |
+| GitLab | New merge requests, issues |
+| Slack | Channel messages, mentions |
+| Discord | Channel messages |
+| Jira | New/updated issues |
+| Reddit | New posts in subreddits |
+| Hacker News | New stories, comments |
+| Email (IMAP) | Inbox messages |
+| RSS/Atom | Feed items |
+| Cron | Scheduled tasks |
+| Custom Webhook | Any HTTP event |
+
+**Token-efficient:** Only calls Gemini when events are detected -- no wasted API calls.
+
+### 9. Unified Credentials Management
+All API keys and secrets managed in one place:
+- **9 categories:** AI, Cloud, Search, GitHub, GitLab, Slack, Discord, Jira, Email
+- **Secure:** Secret values masked in UI, stored in `.env` (gitignored)
+- **Auto-fill:** Watchers use saved credentials automatically
+
+### 11. Traceability Dashboard
 Every step is logged and visible in real-time:
 - **Tool calls** (blue) — what the agent did
 - **Reasoning steps** (purple) — what the agent was thinking
 - **Approval gates** (yellow) — where it asked for permission
 - **Errors** (red) — what went wrong and how it recovered
 
-### 9. Persistent Memory (Firestore)
+### 12. Persistent Memory (Firestore)
 Tasks, reflections, and skills persist across restarts via Google Cloud Firestore:
 - Search past tasks by similarity
 - Recall lessons learned
 - Track what works and what doesn't
 
-### 10. Multi-Step Task Decomposition
+### 13. Multi-Step Task Decomposition
 Complex goals are automatically broken into manageable steps:
 - Dependencies are resolved (step before step B)
 - Each step maps to a specific tool

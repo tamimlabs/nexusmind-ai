@@ -126,6 +126,43 @@ Sometimes the agent needs to run code or shell commands. When this happens:
 3. Use the search box to find previous results
 4. Filter by category: Reflections, Task Outcomes, Skills
 
+### Create a Watcher (Always-Awake Mode)
+
+Watchers let the agent monitor platforms and react to events automatically.
+
+1. Click **Watchers** in the left sidebar
+2. Click **+ New Watcher**
+3. Select a platform (GitHub, Slack, Discord, etc.)
+4. Enter the required credentials
+5. Click **Create**
+6. The watcher starts monitoring immediately
+
+**Example: Monitor GitHub PRs**
+- Select "GitHub"
+- Enter repository: `owner/repo`
+- Enter your GitHub token (get one from Settings > Developer Settings > Personal Access Tokens)
+- Click Create
+- Agent now monitors for new PRs and reviews them automatically
+
+### Manage Credentials
+
+1. Click **Credentials** in the left sidebar
+2. You'll see all API keys organized by category
+3. Fill in your keys (they're masked for security)
+4. Click **Save All**
+5. Credentials are stored locally in `.env` (never sent to git)
+
+**Available Categories:**
+- **AI & LLM** — Gemini API keys
+- **Google Cloud** — Project ID, region
+- **Web Search** — Google Search API key
+- **GitHub** — Personal access token
+- **GitLab** — Token, base URL
+- **Slack** — Bot token
+- **Discord** — Bot token
+- **Jira** — Domain, email, API token
+- **Email (IMAP)** — Server, address, password
+
 ---
 
 ## Step 4: Understand the Dashboard
@@ -135,7 +172,9 @@ Sometimes the agent needs to run code or shell commands. When this happens:
 - **Tasks** — View and submit tasks
 - **Memory** — Browse agent's learned knowledge
 - **Approvals** — Manage pending approval requests
+- **Watchers** — Create and manage event monitors
 - **Settings** — Agent status and configuration
+- **Credentials** — Manage all API keys and secrets
 
 ### Center Panel (Main Content)
 
