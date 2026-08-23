@@ -5,7 +5,7 @@ description = "Next-generation autonomous AI agent combining OpenClaw and Hermes
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [{ name = "NexusMind Team" }]
+authors = [{ name = "Tamim Hasan" }]
 keywords = ["ai", "agent", "gemini", "google-cloud", "autonomous"]
 classifiers = [
     "Development Status :: 3 - Alpha",

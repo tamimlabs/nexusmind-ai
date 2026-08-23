@@ -214,7 +214,7 @@ This is what "agentic" means — an AI that takes initiative, not just follows o
 | Resource | URL |
 |----------|-----|
 | **GitHub** | https://github.com/tamimlabs/nexusmind-ai |
-| **Demo** | (coming soon — deployed on Google Cloud Run) |
+| **Demo** | https://nexusmind-ai-uc.a.run.app |
 | **Hackathon** | Google "All Things Agentic" 2026 |
 
 ---
