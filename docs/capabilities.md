@@ -118,20 +118,20 @@ All API keys and secrets managed in one place:
 - **Auto-fill:** Watchers use saved credentials automatically
 - **Telegram setup:** Add bot token + chat ID for remote approvals
 
-### 11. Traceability Dashboard
+### 10. Traceability Dashboard
 Every step is logged and visible in real-time:
 - **Tool calls** (blue) — what the agent did
 - **Reasoning steps** (purple) — what the agent was thinking
 - **Approval gates** (yellow) — where it asked for permission
 - **Errors** (red) — what went wrong and how it recovered
 
-### 12. Persistent Memory (Firestore)
+### 11. Persistent Memory (Firestore)
 Tasks, reflections, and skills persist across restarts via Google Cloud Firestore:
 - Search past tasks by similarity
 - Recall lessons learned
 - Track what works and what doesn't
 
-### 13. Multi-Step Task Decomposition
+### 12. Multi-Step Task Decomposition
 Complex goals are automatically broken into manageable steps:
 - Dependencies are resolved (step before step B)
 - Each step maps to a specific tool

@@ -251,6 +251,22 @@ Manage all API keys and secrets in one place via the Dashboard:
 Credentials are stored in `.env` (gitignored) and never exposed to the frontend in plain text.
 
 ---
+
+## API Reference
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/` | Dashboard (live UI) |
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/agent/status` | Agent status (model, tools, memory) |
+| `POST` | `/api/tasks` | Submit a new task |
+| `GET` | `/api/tasks` | List recent tasks |
+| `GET` | `/api/tasks/{id}` | Get task details + trace |
+| `GET` | `/api/tasks/live/{id}` | Poll live task updates |
+| `DELETE` | `/api/tasks/{id}` | Delete a task |
+| `GET` | `/api/approvals` | List pending approvals |
+| `POST` | `/api/approvals/{id}` | Approve or deny an action |
+| `GET` | `/api/memory` | Search/list memory entries |
 | `GET` | `/api/watchers` | List active event watchers |
 | `POST` | `/api/watchers` | Create a new watcher |
 | `POST` | `/api/watchers/{id}/start` | Start a stopped watcher |
@@ -424,31 +440,6 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 | `EMAIL_PASSWORD` | No | App password for email |
 | `API_PORT` | No | API port (default: `8080`) |
 | `ENVIRONMENT` | No | `development` or `production` |
-
----
-
-## Roadmap
-
-- [x] Core agent loop with Gemini integration
-- [x] Multi-key API rotation
-- [x] Task decomposition planner
-- [x] 10 registered tools (web, files, code, data)
-- [x] Self-correction retry loops
-- [x] Human-in-the-loop approval
-- [x] Self-improvement reflection
-- [x] Google ADK integration
-- [x] REST API + traceability dashboard
-- [x] Cloud Run deployment configs
-- [x] Firestore persistence layer
-- [x] Pub/Sub event routing
-- [x] Always-awake watcher system (11 platforms)
-- [x] Unified credentials settings page
-- [x] Smart approval system (auto-approve safe commands)
-- [x] Telegram bot (remote approvals from phone)
-- [x] Task notifications via Telegram
-- [ ] Live demo on Google Cloud
-- [ ] Demo video recording
-- [ ] Devpost submission
 
 ---
 
