@@ -5,6 +5,7 @@ Auto-switches when Google's 100/day limit is hit.
 
 from __future__ import annotations
 
+import html
 import re
 import time
 from urllib.parse import unquote
@@ -147,7 +148,9 @@ async def _search_duckduckgo(query: str, num_results: int) -> str:
         for i, (url, title) in enumerate(links[:num_results]):
             snippet = snippets[i].strip() if i < len(snippets) else ""
             snippet = re.sub(r"<[^>]+>", "", snippet).strip()
+            snippet = html.unescape(snippet)
             title = re.sub(r"<[^>]+>", "", title).strip()
+            title = html.unescape(title)
             url = _clean_ddg_url(url)
             if title and url:
                 results.append(f"{title}\n{snippet}\n{url}")
