@@ -193,12 +193,20 @@ async def web_search(query: str, num_results: int = 5, **_) -> ToolResult:
 
 @register_tool("fetch_url")
 async def fetch_url(url: str, max_chars: int = 5000, **_) -> ToolResult:
-    """Fetch and extract text content from a URL."""
+    """Fetch and extract text content from a URL with retry fallback."""
     try:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "NexusMind/1.0"})
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        # Try with longer timeout and browser headers
+        async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
             resp.raise_for_status()
 
             content = resp.text
@@ -213,4 +221,22 @@ async def fetch_url(url: str, max_chars: int = 5000, **_) -> ToolResult:
                 metadata={"content_type": resp.headers.get("content-type", ""), "status": resp.status_code},
             )
     except Exception as exc:
+        # If main attempt fails, try Google cache as fallback
+        try:
+            cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(cache_url, headers=headers)
+                if resp.status_code == 200:
+                    content = resp.text
+                    content = re.sub(r"<script[^>]*>.*?</script>", "", content, flags=re.DOTALL)
+                    content = re.sub(r"<style[^>]*>.*?</style>", "", content, flags=re.DOTALL)
+                    content = re.sub(r"<[^>]+>", " ", content)
+                    content = re.sub(r"\s+", " ", content).strip()
+                    return ToolResult(
+                        success=True,
+                        output=content[:max_chars],
+                        metadata={"content_type": "google_cache", "status": 200},
+                    )
+        except Exception:
+            pass
         return ToolResult(success=False, output="", error=str(exc))

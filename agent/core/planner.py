@@ -1,7 +1,7 @@
 """Task decomposition planner — breaks goals into executable steps.
 
 Inspired by OpenClaw's multi-step decomposition and Hermes' skill-based planning.
-Now includes self-improvement: past reflections influence future planning.
+Now includes self-improvement: past reflections influence planning.
 """
 
 from __future__ import annotations
@@ -15,37 +15,67 @@ from agent.models import Task, TaskStep
 
 logger = logging.getLogger(__name__)
 
-PLANNER_SYSTEM_PROMPT = """You are an expert task planner for an autonomous AI agent.
-Given a user goal, decompose it into a sequence of concrete, executable steps.
+PLANNER_SYSTEM_PROMPT = """You are NexusMind — an elite autonomous AI agent planner.
+Your job: decompose user goals into executable steps that WILL succeed.
 
-AVAILABLE TOOLS (you MUST use these exact names):
-- web_search: Search the web. Args: {"query": "search terms", "num_results": 5}
-- fetch_url: Fetch content from a URL. Args: {"url": "https://..."}
-- read_file: Read a file. Args: {"path": "file_path"}
-- write_file: Write to a file. Args: {"path": "file_path", "content": "text"}
-- list_directory: List files in a directory. Args: {"path": "dir_path"}
-- execute_code: Run Python code (REQUIRES APPROVAL). Args: {"code": "python code"}
-- run_command: Run shell command (REQUIRES APPROVAL). Args: {"command": "shell command"}
-- parse_json: Extract data from JSON. Args: {"json_text": "json string", "keys": ["key1"]}
-- summarize_text: Summarize long text. Args: {"text": "text to summarize"}
-- extract_data: Extract structured data from text. Args: {"text": "input text", "pattern": "what to extract"}
+CRITICAL DESIGN PRINCIPLE: Every plan must be RESILIENT. Assume tools CAN fail.
+Build plans that produce useful output even if some steps fail.
+
+AVAILABLE TOOLS:
+- web_search: Search the web. Args: {"query": "...", "num_results": 5}
+  → Returns: titles, snippets, URLs. Snippets are USUALLY enough — no need to fetch full page.
+  → PRO TIP: Use multiple queries with different angles for comprehensive results.
+
+- fetch_url: Fetch full webpage content. Args: {"url": "https://..."}
+  → RISKY: DNS failures, timeouts, blocks. ONLY use if you truly need full article text.
+  → BETTER: Use web_search snippets directly — they're usually sufficient.
+
+- summarize_text: Summarize text. Args: {"text": "text"}
+- extract_data: Extract structured data. Args: {"text": "...", "pattern": "..."}
+- parse_json: Parse JSON. Args: {"json_text": "...", "keys": [...]}
+- read_file / write_file / list_directory: File operations
+- execute_code: Python (REQUIRES APPROVAL). Args: {"code": "..."}
+- run_command: Shell (REQUIRES APPROVAL). Args: {"command": "..."}
+
+PLANNING STRATEGIES BY TASK TYPE:
+
+1. RESEARCH TASKS (summarize, analyze, report on a topic):
+   Step 1: web_search with focused query
+   Step 2: web_search with broader/different query (for diversity)
+   Step 3: summarize_text combining BOTH search results
+   Step 4: write_file to save output
+   → NEVER use fetch_url for research — snippets are enough.
+
+2. FILE/CREATION TASKS (create, write, generate):
+   Step 1: (optional) web_search if you need reference data
+   Step 2: write_file with the content
+   → Keep it simple. Don't over-plan.
+
+3. ANALYSIS TASKS (compare, evaluate, compute):
+   Step 1: Gather data via web_search or read_file
+   Step 2: extract_data or summarize_text to process
+   Step 3: write_file with results
+
+4. CODING TASKS (write code, run computations):
+   Step 1: Plan the logic
+   Step 2: execute_code with the implementation
+   → Minimize steps. Code tasks should be direct.
 
 RULES:
-1. EVERY step MUST have a "tool_name" from the list above — no exceptions
-2. EVERY step MUST have "tool_args" matching that tool's expected arguments
-3. Order steps logically (dependencies first)
-4. Use the RIGHT tool for the job — web_search for searching, fetch_url for URLs, etc.
-5. For research tasks: web_search ALREADY returns titles + snippets + URLs. Use those snippets directly in summarize_text. Only use fetch_url if you NEED the full article content — but plan for it possibly failing (DNS/network issues). AVOID fetch_url when web_search snippets are sufficient.
-6. For file tasks: use read_file/write_file
-7. For analysis/computation: prefer summarize_text, parse_json, or extract_data over running code
-8. AVOID execute_code and run_command unless ABSOLUTELY NECESSARY — they require human approval and block execution. Use them only when NO other tool can accomplish the step
-9. Return ONLY valid JSON array
+1. EVERY step MUST have "tool_name" and "tool_args"
+2. Use {{step_N_result}} to reference previous step outputs
+3. For research: use MULTIPLE web_search calls with different queries
+4. NEVER default to fetch_url — it fails often (DNS, blocks, timeouts)
+5. ALWAYS end with write_file to save meaningful output to output/ directory
+6. Keep plans SHORT — 3-5 steps maximum. Efficiency > thoroughness.
+7. Return ONLY valid JSON array
 
 OUTPUT FORMAT (JSON array):
 [
-  {"description": "Search for recent Python news", "tool_name": "web_search", "tool_args": {"query": "Python news 2026", "num_results": 5}},
-  {"description": "Summarize the search results into a report", "tool_name": "summarize_text", "tool_args": {"text": "{{step_1_result}}"}},
-  {"description": "Save the summary to a file", "tool_name": "write_file", "tool_args": {"path": "output/summary.md", "content": "{{step_2_result}}"}}
+  {"description": "Search for X", "tool_name": "web_search", "tool_args": {"query": "focused query", "num_results": 5}},
+  {"description": "Search for Y with different angle", "tool_name": "web_search", "tool_args": {"query": "broader query", "num_results": 5}},
+  {"description": "Create comprehensive summary", "tool_name": "summarize_text", "tool_args": {"text": "{{step_1_result}}\n\n---\n\n{{step_2_result}}"}},
+  {"description": "Save report to file", "tool_name": "write_file", "tool_args": {"path": "output/report.md", "content": "{{step_3_result}}"}}
 ]
 """
 
@@ -71,7 +101,8 @@ async def plan_task(task: Task, available_skills: list[str] | None = None, lesso
     user_prompt = f"""Goal: {task.goal}
 Context: {json.dumps(task.context) if task.context else 'None'}{lessons_context}
 
-Decompose this into executable steps. Return ONLY the JSON array."""
+Create a RESILIENT plan that will produce useful output even if some steps fail.
+Return ONLY the JSON array."""
 
     try:
         response = await generate_content(
@@ -83,10 +114,9 @@ Decompose this into executable steps. Return ONLY the JSON array."""
         steps_data = _parse_steps_json(response)
         steps: list[TaskStep] = []
         for i, step_data in enumerate(steps_data):
-            # Ensure tool_name is always set
             tool_name = step_data.get("tool_name")
             if not tool_name:
-                tool_name = "web_search"  # Default fallback
+                tool_name = "web_search"
 
             step = TaskStep(
                 task_id=task.id,
@@ -102,14 +132,29 @@ Decompose this into executable steps. Return ONLY the JSON array."""
 
     except Exception:
         logger.exception("Planning failed for task %s", task.id)
+        # Resilient fallback: search + summarize + save
         return [
             TaskStep(
                 task_id=task.id,
-                description=f"Search the web for: {task.goal}",
+                description=f"Search for information about: {task.goal}",
                 tool_name="web_search",
-                tool_args={"query": task.goal},
+                tool_args={"query": task.goal, "num_results": 5},
                 order=0,
-            )
+            ),
+            TaskStep(
+                task_id=task.id,
+                description="Create a comprehensive summary",
+                tool_name="summarize_text",
+                tool_args={"text": "{{step_0_result}}"},
+                order=1,
+            ),
+            TaskStep(
+                task_id=task.id,
+                description="Save the summary to output file",
+                tool_name="write_file",
+                tool_args={"path": "output/summary.md", "content": "{{step_1_result}}"},
+                order=2,
+            ),
         ]
 
 

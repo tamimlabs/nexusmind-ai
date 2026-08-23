@@ -296,7 +296,7 @@ def get_pending_approvals() -> list[dict[str, str]]:
 # ── Self-Correction with Gemini ───────────────────────────────────
 
 async def self_correct(error: str, tool_name: str, original_args: dict[str, Any]) -> dict[str, Any] | None:
-    """Analyze a failed tool call with Gemini and suggest corrected args.
+    """Analyze a failed tool call and suggest a fix or alternative approach.
 
     Returns:
         Corrected args dict, or None if no correction possible.
@@ -304,20 +304,28 @@ async def self_correct(error: str, tool_name: str, original_args: dict[str, Any]
     """
     from agent.core.gemini_client import generate_content
 
-    prompt = f"""A tool call failed. Analyze the error and suggest corrected arguments.
+    prompt = f"""A tool call failed. Your job is to find a WORKING alternative.
 
-Tool: {tool_name}
+Failed tool: {tool_name}
 Original args: {original_args}
 Error: {error}
 
-Return ONLY a JSON object with the corrected arguments. Same keys, corrected values.
-If the error is unrecoverable (e.g. file doesn't exist, permission denied), return null."""
+ALTERNATIVE STRATEGIES:
+- If fetch_url failed (DNS/network): Switch to web_search with the same topic
+- If web_search failed (CAPTCHA/blocked): Try a different query phrasing
+- If summarize_text got empty input: Return a request to skip (null)
+- If a tool keeps failing: Suggest a completely different approach
+
+Return ONLY one of:
+1. A JSON object with corrected args for the SAME tool
+2. A JSON object with "switch_to": "tool_name" and new args for an ALTERNATIVE tool
+3. null if truly unrecoverable"""
 
     try:
         response = await generate_content(
-            system="You are a debugging assistant. Be precise. Return only valid JSON.",
+            system="You are a debugging assistant. Be creative with alternatives. Return only valid JSON.",
             user=prompt,
-            temperature=0.2,
+            temperature=0.3,
             max_tokens=500,
         )
         response = response.strip()
@@ -330,7 +338,7 @@ If the error is unrecoverable (e.g. file doesn't exist, permission denied), retu
             return None
         corrected = json.loads(response)
         if isinstance(corrected, dict):
-            logger.info("Self-correction: adjusted args for %s", tool_name)
+            logger.info("Self-correction: adjusted approach for %s → %s", tool_name, corrected.get("switch_to", "same tool"))
             return corrected
     except Exception:
         logger.debug("Self-correction failed for %s", tool_name)
@@ -407,8 +415,13 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
             if attempt <= MAX_RETRIES:
                 corrected = await self_correct(last_error, step.tool_name, current_args)
                 if corrected:
+                    # Check if self-correction suggests switching tools
+                    switch_to = corrected.pop("switch_to", None)
+                    if switch_to and switch_to in _tool_registry:
+                        tool = _tool_registry[switch_to]
+                        step.tool_name = switch_to
+                        logger.info("Switching from %s to %s (attempt %d)", step.tool_name, switch_to, attempt + 1)
                     current_args.update(corrected)
-                    logger.info("Retrying %s with corrected args (attempt %d)", step.tool_name, attempt + 1)
                     continue
                 break  # No correction possible
 
@@ -420,6 +433,11 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
         if attempt <= MAX_RETRIES:
             corrected = await self_correct(last_error, step.tool_name, current_args)
             if corrected:
+                switch_to = corrected.pop("switch_to", None)
+                if switch_to and switch_to in _tool_registry:
+                    tool = _tool_registry[switch_to]
+                    step.tool_name = switch_to
+                    logger.info("Switching from %s to %s (attempt %d)", step.tool_name, switch_to, attempt + 1)
                 current_args.update(corrected)
                 continue
             break
