@@ -40,6 +40,17 @@ class TaskPriority(str, Enum):
     CRITICAL = "critical"
 
 
+class TaskMode(str, Enum):
+    """How a task was initiated / how it should run.
+
+    ONE_SHOT: User-initiated, runs once until completed or failed.
+    EVENT_DRIVEN: Triggered by an event watcher; may recur as new events arrive.
+    """
+
+    ONE_SHOT = "one_shot"
+    EVENT_DRIVEN = "event_driven"
+
+
 class Task(BaseModel):
     """Represents a user-submitted task for the agent to handle."""
 
@@ -47,6 +58,7 @@ class Task(BaseModel):
     goal: str = Field(..., description="Natural language description of what to accomplish")
     priority: TaskPriority = TaskPriority.MEDIUM
     status: TaskStatus = TaskStatus.PENDING
+    task_mode: TaskMode = TaskMode.ONE_SHOT
     context: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -99,3 +111,33 @@ class SkillDefinition(BaseModel):
     examples: list[str] = Field(default_factory=list)
     success_count: int = 0
     failure_count: int = 0
+
+
+class WatcherConfig(BaseModel):
+    """Configuration for an event watcher."""
+
+    id: str = Field(..., description="Unique identifier for the watcher")
+    type: str = Field(..., description="Watcher type, e.g. 'github'")
+    interval_seconds: int = Field(default=300, ge=30, description="Polling interval in seconds")
+    enabled: bool = True
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Type-specific config (repo, token, watch_prs, etc.)",
+    )
+
+
+class WatcherState(BaseModel):
+    """Runtime/persisted state for a watcher instance."""
+
+    watcher_id: str
+    type: str = "unknown"
+    running: bool = False
+    enabled: bool = True
+    last_check: datetime | None = None
+    events_processed: int = 0
+    processed_ids: list[str] = Field(
+        default_factory=list,
+        description="Recently seen external event IDs, used for deduplication",
+    )
+    error: str | None = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

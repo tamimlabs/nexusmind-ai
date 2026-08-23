@@ -1,0 +1,148 @@
+"""Email watcher - monitors an IMAP inbox for new emails.
+
+Token-efficient: only calls Gemini when new emails are detected.
+"""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import email
+import imaplib
+import logging
+from email.header import decode_header
+from email.utils import parseaddr
+from typing import Any
+
+from agent.watchers.base import BaseWatcher
+
+logger = logging.getLogger(__name__)
+
+
+class EmailWatcher(BaseWatcher):
+    """Watch an IMAP inbox for new (or unread) emails."""
+
+    MAX_FETCH_PER_CHECK = 20
+
+    def __init__(self, watcher_id: str, config: dict[str, Any]):
+        super().__init__(watcher_id, config)
+        self.imap_server = config.get("imap_server", "imap.gmail.com")
+        self.email_address = config.get("email", "")
+        self.password = config.get("password", "")  # App password (not account password)
+        self.folder = config.get("folder", "INBOX")
+        self.watch_unread = config.get("watch_unread", True)
+        self._seen_message_ids: set[str] = set()
+
+    @staticmethod
+    def _decode_subject(raw_subject: str | None) -> str:
+        """Decode RFC 2047 encoded email subjects."""
+        if not raw_subject:
+            return ""
+        parts: list[str] = []
+        for chunk, charset in decode_header(raw_subject):
+            if isinstance(chunk, bytes):
+                parts.append(chunk.decode(charset or "utf-8", errors="replace"))
+            else:
+                parts.append(chunk)
+        return "".join(parts)
+
+    def _get_body_preview(self, msg: email.message.Message) -> str:
+        """Extract a plain-text preview of the email body."""
+        body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                disposition = str(part.get("Content-Disposition") or "")
+                if content_type == "text/plain" and "attachment" not in disposition:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        body = payload.decode(charset, errors="replace")
+                        break
+        else:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                charset = msg.get_content_charset() or "utf-8"
+                body = payload.decode(charset, errors="replace")
+        return " ".join(body.split())[:500]
+
+    def _fetch_emails_sync(self) -> list[dict[str, Any]]:
+        """Fetch recent emails via IMAP (blocking - run in a thread)."""
+        fetched: list[dict[str, Any]] = []
+        mail = imaplib.IMAP4_SSL(self.imap_server)
+        try:
+            mail.login(self.email_address, self.password)
+            mail.select(self.folder)
+
+            criteria = "(UNSEEN)" if self.watch_unread else "(ALL)"
+            status, data = mail.search(None, criteria)
+            if status != "OK" or not data or not data[0]:
+                return fetched
+
+            sequence_nums = data[0].split()[-self.MAX_FETCH_PER_CHECK:]
+            for seq_num in sequence_nums:
+                status, msg_data = mail.fetch(seq_num, "(RFC822)")
+                if status != "OK" or not msg_data or msg_data[0] is None:
+                    continue
+                raw_bytes = msg_data[0][1]
+                if not raw_bytes:
+                    continue
+                msg = email.message_from_bytes(raw_bytes)
+                sender_name, sender_addr = parseaddr(str(msg.get("From") or ""))
+                fetched.append({
+                    "message_id": str(msg.get("Message-ID") or seq_num.decode(errors="replace")),
+                    "sender_name": sender_name,
+                    "sender_addr": sender_addr,
+                    "subject": self._decode_subject(msg.get("Subject")),
+                    "date": str(msg.get("Date") or ""),
+                    "body_preview": self._get_body_preview(msg),
+                })
+        finally:
+            with contextlib.suppress(Exception):
+                mail.logout()
+        return fetched
+
+    async def check_for_events(self) -> list[dict[str, Any]]:
+        """Check the IMAP inbox for new emails."""
+        try:
+            fetched = await asyncio.to_thread(self._fetch_emails_sync)
+        except Exception as e:
+            logger.warning("Email check failed: %s", e)
+            return []
+
+        events: list[dict[str, Any]] = []
+        first_run = not self._seen_message_ids
+        for info in fetched:
+            message_id = info["message_id"]
+            self._seen_message_ids.add(message_id)
+            # On first run, seed seen IDs without emitting the whole inbox
+            if first_run:
+                continue
+            sender = info["sender_name"] or info["sender_addr"]
+            events.append({
+                "event_type": "email.received",
+                "external_id": message_id,
+                "payload": {
+                    "sender": sender,
+                    "sender_addr": info["sender_addr"],
+                    "subject": info["subject"],
+                    "date": info["date"],
+                    "body_preview": info["body_preview"],
+                },
+            })
+
+        if len(self._seen_message_ids) > 1000:
+            self._seen_message_ids = set(list(self._seen_message_ids)[-500:])
+
+        return events
+
+    async def process_event(self, event: dict[str, Any]) -> str | None:
+        """Convert an email event into an agent goal."""
+        payload = event["payload"]
+
+        if event["event_type"] == "email.received":
+            return (
+                f"New email from '{payload['sender']}': '{payload['subject']}'. "
+                f"Analyze and draft response."
+            )
+
+        return None

@@ -175,6 +175,9 @@
                 <li><a data-page="approvals" onclick="switchPage('approvals')">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M9 12l2 2 4-4"/></svg>
                     <span>Approvals</span><span class="nb" id="approvalCount">0</span></a></li>
+                <li><a data-page="watchers" onclick="switchPage('watchers')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    <span>Watchers</span><span class="nb" id="watcherCount">0</span></a></li>
                 <li><a data-page="settings" onclick="switchPage('settings')">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
                     <span>Settings</span></a></li>
@@ -222,7 +225,7 @@
 </div>
 
 <script>
-const S={tasks:[],selected:null,page:'tasks',rtab:'trace',autoRefresh:false,pollInterval:null,agentStatus:null,approvals:[],memory:[],memFilter:'all',liveEvents:[],liveTaskId:null,livePoll:null};
+const S={tasks:[],selected:null,page:'tasks',rtab:'trace',autoRefresh:false,pollInterval:null,agentStatus:null,approvals:[],memory:[],memFilter:'all',liveEvents:[],liveTaskId:null,livePoll:null,watchers:[]};
 
 function esc(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML}
 
@@ -240,9 +243,9 @@ function modalConfirm(title,msg){return new Promise(r=>{showModal({type:'danger'
 function modalAlert(title,msg,type){showModal({type:type||'info',title,message:msg,confirmText:'OK',cancelText:'',onConfirm(){}})}
 
 /* ── Navigation ───────────────────────────────────────────────── */
-function switchPage(p){S.page=p;document.querySelectorAll('.sb-nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===p)});document.getElementById('pageTitle').textContent={tasks:'Tasks',memory:'Memory',approvals:'Approvals',settings:'Settings'}[p];renderPage()}
+function switchPage(p){S.page=p;document.querySelectorAll('.sb-nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===p)});document.getElementById('pageTitle').textContent={tasks:'Tasks',memory:'Memory',approvals:'Approvals',watchers:'Watchers',settings:'Settings'}[p];renderPage()}
 function switchRTab(t){S.rtab=t;document.querySelectorAll('.rpanel-tab').forEach((tab,i)=>{tab.classList.toggle('active',(i===0&&t==='trace')||(i===1&&t==='thinking')||(i===2&&t==='approvals'))});renderRPanel()}
-function renderPage(){const c=document.getElementById('pageContent');if(S.page==='tasks')renderTasksPage(c);else if(S.page==='memory')renderMemoryPage(c);else if(S.page==='approvals')renderApprovalsPage(c);else if(S.page==='settings')renderSettingsPage(c)}
+function renderPage(){const c=document.getElementById('pageContent');if(S.page==='tasks')renderTasksPage(c);else if(S.page==='memory')renderMemoryPage(c);else if(S.page==='approvals')renderApprovalsPage(c);else if(S.page==='watchers')renderWatchersPage(c);else if(S.page==='settings')renderSettingsPage(c)}
 function renderRPanel(){const c=document.getElementById('rpanelBody');if(S.rtab==='trace')renderTracePanel(c);else if(S.rtab==='thinking')renderThinkingPanel(c);else renderApprovalPanel(c)}
 
 /* ── Task Views ───────────────────────────────────────────────── */
@@ -297,6 +300,57 @@ function renderSettingsPage(c){
   c.innerHTML=h;document.getElementById('settingModel').textContent=S.agentStatus?S.agentStatus.model:'--';
   const tl=document.getElementById('toolsList');if(S.agentStatus&&S.agentStatus.tools){tl.innerHTML=S.agentStatus.tools.map(t=>'<div class="tool-item"><span class="tool-name">'+esc(t.name)+'</span><span class="tool-risk '+t.risk+'">'+t.risk+'</span></div>').join('')}}
 
+/* ── Watchers Page ───────────────────────────────────────────── */
+const WATCHER_TYPES=[
+  {type:'github',label:'GitHub',desc:'Monitor repos for new PRs and issues',fields:[{name:'repo',label:'Repository (owner/repo)',placeholder:'octocat/Hello-World'},{name:'token',label:'Token (optional)',placeholder:'ghp_...',secret:true}]},
+  {type:'gitlab',label:'GitLab',desc:'Monitor projects for new MRs and issues',fields:[{name:'project_id',label:'Project ID',placeholder:'12345'},{name:'base_url',label:'Base URL',placeholder:'https://gitlab.com'},{name:'token',label:'Token',placeholder:'glpat-...',secret:true}]},
+  {type:'slack',label:'Slack',desc:'Monitor channels for new messages',fields:[{name:'token',label:'Bot Token',placeholder:'xoxb-...',secret:true},{name:'channels',label:'Channel IDs (comma-separated)',placeholder:'C0123,C4567'}]},
+  {type:'discord',label:'Discord',desc:'Monitor channels for new messages',fields:[{name:'token',label:'Bot Token',placeholder:'MTIz...',secret:true},{name:'guild_id',label:'Guild ID',placeholder:'123456789'},{name:'channel_ids',label:'Channel IDs (comma-separated)',placeholder:'123,456'}]},
+  {type:'jira',label:'Jira',desc:'Monitor projects for new issues',fields:[{name:'domain',label:'Domain',placeholder:'company.atlassian.net'},{name:'email',label:'Email',placeholder:'you@company.com'},{name:'token',label:'API Token',secret:true},{name:'project_key',label:'Project Key',placeholder:'PROJ'}]},
+  {type:'reddit',label:'Reddit',desc:'Monitor subreddits for new posts',fields:[{name:'subreddits',label:'Subreddits (comma-separated)',placeholder:'python,machinelearning'}]},
+  {type:'hackernews',label:'Hacker News',desc:'Monitor HN for new stories',fields:[{name:'top_n',label:'Items to check',placeholder:'10',type:'number'}]},
+  {type:'rss',label:'RSS Feed',desc:'Monitor any RSS/Atom feed',fields:[{name:'feed_url',label:'Feed URL',placeholder:'https://example.com/feed.xml'}]},
+  {type:'email',label:'Email (IMAP)',desc:'Monitor inbox for new emails',fields:[{name:'imap_server',label:'IMAP Server',placeholder:'imap.gmail.com'},{name:'email',label:'Email',placeholder:'you@gmail.com'},{name:'password',label:'App Password',secret:true}]},
+  {type:'cron',label:'Cron Schedule',desc:'Run a task on a fixed schedule',fields:[{name:'interval_seconds',label:'Interval (seconds)',placeholder:'300',type:'number'},{name:'goal',label:'Task Goal',placeholder:'Check server status'}]},
+  {type:'webhook',label:'Custom Webhook',desc:'Receive events via HTTP webhook',fields:[{name:'webhook_path',label:'Webhook Path',placeholder:'/webhook/custom'}]},
+];
+
+function renderWatchersPage(c){
+  let h='<div class="input-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div class="detail-label" style="margin:0">Active Watchers</div><button class="btn btn-p btn-sm" onclick="showCreateWatcher()">+ New Watcher</button></div>';
+  if(S.watchers.length===0){h+='<div class="empty">No active watchers<div class="empty-sub">Create a watcher to monitor events from any platform</div></div>'}
+  else{S.watchers.forEach(w=>{const running=w.running;h+='<div class="task-card" style="margin-bottom:8px"><div class="tc-row"><div style="flex:1"><div class="tc-goal">'+esc(w.type.toUpperCase())+' — '+esc(w.watcher_id)+'</div><div class="tc-meta"><span>'+(running?'<span style="color:var(--accent)">&#9679; Running</span>':'<span style="color:var(--red)">&#9679; Stopped</span>')+'</span><span>'+(w.events_processed||0)+' events</span><span>'+(w.last_check?'Last: '+new Date(w.last_check).toLocaleTimeString():'Never checked')+'</span></div></div><div class="tc-actions"><button class="btn '+(running?'btn-d':'btn-p')+' btn-sm" onclick="toggleWatcher(\''+esc(w.watcher_id)+'\','+(!running)+')">'+(running?'Stop':'Start')+'</button><button class="btn btn-d btn-sm" onclick="removeWatcher(\''+esc(w.watcher_id)+'\')">Remove</button></div></div></div>'})}
+  h+='</div>';c.innerHTML=h}
+
+function showCreateWatcher(){
+  const fields=WATCHER_TYPES.map(wt=>'<option value="'+wt.type+'">'+wt.label+'</option>').join('');
+  showModal({type:'info',title:'Create Watcher',message:'Select a platform to monitor.',confirmText:'Create',cancelText:'Cancel',onConfirm:()=>{}});
+  const modal=document.getElementById('modalRoot');if(!modal)return;
+  const desc=modal.querySelector('.modal-desc');
+  desc.innerHTML='<div style="margin-bottom:12px"><label style="font-size:12px;color:var(--t3);display:block;margin-bottom:4px">Platform</label><select id="watcherType" class="input-field" style="width:100%" onchange="updateWatcherFields()">'+fields+'</select></div><div id="watcherFields"></div><div style="margin-top:12px"><label style="font-size:12px;color:var(--t3);display:block;margin-bottom:4px">Interval (seconds)</label><input id="watcherInterval" class="input-field" style="width:100%" value="300" type="number" min="30"></div>';
+  updateWatcherFields();
+  const confirmBtn=document.getElementById('modalConfirmBtn');
+  confirmBtn.onclick=()=>{createWatcher();closeModal()}}
+
+function updateWatcherFields(){
+  const type=document.getElementById('watcherType').value;
+  const wt=WATCHER_TYPES.find(w=>w.type===type);if(!wt)return;
+  const container=document.getElementById('watcherFields');
+  container.innerHTML=wt.fields.map(f=>'<div style="margin-bottom:8px"><label style="font-size:12px;color:var(--t3);display:block;margin-bottom:4px">'+esc(f.label)+'</label><input id="wf_'+f.name+'" class="input-field" style="width:100%" placeholder="'+esc(f.placeholder||'')+'" '+(f.type==='number'?'type="number"':'')+(f.secret?'type="password"':'')+'></div>').join('')}
+
+async function createWatcher(){
+  const type=document.getElementById('watcherType').value;
+  const interval=parseInt(document.getElementById('watcherInterval').value)||300;
+  const wt=WATCHER_TYPES.find(w=>w.type===type);if(!wt)return;
+  const config={type:interval_seconds:interval};
+  wt.fields.forEach(f=>{const el=document.getElementById('wf_'+f.name);if(el&&el.value){config[f.name]=f.name==='channels'||f.name==='subreddits'||f.name==='channel_ids'?el.value.split(',').map(s=>s.trim()):el.value}});
+  try{await fetch('/api/watchers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,config})});refreshWatchers();modalAlert('Watcher Created',wt.label+' watcher is now monitoring for events.')}catch(e){modalAlert('Error',e.message,'error')}}
+
+async function toggleWatcher(id,start){const endpoint=start?'/api/watchers/'+id+'/start':'/api/watchers/'+id+'/stop';await fetch(endpoint,{method:'POST'});refreshWatchers()}
+
+async function removeWatcher(id){const ok=await modalConfirm('Remove Watcher','This will stop and permanently remove this watcher.');if(!ok)return;await fetch('/api/watchers/'+id,{method:'DELETE'});refreshWatchers()}
+
+async function refreshWatchers(){try{const res=await fetch('/api/watchers');S.watchers=await res.json();document.getElementById('watcherCount').textContent=S.watchers.length;if(S.page==='watchers')renderPage()}catch(e){}}
+
 /* ── Actions ──────────────────────────────────────────────────── */
 async function submitTask(){
   const inp=document.getElementById('goalInput');if(!inp)return;const goal=inp.value.trim();if(!goal)return;
@@ -333,7 +387,8 @@ async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/ap
 
 /* ── Init ─────────────────────────────────────────────────────── */
 setInterval(refreshApprovals,3000);
-document.addEventListener('DOMContentLoaded',()=>{renderPage();refreshAgentStatus();refreshApprovals();loadTasks()});
+setInterval(refreshWatchers,10000);
+document.addEventListener('DOMContentLoaded',()=>{renderPage();refreshAgentStatus();refreshApprovals();loadTasks();refreshWatchers()});
 </script>
 </body>
 </html>

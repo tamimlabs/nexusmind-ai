@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     agent_timeout_seconds: int = 300
     agent_memory_max_items: int = 1000
 
+    # --- Watchers (event-driven mode) ---
+    watcher_default_interval: int = 300  # 5 min between event checks
+    watcher_max_concurrent: int = 10
+
+    # --- GitHub ---
+    github_token: str = ""
+
     # --- API ---
     api_host: str = "0.0.0.0"
     api_port: int = 8080

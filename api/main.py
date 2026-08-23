@@ -19,10 +19,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent.config import settings
-from agent.core.executor import get_pending_approvals, resolve_approval, list_tools
+from agent.core.executor import get_pending_approvals, list_tools, resolve_approval
 from agent.core.memory import memory_store
 from agent.models import Task, TaskPriority, TaskStatus
 from agent.observability import create_trace, get_trace, list_traces
+from api.watcher_routes import router as watcher_router
 from cloud.pubsub.events import publish_task_event
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Event-driven watcher routes (always-awake agent)
+app.include_router(watcher_router)
+
+
+@app.on_event("startup")
+async def restore_watchers_on_startup():
+    """Restore persisted watchers on startup so the agent stays always-awake."""
+    try:
+        from agent.watchers.manager import restore_watchers
+        result = await restore_watchers()
+        logger.info("Watcher restoration complete: %s", result)
+    except ImportError:
+        logger.warning("Watcher manager unavailable; skipping watcher restoration")
+    except Exception:
+        logger.exception("Failed to restore watchers on startup")
 
 # Serve docs folder for logos
 docs_path = pathlib.Path(__file__).parent.parent / "docs"
@@ -405,6 +422,24 @@ async def list_memory(
         }
         for e in entries
     ]
+
+
+# ── Watchers ──────────────────────────────────────────────────────
+
+
+@app.post("/api/watchers/restore")
+async def restore_watchers_endpoint():
+    """Manually restore persisted watchers (also runs automatically on startup)."""
+    try:
+        from agent.watchers.manager import restore_watchers
+        result = await restore_watchers()
+        payload = result if isinstance(result, dict) else {"result": result}
+        return {"status": "restored", **payload}
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Watcher manager not available") from None
+    except Exception as exc:
+        logger.exception("Watcher restoration failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ── Webhook Receiver ──────────────────────────────────────────────
