@@ -119,19 +119,19 @@ class Orchestrator:
                 result = await execute_step(step, context)
                 context[f"step_{step.order}_result"] = result.output
                 if not result.success:
-                    task.status = TaskStatus.FAILED
-                    task.error = result.error or "Step failed"
-                    # Only store failures that are interesting (not trivial task failures)
-                    if not _is_trivial(task):
-                        self.memory.save_task_outcome(task.goal, task.error, success=False)
-                    await self._self_reflect(task)
-                    return task
+                    logger.warning("Step %d failed: %s — skipping and continuing", step.order, result.error)
+                    context[f"step_{step.order}_result"] = f"[Step skipped: {result.error}]"
+                    continue
 
             task.status = TaskStatus.COMPLETED
-            # Use the last step's result as the final result
+            # Use the last successful step's result as the final result
             if task.steps:
-                last_step = task.steps[-1]
-                task.result = last_step.result or "Task completed"
+                last_good = None
+                for s in reversed(task.steps):
+                    if s.status == StepStatus.SUCCESS:
+                        last_good = s
+                        break
+                task.result = (last_good.result if last_good else task.steps[-1].result) or "Task completed"
             else:
                 task.result = context.get("step_0_result", "Task completed")
             task.updated_at = datetime.now(UTC)
