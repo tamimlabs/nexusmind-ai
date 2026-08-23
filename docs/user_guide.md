@@ -260,3 +260,4 @@ Watchers let the agent monitor platforms and react to events automatically.
 ## Need Help?
 
 - Open an issue at: https://github.com/tamimlabs/nexusmind-ai/issues
+- Email: contact.tamimlabs@gmail.com
