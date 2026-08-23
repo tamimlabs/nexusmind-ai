@@ -21,7 +21,7 @@ from typing import Any
 from agent.core.executor import execute_step, list_tools, set_task_context
 from agent.core.memory import memory_store
 from agent.core.planner import plan_task
-from agent.models import Task, TaskStatus
+from agent.models import Task, TaskStatus, StepStatus
 
 logger = logging.getLogger(__name__)
 
