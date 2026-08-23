@@ -10,6 +10,10 @@ project_plan.md
 *.internal.md
 AGENTS.md
 
+# ----- Auto-generated watcher summaries -----
+*_summary.md
+data/watcher_state.json
+
 # ----- Downloaded Reference Code (never commit) -----
 openclaw-main/
 hermes-agent-main/
