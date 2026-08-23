@@ -41,9 +41,9 @@ Rules:
 - Write in clean, readable English""",
             user=f"Summarize this content:\n\n{text[:8000]}",
             temperature=0.3,
-            max_tokens=max_length * 2,
+            max_tokens=4000,
         )
-        return ToolResult(success=True, output=response[:3000])
+        return ToolResult(success=True, output=response[:8000])
     except Exception:
         # Fallback: extract key sentences
         sentences = [s.strip() for s in text.replace("\n", " ").split(".") if len(s.strip()) > 20]
