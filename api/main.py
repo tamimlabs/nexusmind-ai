@@ -12,7 +12,7 @@ import pathlib
 import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,8 +23,8 @@ from agent.core.executor import get_pending_approvals, list_tools, resolve_appro
 from agent.core.memory import memory_store
 from agent.models import Task, TaskPriority, TaskStatus
 from agent.observability import create_trace, get_trace, list_traces
-from api.watcher_routes import router as watcher_router
 from api.credentials_routes import router as credentials_router
+from api.watcher_routes import router as watcher_router
 from cloud.pubsub.events import publish_task_event
 
 logger = logging.getLogger(__name__)
@@ -380,6 +380,90 @@ async def resolve(step_id: str, req: ApprovalRequest):
     """Approve or deny a pending action."""
     resolve_approval(step_id, req.approved)
     return {"step_id": step_id, "status": "approved" if req.approved else "denied"}
+
+
+# ── Approval Mode ─────────────────────────────────────────────────
+
+
+@app.get("/api/approval-mode")
+async def get_approval_mode():
+    """Get current approval mode and Telegram status."""
+    from agent.telegram import get_config_status
+    return {
+        "mode": settings.approval_mode,
+        "telegram": get_config_status(),
+    }
+
+
+class ApprovalModeRequest(BaseModel):
+    mode: str  # "always", "smart", "never"
+
+
+@app.post("/api/approval-mode")
+async def set_approval_mode(req: ApprovalModeRequest):
+    """Set approval mode (always/smart/never)."""
+    if req.mode not in ("always", "smart", "never"):
+        raise HTTPException(status_code=400, detail="Mode must be 'always', 'smart', or 'never'")
+    # Update runtime setting
+    settings.approval_mode = req.mode
+    return {"mode": req.mode, "message": f"Approval mode set to {req.mode}"}
+
+
+# ── Telegram Webhook ──────────────────────────────────────────────
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """Receive Telegram updates (callback queries, messages).
+
+    Set this URL as your Telegram bot webhook:
+    https://your-domain.com/api/telegram/webhook
+    """
+    try:
+        body = await request.json()
+        from agent.telegram import process_update
+        await process_update(body)
+        return {"ok": True}
+    except Exception as exc:
+        logger.exception("Telegram webhook error")
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/telegram/setup")
+async def setup_telegram_webhook():
+    """Set up Telegram webhook automatically."""
+    import httpx
+
+    from agent.telegram import _get_api_url
+
+    if not settings.telegram_bot_token:
+        raise HTTPException(status_code=400, detail="Telegram bot token not configured")
+
+    # Determine webhook URL from request
+    webhook_url = f"https://nexusmind-ai-{settings.google_cloud_project}.a.run.app/api/telegram/webhook"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                _get_api_url("setWebhook"),
+                data={"url": webhook_url},
+            )
+            data = resp.json()
+            if data.get("ok"):
+                return {"status": "webhook_set", "url": webhook_url}
+            else:
+                raise HTTPException(status_code=500, detail=data.get("description", "Failed to set webhook"))
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to connect to Telegram: {exc}") from exc
+
+
+@app.get("/api/telegram/status")
+async def telegram_status():
+    """Get Telegram bot connection status."""
+    from agent.telegram import get_config_status, is_configured
+    status = get_config_status()
+    status["connected"] = is_configured()
+    return status
 
 
 # ── Traceability ──────────────────────────────────────────────────

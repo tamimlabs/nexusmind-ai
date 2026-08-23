@@ -298,10 +298,59 @@ function renderApprovalsPage(c){
   h+='</div>';c.innerHTML=h}
 
 function renderSettingsPage(c){
-  let h='<div class="input-card"><div class="setting-row"><div><div class="setting-label">Auto Refresh</div><div class="setting-desc">Poll agent status every 10 seconds</div></div><button class="toggle'+(S.autoRefresh?' on':'')+'" onclick="toggleAutoRefresh()"></button></div><div class="setting-row"><div><div class="setting-label">API Status</div><div class="setting-desc" id="apiStatus">Checking...</div></div><div style="display:flex;align-items:center;gap:6px"><div class="sdot on" id="apiDot"></div><span style="font-size:12px;color:var(--t3)" id="apiText">Connected</span></div></div><div class="setting-row"><div><div class="setting-label">Model</div><div class="setting-desc" id="settingModel">--</div></div></div></div>';
+  let h='<div class="input-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><div class="detail-label" style="margin:0">Approval Mode</div><div id="approvalModeStatus" style="font-size:11px;color:var(--t4)">Loading...</div></div>';
+  h+='<div style="display:flex;gap:8px;margin-bottom:12px">';
+  h+='<button class="btn btn-g btn-sm" id="modeSmart" onclick="setApprovalMode(\'smart\')">🧠 Smart</button>';
+  h+='<button class="btn btn-g btn-sm" id="modeAlways" onclick="setApprovalMode(\'always\')">🔔 Always Ask</button>';
+  h+='<button class="btn btn-g btn-sm" id="modeNever" onclick="setApprovalMode(\'never\')">⚡ Never</button>';
+  h+='</div>';
+  h+='<div style="font-size:11px;color:var(--t4);line-height:1.5">';
+  h+='<b>Smart:</b> Auto-approve safe commands (ls, cat, git status), ask only for dangerous ones<br>';
+  h+='<b>Always:</b> Ask for every high-risk tool (execute_code, run_command)<br>';
+  h+='<b>Never:</b> Auto-approve everything (fast but risky)';
+  h+='</div></div>';
+
+  h+='<div class="input-card"><div class="detail-label" style="margin-bottom:12px">Telegram (Remote Approvals)</div>';
+  h+='<div id="telegramStatus" style="font-size:12px;color:var(--t4);margin-bottom:12px">Loading...</div>';
+  h+='<div style="font-size:11px;color:var(--t4);line-height:1.5;margin-bottom:12px">';
+  h+='Approve/deny actions from your phone while the agent runs autonomously.';
+  h+='</div>';
+  h+='<div style="display:flex;gap:8px">';
+  h+='<button class="btn btn-g btn-sm" onclick="testTelegram()">Test Connection</button>';
+  h+='</div></div>';
+
+  h+='<div class="input-card"><div class="setting-row"><div><div class="setting-label">Auto Refresh</div><div class="setting-desc">Poll agent status every 10 seconds</div></div><button class="toggle'+(S.autoRefresh?' on':'')+'" onclick="toggleAutoRefresh()"></button></div><div class="setting-row"><div><div class="setting-label">API Status</div><div class="setting-desc" id="apiStatus">Checking...</div></div><div style="display:flex;align-items:center;gap:6px"><div class="sdot on" id="apiDot"></div><span style="font-size:12px;color:var(--t3)" id="apiText">Connected</span></div></div><div class="setting-row"><div><div class="setting-label">Model</div><div class="setting-desc" id="settingModel">--</div></div></div></div>';
   h+='<div class="input-card"><div class="detail-label" style="margin-bottom:12px">Registered Tools</div><div id="toolsList"></div></div>';
   c.innerHTML=h;document.getElementById('settingModel').textContent=S.agentStatus?S.agentStatus.model:'--';
-  const tl=document.getElementById('toolsList');if(S.agentStatus&&S.agentStatus.tools){tl.innerHTML=S.agentStatus.tools.map(t=>'<div class="tool-item"><span class="tool-name">'+esc(t.name)+'</span><span class="tool-risk '+t.risk+'">'+t.risk+'</span></div>').join('')}}
+  const tl=document.getElementById('toolsList');if(S.agentStatus&&S.agentStatus.tools){tl.innerHTML=S.agentStatus.tools.map(t=>'<div class="tool-item"><span class="tool-name">'+esc(t.name)+'</span><span class="tool-risk '+t.risk+'">'+t.risk+'</span></div>').join('')}
+  loadApprovalMode();
+  loadTelegramStatus();
+}
+
+async function loadApprovalMode(){
+  try{const res=await fetch('/api/approval-mode');const d=await res.json();
+  document.getElementById('modeSmart').className='btn btn-sm '+(d.mode==='smart'?'btn-p':'btn-g');
+  document.getElementById('modeAlways').className='btn btn-sm '+(d.mode==='always'?'btn-p':'btn-g');
+  document.getElementById('modeNever').className='btn btn-sm '+(d.mode==='never'?'btn-p':'btn-g');
+  document.getElementById('approvalModeStatus').textContent='Current: '+d.mode;
+  }catch(e){document.getElementById('approvalModeStatus').textContent='Failed to load'}}
+
+async function setApprovalMode(mode){
+  try{await fetch('/api/approval-mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+  loadApprovalMode();modalAlert('Approval Mode',`Set to: ${mode}`)}catch(e){modalAlert('Error',e.message,'error')}}
+
+async function loadTelegramStatus(){
+  try{const res=await fetch('/api/telegram/status');const d=await res.json();
+  const el=document.getElementById('telegramStatus');
+  if(d.configured){el.innerHTML='<span style="color:var(--accent)">✓ Configured</span> — Chat ID: '+esc(d.chat_id)}
+  else{el.innerHTML='<span style="color:var(--yellow)">⚠ Not configured</span> — Add bot token in Credentials page'}
+  }catch(e){document.getElementById('telegramStatus').textContent='Failed to load'}}
+
+async function testTelegram(){
+  try{const res=await fetch('/api/telegram/status');const d=await res.json();
+  if(!d.configured){modalAlert('Not Configured','Add your Telegram bot token and chat ID in the Credentials page first.');return}
+  modalAlert('Telegram','Bot is configured! Approval requests will be sent to your Telegram.')}
+  catch(e){modalAlert('Error',e.message,'error')}}
 
 /* ── Watchers Page ───────────────────────────────────────────── */
 const WATCHER_TYPES=[

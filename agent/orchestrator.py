@@ -15,11 +15,10 @@ Memory policy (inspired by Hermes Agent):
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from agent.config import settings
-from agent.core.executor import execute_step, list_tools
+from agent.core.executor import execute_step, list_tools, set_task_context
 from agent.core.memory import memory_store
 from agent.core.planner import plan_task
 from agent.models import Task, TaskStatus
@@ -82,7 +81,15 @@ class Orchestrator:
         """Process a task from start to finish."""
         logger.info("Handling task [%s]: %s", task.id, task.goal[:100])
         task.status = TaskStatus.PLANNING
-        task.updated_at = datetime.now(timezone.utc)
+        task.updated_at = datetime.now(UTC)
+
+        # Set task context for Telegram approval messages
+        set_task_context(task.id, task.goal)
+
+        # Notify via Telegram
+        from agent.telegram import is_configured, notify_task_started
+        if is_configured():
+            await notify_task_started(task.id, task.goal)
 
         try:
             # Check memory for similar past tasks (for context, not always needed)
@@ -127,13 +134,18 @@ class Orchestrator:
                 task.result = last_step.result or "Task completed"
             else:
                 task.result = context.get("step_0_result", "Task completed")
-            task.updated_at = datetime.now(timezone.utc)
+            task.updated_at = datetime.now(UTC)
 
             # Only store outcome if the task was non-trivial and had multiple steps
             if not _is_trivial(task) and len(task.steps) > 1:
                 self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
 
             await self._self_reflect(task)
+
+            # Notify via Telegram
+            from agent.telegram import is_configured, notify_task_completed
+            if is_configured():
+                await notify_task_completed(task.id, task.goal, task.result[:300])
 
             logger.info("Task [%s] completed successfully", task.id)
             return task
@@ -144,6 +156,12 @@ class Orchestrator:
             task.error = str(exc)
             if not _is_trivial(task):
                 self.memory.save_task_outcome(task.goal, str(exc)[:200], success=False)
+
+            # Notify via Telegram
+            from agent.telegram import is_configured, notify_task_failed
+            if is_configured():
+                await notify_task_failed(task.id, task.goal, str(exc)[:300])
+
             return task
 
     async def handle_goal(self, goal: str, context: dict[str, Any] | None = None) -> Task:

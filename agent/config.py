@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     agent_timeout_seconds: int = 300
     agent_memory_max_items: int = 1000
 
+    # --- Approval Mode ---
+    # "always" = ask for every high-risk tool (default, safe but annoying)
+    # "smart"  = auto-approve safe commands, ask only for dangerous ones (recommended)
+    # "never"  = auto-approve everything (risky but fast)
+    approval_mode: str = "smart"
+
+    # --- Telegram Bot (for remote approvals) ---
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_approval_timeout: int = 300  # 5 minutes before timeout
+
     # --- Watchers (event-driven mode) ---
     watcher_default_interval: int = 300  # 5 min between event checks
     watcher_max_concurrent: int = 10

@@ -5,7 +5,6 @@ Reads/writes .env file safely. Never exposes full secrets to frontend.
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +28,10 @@ CREDENTIAL_FIELDS: dict[str, list[dict[str, Any]]] = {
     "Web Search": [
         {"key": "GOOGLE_SEARCH_API_KEY", "label": "Google Search API Key", "placeholder": "AIza...", "secret": True},
         {"key": "GOOGLE_SEARCH_CX", "label": "Google Search CX", "placeholder": "a1b2c3d4e5", "secret": False},
+    ],
+    "Telegram (Remote Approvals)": [
+        {"key": "TELEGRAM_BOT_TOKEN", "label": "Bot Token", "placeholder": "123456:ABC-DEF...", "secret": True},
+        {"key": "TELEGRAM_CHAT_ID", "label": "Chat ID", "placeholder": "Your Telegram user ID", "secret": False},
     ],
     "GitHub": [
         {"key": "GITHUB_TOKEN", "label": "Personal Access Token", "placeholder": "ghp_...", "secret": True},
@@ -170,8 +173,7 @@ async def save_credentials(req: SaveCredentialsRequest):
     if to_save:
         _write_env(to_save)
         # Reload settings
-        from agent.config import Settings
-        global settings  # noqa: PLW0603
+        global settings
         # Force reload by creating new Settings instance
         os.environ.update(to_save)
 
