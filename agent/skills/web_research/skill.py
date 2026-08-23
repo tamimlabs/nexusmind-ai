@@ -111,21 +111,37 @@ async def _search_google(query: str, num_results: int) -> str | None:
 
 
 async def _search_duckduckgo(query: str, num_results: int) -> str:
-    """DuckDuckGo Lite — unlimited free fallback."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    """DuckDuckGo HTML search — free fallback with browser-like headers."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        # Try the HTML search page (more reliable than lite)
         resp = await client.get(
-            "https://lite.duckduckgo.com/lite/",
+            "https://html.duckduckgo.com/html/",
             params={"q": query},
-            headers={"User-Agent": "NexusMind/1.0"},
+            headers=headers,
         )
         resp.raise_for_status()
 
         text = resp.text
         results = []
 
+        # Check for CAPTCHA
+        if "challenge" in text.lower() and "duck" in text.lower() and len(text) < 5000:
+            # CAPTCHA detected, try lite version as fallback
+            resp = await client.get(
+                "https://lite.duckduckgo.com/lite/",
+                params={"q": query},
+                headers=headers,
+            )
+            text = resp.text
+
         # Extract result links: <a rel="nofollow" href="...">title</a>
         links = re.findall(r'<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>', text)
-        # Extract snippets in <td> tags (class="result-snippet")
+        # Extract snippets
         snippets = re.findall(r'class="result-snippet"[^>]*>(.*?)</td>', text, re.DOTALL)
 
         for i, (url, title) in enumerate(links[:num_results]):
@@ -133,13 +149,14 @@ async def _search_duckduckgo(query: str, num_results: int) -> str:
             snippet = re.sub(r"<[^>]+>", "", snippet).strip()
             title = re.sub(r"<[^>]+>", "", title).strip()
             url = _clean_ddg_url(url)
-            results.append(f"{title}\n{snippet}\n{url}")
+            if title and url:
+                results.append(f"{title}\n{snippet}\n{url}")
 
         if not results:
             # Fallback: plain text extraction
             for line in text.split("\n"):
                 line = re.sub(r"<[^>]+>", "", line).strip()
-                if line and len(line) > 20:
+                if line and len(line) > 20 and "duckduckgo" not in line.lower():
                     results.append(line)
                 if len(results) >= num_results * 2:
                     break
