@@ -24,6 +24,7 @@ from agent.core.memory import memory_store
 from agent.models import Task, TaskPriority, TaskStatus
 from agent.observability import create_trace, get_trace, list_traces
 from api.watcher_routes import router as watcher_router
+from api.credentials_routes import router as credentials_router
 from cloud.pubsub.events import publish_task_event
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,9 @@ app.add_middleware(
 
 # Event-driven watcher routes (always-awake agent)
 app.include_router(watcher_router)
+
+# Credentials management routes
+app.include_router(credentials_router)
 
 
 @app.on_event("startup")

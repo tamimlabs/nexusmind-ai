@@ -181,6 +181,9 @@
                 <li><a data-page="settings" onclick="switchPage('settings')">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
                     <span>Settings</span></a></li>
+                <li><a data-page="credentials" onclick="switchPage('credentials')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                    <span>Credentials</span><span class="nb" id="credCount">0</span></a></li>
             </ul>
         </div>
         <div class="sb-status">
@@ -243,9 +246,9 @@ function modalConfirm(title,msg){return new Promise(r=>{showModal({type:'danger'
 function modalAlert(title,msg,type){showModal({type:type||'info',title,message:msg,confirmText:'OK',cancelText:'',onConfirm(){}})}
 
 /* ── Navigation ───────────────────────────────────────────────── */
-function switchPage(p){S.page=p;document.querySelectorAll('.sb-nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===p)});document.getElementById('pageTitle').textContent={tasks:'Tasks',memory:'Memory',approvals:'Approvals',watchers:'Watchers',settings:'Settings'}[p];renderPage()}
+function switchPage(p){S.page=p;document.querySelectorAll('.sb-nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===p)});document.getElementById('pageTitle').textContent={tasks:'Tasks',memory:'Memory',approvals:'Approvals',watchers:'Watchers',settings:'Settings',credentials:'Credentials'}[p];renderPage()}
 function switchRTab(t){S.rtab=t;document.querySelectorAll('.rpanel-tab').forEach((tab,i)=>{tab.classList.toggle('active',(i===0&&t==='trace')||(i===1&&t==='thinking')||(i===2&&t==='approvals'))});renderRPanel()}
-function renderPage(){const c=document.getElementById('pageContent');if(S.page==='tasks')renderTasksPage(c);else if(S.page==='memory')renderMemoryPage(c);else if(S.page==='approvals')renderApprovalsPage(c);else if(S.page==='watchers')renderWatchersPage(c);else if(S.page==='settings')renderSettingsPage(c)}
+function renderPage(){const c=document.getElementById('pageContent');if(S.page==='tasks')renderTasksPage(c);else if(S.page==='memory')renderMemoryPage(c);else if(S.page==='approvals')renderApprovalsPage(c);else if(S.page==='watchers')renderWatchersPage(c);else if(S.page==='settings')renderSettingsPage(c);else if(S.page==='credentials')renderCredentialsPage(c)}
 function renderRPanel(){const c=document.getElementById('rpanelBody');if(S.rtab==='trace')renderTracePanel(c);else if(S.rtab==='thinking')renderThinkingPanel(c);else renderApprovalPanel(c)}
 
 /* ── Task Views ───────────────────────────────────────────────── */
@@ -350,6 +353,53 @@ async function toggleWatcher(id,start){const endpoint=start?'/api/watchers/'+id+
 async function removeWatcher(id){const ok=await modalConfirm('Remove Watcher','This will stop and permanently remove this watcher.');if(!ok)return;await fetch('/api/watchers/'+id,{method:'DELETE'});refreshWatchers()}
 
 async function refreshWatchers(){try{const res=await fetch('/api/watchers');S.watchers=await res.json();document.getElementById('watcherCount').textContent=S.watchers.length;if(S.page==='watchers')renderPage()}catch(e){}}
+
+/* ── Credentials Page ───────────────────────────────────────── */
+let S_creds={};
+async function renderCredentialsPage(c){
+  c.innerHTML='<div class="loading-bar"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Loading credentials...</span></div>';
+  try{const res=await fetch('/api/credentials');S_creds=await res.json();renderCredContent(c)}
+  catch(e){c.innerHTML='<div class="empty">Failed to load credentials</div>'}}
+
+function renderCredContent(c){
+  let total=0,configured=0;
+  Object.values(S_creds).forEach(fields=>{fields.forEach(f=>{total++;if(f.configured)configured++})});
+  document.getElementById('credCount').textContent=configured+'/'+total;
+
+  let h='<div class="input-card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="detail-label" style="margin:0">API Keys & Credentials</div><div style="font-size:12px;color:var(--t4);margin-top:4px">'+configured+' of '+total+' configured</div></div><button class="btn btn-p btn-sm" onclick="saveAllCredentials()">Save All</button></div></div>';
+
+  Object.entries(S_creds).forEach(([category,fields])=>{
+    h+='<div class="input-card" style="margin-bottom:12px"><div class="detail-label" style="margin-bottom:12px">'+esc(category)+'</div>';
+    fields.forEach(f=>{
+      const id='cred_'+f.key;
+      const val=f.configured?f.value:'';
+      const ph=f.configured?'* * * * (saved, leave empty to keep)':f.placeholder;
+      h+='<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><label style="font-size:12px;color:var(--t3)">'+esc(f.label)+'</label>';
+      if(f.configured)h+='<span style="font-size:10px;color:var(--accent);font-weight:600">&#10003; SAVED</span>';
+      h+='</div><input id="'+id+'" class="input-field" style="width:100%" placeholder="'+esc(ph)+'" '+(f.secret?'type="password"':'')+' data-key="'+esc(f.key)+'" data-secret="'+f.secret+'" onfocus="if(this.value&&this.dataset.secret==='true')this.value=\'\'" onblur="if(!this.value&&this.dataset.wasSaved===\'true\')this.value=\'* * * *\'"></div>';
+    });
+    h+='</div>';
+  });
+  c.innerHTML=h;
+
+  // Mark saved fields
+  Object.values(S_creds).forEach(fields=>fields.forEach(f=>{
+    if(f.configured){const el=document.getElementById('cred_'+f.key);if(el)el.dataset.wasSaved='true'}
+  }));
+}
+
+async function saveAllCredentials(){
+  const creds={};
+  document.querySelectorAll('[id^="cred_"]').forEach(el=>{
+    const key=el.dataset.key;
+    const val=el.value.trim();
+    if(val&&!val.startsWith('*'))creds[key]=val;
+  });
+  if(Object.keys(creds).length===0){modalAlert('Nothing to save','Enter new values to update credentials.');return}
+  try{await fetch('/api/credentials',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({credentials:creds})});modalAlert('Saved',Object.keys(creds).length+' credential(s) saved to .env');renderCredentialsPage(document.getElementById('pageContent'))}
+  catch(e){modalAlert('Error',e.message,'error')}}
+
+async function refreshCredentials(){try{await fetch('/api/credentials')}catch(e){}}
 
 /* ── Actions ──────────────────────────────────────────────────── */
 async function submitTask(){
