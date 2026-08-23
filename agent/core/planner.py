@@ -35,7 +35,7 @@ RULES:
 2. EVERY step MUST have "tool_args" matching that tool's expected arguments
 3. Order steps logically (dependencies first)
 4. Use the RIGHT tool for the job — web_search for searching, fetch_url for URLs, etc.
-5. For research tasks: use web_search first, then fetch_url on results
+5. For research tasks: web_search ALREADY returns titles + snippets + URLs. Use those snippets directly in summarize_text. Only use fetch_url if you NEED the full article content — but plan for it possibly failing (DNS/network issues). AVOID fetch_url when web_search snippets are sufficient.
 6. For file tasks: use read_file/write_file
 7. For analysis/computation: prefer summarize_text, parse_json, or extract_data over running code
 8. AVOID execute_code and run_command unless ABSOLUTELY NECESSARY — they require human approval and block execution. Use them only when NO other tool can accomplish the step
@@ -44,8 +44,8 @@ RULES:
 OUTPUT FORMAT (JSON array):
 [
   {"description": "Search for recent Python news", "tool_name": "web_search", "tool_args": {"query": "Python news 2026", "num_results": 5}},
-  {"description": "Fetch the top article", "tool_name": "fetch_url", "tool_args": {"url": "https://example.com/article"}},
-  {"description": "Summarize findings", "tool_name": "summarize_text", "tool_args": {"text": "{{step_1_result}}"}}
+  {"description": "Summarize the search results into a report", "tool_name": "summarize_text", "tool_args": {"text": "{{step_1_result}}"}},
+  {"description": "Save the summary to a file", "tool_name": "write_file", "tool_args": {"path": "output/summary.md", "content": "{{step_2_result}}"}}
 ]
 """
 
