@@ -14,6 +14,7 @@ AGENTS.md
 *_summary.md
 *_summary.txt
 data/watcher_state.json
+output/
 
 # ----- Downloaded Reference Code (never commit) -----
 openclaw-main/
