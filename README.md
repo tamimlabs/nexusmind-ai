@@ -1,12 +1,8 @@
 <div align="center">
 
-<table>
-<tr>
-<td align="center" style="background: rgba(0,0,0,0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-radius: 16px; padding: 24px 48px; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.4);">
-<img src="docs/nexusmind-dark-full.png" alt="NexusMind AI" width="400" style="filter: drop-shadow(0 0 20px rgba(66,133,244,0.3));" />
-</td>
-</tr>
-</table>
+<div style="display: inline-block; background: rgba(0,0,0,0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-radius: 20px; padding: 24px 48px; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.4);">
+<img src="docs/nexusmind-dark-full.png" alt="NexusMind AI" width="400" style="border-radius: 12px; filter: drop-shadow(0 0 20px rgba(66,133,244,0.3));" />
+</div>
 
 ### Autonomous Task-Execution Agent on Google Cloud
 
