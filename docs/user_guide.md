@@ -103,13 +103,37 @@ python -m api.main
 
 ### Approve Risky Actions
 
-Sometimes the agent needs to run code or shell commands. When this happens:
+The agent has a **Smart Approval** system that decides when to ask you:
 
-1. The **Approvals** tab will show a red badge
-2. Click the **Approvals** tab
-3. You'll see what the agent wants to do
-4. Click **Approve** or **Deny**
-5. The agent continues or stops based on your choice
+**Auto-approved (safe) — no approval needed:**
+- `ls`, `cat`, `head`, `tail`, `grep`, `find`
+- `git status`, `git log`, `git diff`
+- `pip list`, `pip show`
+- Read-only Python scripts
+
+**Always asks (dangerous):**
+- `rm -rf`, `sudo`, `chmod 777`
+- `eval`, `exec`, pipe to bash
+- `deploy`, `transfer_funds`
+
+**3 Approval Modes (Settings page):**
+- **Smart** (default) — Auto-approve safe, ask for dangerous
+- **Always** — Ask for every high-risk tool
+- **Never** — Auto-approve everything
+
+### Approve from Your Phone (Telegram Bot)
+
+Instead of watching the dashboard, you can approve from Telegram:
+
+1. Go to **Credentials** page
+2. Find **Telegram (Remote Approvals)**
+3. Add your bot token (from @BotFather) and chat ID (from @userinfobot)
+4. Click **Save All**
+
+Now when the agent needs approval:
+- You get a message on Telegram with ✅/❌ buttons
+- Tap to approve or deny
+- Agent continues automatically
 
 ### View Results
 
@@ -156,6 +180,7 @@ Watchers let the agent monitor platforms and react to events automatically.
 - **AI & LLM** — Gemini API keys
 - **Google Cloud** — Project ID, region
 - **Web Search** — Google Search API key
+- **Telegram** — Bot token + chat ID (for remote approvals)
 - **GitHub** — Personal access token
 - **GitLab** — Token, base URL
 - **Slack** — Bot token

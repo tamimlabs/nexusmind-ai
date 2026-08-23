@@ -54,12 +54,23 @@ When a tool fails, NexusMind doesn't give up. It:
 > **Agent thinks:** "The file path might be wrong. Let me list the directory first."
 > **Step 2 retries:** Lists files → finds correct path → continues successfully
 
-### 4. Human-in-the-Loop Approval
-High-risk actions (code execution, shell commands) require explicit human approval. The agent:
-- Pauses execution
-- Shows what it wants to do and why
-- Waits for one-click Approve/Reject
-- Continues or adjusts based on your decision
+### 4. Human-in-the-Loop Approval (Smart + Telegram)
+High-risk actions require human approval, but with **smart logic**:
+
+**Smart Approval (default):**
+- Auto-approve safe commands (`ls`, `cat`, `git status`)
+- Only ask for dangerous commands (`rm -rf`, `sudo`, `eval`)
+- Reduces approval fatigue while keeping you safe
+
+**3 Approval Modes:**
+- **Smart** — Auto-approve safe, ask for dangerous (recommended)
+- **Always** — Ask for every high-risk tool
+- **Never** — Auto-approve everything
+
+**Telegram Bot (Remote Approvals):**
+- Approve/deny from your phone while agent runs autonomously
+- Get notified when tasks start, complete, or fail
+- 2-minute setup: create bot → add token to dashboard → done
 
 ### 5. Self-Improvement (Learns Over Time)
 After every task, NexusMind reflects on what happened and extracts actionable lessons:
@@ -102,9 +113,10 @@ Unlike traditional agents that sleep between tasks, NexusMind can monitor platfo
 
 ### 9. Unified Credentials Management
 All API keys and secrets managed in one place:
-- **9 categories:** AI, Cloud, Search, GitHub, GitLab, Slack, Discord, Jira, Email
+- **10 categories:** AI, Cloud, Search, Telegram, GitHub, GitLab, Slack, Discord, Jira, Email
 - **Secure:** Secret values masked in UI, stored in `.env` (gitignored)
 - **Auto-fill:** Watchers use saved credentials automatically
+- **Telegram setup:** Add bot token + chat ID for remote approvals
 
 ### 11. Traceability Dashboard
 Every step is logged and visible in real-time:
@@ -187,8 +199,11 @@ Most AI agents today are **reactive** — they wait for instructions and execute
 NexusMind is **autonomous**:
 - It plans without being told how
 - It recovers from failures without being asked
-- It asks permission before doing anything risky
+- It asks permission before doing anything risky (via Telegram on your phone)
 - It learns from every task and improves over time
+- It monitors platforms 24/7 and reacts to events automatically
+
+**Walk away after giving it a task — it works autonomously for days/weeks.**
 
 This is what "agentic" means — an AI that takes initiative, not just follows orders.
 

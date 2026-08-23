@@ -20,7 +20,7 @@
 
 Most AI today waits for you to ask. **NexusMind AI doesn't.**
 
-It's an autonomous agent that receives goals -- via API, webhooks, or a live dashboard -- and handles multi-step workflows end-to-end without hand-holding. It plans, executes, self-corrects on failure, asks permission for risky actions, and learns from every task.
+It's an autonomous agent that receives goals -- via API, webhooks, or a live dashboard -- and handles multi-step workflows end-to-end without hand-holding. It plans, executes, self-corrects on failure, asks permission for risky actions, and learns from every task. **Run it once, walk away -- it works autonomously for days/weeks.**
 
 > **New to coding?** Check out our [Non-Coder User Guide](docs/user_guide.md) -- use NexusMind AI without writing any code.
 
@@ -71,16 +71,21 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
 
 ```
    Goal --> Plan (Gemini) --> Execute Tool --> Success? --Yes--> Next Step
-              ^                                  |
-              |                                  No
-              |                                  v
-              +---- Self-Correct (Gemini) <-- Analyze Error
-                                                |
-                                          Approval Needed?
-                                          |            |
-                                         Yes           No
-                                          |            |
-                                     Pause & Wait   Auto Retry
+               ^                                  |
+               |                                  No
+               |                                  v
+               +---- Self-Correct (Gemini) <-- Analyze Error
+                                                 |
+                                        Smart Approval Check
+                                        |                  |
+                                   Dangerous           Safe command
+                                        |                  |
+                                  Telegram Bot        Auto-approve
+                                  (or Dashboard)
+                                        |
+                                   Approve / Deny
+                                        |
+                                   Continue / Stop
 ```
 
 ---
@@ -132,6 +137,60 @@ bash <(curl -s https://raw.githubusercontent.com/tamimlabs/nexusmind-ai/master/s
 # Linux/Mac
 bash scripts/deploy.sh
 ```
+
+---
+
+## Smart Approval + Telegram Bot
+
+Agent runs autonomously. When it needs permission, it asks via Telegram -- approve from your phone.
+
+### 3 Approval Modes
+
+| Mode | Behavior | Best For |
+|------|----------|----------|
+| **Smart** (default) | Auto-approve safe commands (`ls`, `cat`, `git status`), ask only for dangerous ones | Most users |
+| **Always** | Ask for every high-risk tool | Maximum safety |
+| **Never** | Auto-approve everything | Trusted environments |
+
+### How Smart Approval Works
+
+**Auto-approved (safe):**
+- `ls`, `cat`, `head`, `tail`, `grep`, `find`, `pwd`, `whoami`
+- `git status`, `git log`, `git diff`
+- `pip list`, `pip show`
+- `python -c "print(...)"` (read-only)
+
+**Always asks (dangerous):**
+- `rm -rf`, `del /f`, `format`, `shutdown`, `reboot`
+- `sudo`, `chmod 777`, `chown`
+- `eval`, `exec`, `pipe to bash`
+- `deploy`, `transfer_funds`
+
+### Telegram Bot Setup (2 minutes)
+
+1. Open Telegram, search for `@BotFather`
+2. Send `/newbot` → name it → copy the **bot token**
+3. Search for `@userinfobot` → copy your **Chat ID**
+4. Open Dashboard → **Credentials** → paste both → **Save All**
+5. Done! Approvals now come to your phone
+
+### Telegram Messages
+
+```
+🔐 Approval Required
+
+Task: Deploy to production
+Tool: run_command
+Command: ./deploy.sh --prod
+
+[✅ Approve] [❌ Deny]
+```
+
+### Dashboard Settings
+
+- **Settings page** — Select approval mode (Smart/Always/Never)
+- **Credentials page** — Add Telegram bot token + chat ID
+- **Approvals page** — View pending approvals (dashboard fallback)
 
 ---
 
@@ -200,6 +259,11 @@ Credentials are stored in `.env` (gitignored) and never exposed to the frontend 
 | `GET` | `/api/credentials` | List all API keys and credentials |
 | `POST` | `/api/credentials` | Save credentials to .env |
 | `DELETE` | `/api/credentials/{key}` | Remove a credential |
+| `GET` | `/api/approval-mode` | Get approval mode + Telegram status |
+| `POST` | `/api/approval-mode` | Set approval mode (smart/always/never) |
+| `POST` | `/api/telegram/webhook` | Receive Telegram updates |
+| `POST` | `/api/telegram/setup` | Set up Telegram webhook |
+| `GET` | `/api/telegram/status` | Get Telegram connection status |
 
 ### Example: Submit a Task
 
@@ -249,6 +313,7 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 | **Language** | Python 3.11+ |
 | **Testing** | pytest + pytest-asyncio |
 | **Watchers** | 11 platforms (GitHub, GitLab, Slack, Discord, Jira, Reddit, HN, Email, RSS, Cron, Webhook) |
+| **Approvals** | Smart approval + Telegram bot (remote approve from phone) |
 
 ---
 
@@ -259,7 +324,7 @@ nexusmind-ai/
 ├── agent/                          # Core agent logic
 │   ├── core/
 │   │   ├── planner.py              # Task decomposition via Gemini
-│   │   ├── executor.py             # Tool execution + self-correction
+│   │   ├── executor.py             # Tool execution + smart approval
 │   │   ├── gemini_client.py        # Multi-key Gemini client
 │   │   └── memory.py               # Hermes-inspired memory store
 │   ├── skills/
@@ -282,6 +347,7 @@ nexusmind-ai/
 │   │   └── manager.py              # Watcher lifecycle manager
 │   ├── orchestrator.py             # Main agent loop + self-improvement
 │   ├── observability.py            # Trace collector for dashboard
+│   ├── telegram.py                 # Telegram bot (remote approvals)
 │   ├── models.py                   # Pydantic data models
 │   └── config.py                   # Environment-based settings
 ├── cloud/                          # Google Cloud integrations
@@ -313,7 +379,7 @@ nexusmind-ai/
 | Event-driven scheduling | Hermes | Cloud Pub/Sub replaces in-process cron |
 | Memory lifecycle (active -> stale) | Hermes | Skill states with automatic transitions |
 | Self-correcting retry loops | Custom | Error analysis -> Gemini -> parameter adjustment -> retry |
-| Human-in-the-loop approval | Custom | Async approval gate with timeout for high-risk tools |
+| Human-in-the-loop approval | Custom | Smart approval gate with Telegram bot for remote control |
 | Transparent traceability | Custom | In-memory trace collector -> live dashboard |
 | Multi-key rotation | Custom | Round-robin with rate-limit backoff |
 
@@ -343,6 +409,9 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 | `GOOGLE_CLOUD_REGION` | For cloud | GCP region (default: `us-central1`) |
 | `GOOGLE_SEARCH_API_KEY` | No | Google Custom Search API key |
 | `GOOGLE_SEARCH_CX` | No | Google Custom Search engine ID |
+| `APPROVAL_MODE` | No | `smart` (default), `always`, or `never` |
+| `TELEGRAM_BOT_TOKEN` | No | Telegram bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | No | Your Telegram chat ID from @userinfobot |
 | `GITHUB_TOKEN` | No | GitHub Personal Access Token |
 | `GITLAB_TOKEN` | No | GitLab Personal Access Token |
 | `SLACK_BOT_TOKEN` | No | Slack Bot Token (`xoxb-...`) |
@@ -374,6 +443,9 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 - [x] Pub/Sub event routing
 - [x] Always-awake watcher system (11 platforms)
 - [x] Unified credentials settings page
+- [x] Smart approval system (auto-approve safe commands)
+- [x] Telegram bot (remote approvals from phone)
+- [x] Task notifications via Telegram
 - [ ] Live demo on Google Cloud
 - [ ] Demo video recording
 - [ ] Devpost submission
