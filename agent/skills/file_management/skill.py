@@ -29,14 +29,16 @@ async def read_file(path: str, encoding: str = "utf-8", **_) -> ToolResult:
 
 @register_tool("write_file")
 async def write_file(path: str, content: str, encoding: str = "utf-8", **_) -> ToolResult:
-    """Write content to a file (creates parent dirs)."""
+    """Write content to a file in the output/ directory (creates parent dirs)."""
     try:
         p = Path(path)
+        if not str(p).startswith("output"):
+            p = Path("output") / p
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding=encoding)
         return ToolResult(
             success=True,
-            output=f"Written {len(content)} chars to {path}",
+            output=f"Written {len(content)} chars to {p}",
             metadata={"path": str(p.absolute())},
         )
     except Exception as exc:
