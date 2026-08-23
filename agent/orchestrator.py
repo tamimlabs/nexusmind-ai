@@ -124,14 +124,17 @@ class Orchestrator:
                     continue
 
             task.status = TaskStatus.COMPLETED
-            # Use the last successful step's result as the final result
+            # Use the most meaningful result (prefer summarize/extract over write_file)
             if task.steps:
-                last_good = None
+                best_result = None
                 for s in reversed(task.steps):
-                    if s.status == StepStatus.SUCCESS:
-                        last_good = s
-                        break
-                task.result = (last_good.result if last_good else task.steps[-1].result) or "Task completed"
+                    if s.status == StepStatus.SUCCESS and s.result:
+                        if not any(kw in (s.tool_name or "") for kw in ["write_file", "read_file", "list_directory"]):
+                            best_result = s
+                            break
+                        if best_result is None:
+                            best_result = s
+                task.result = (best_result.result if best_result else task.steps[-1].result) or "Task completed"
             else:
                 task.result = context.get("step_0_result", "Task completed")
             task.updated_at = datetime.now(UTC)

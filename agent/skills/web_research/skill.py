@@ -195,6 +195,8 @@ async def web_search(query: str, num_results: int = 5, **_) -> ToolResult:
 async def fetch_url(url: str, max_chars: int = 5000, **_) -> ToolResult:
     """Fetch and extract text content from a URL."""
     try:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "NexusMind/1.0"})
             resp.raise_for_status()
