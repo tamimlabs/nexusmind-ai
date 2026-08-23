@@ -117,10 +117,13 @@ class Orchestrator:
             for step in task.steps:
                 logger.info("Executing step %d: %s", step.order, step.description[:80])
                 result = await execute_step(step, context)
+                # Store with BOTH 0-indexed and 1-indexed keys so templates always resolve
                 context[f"step_{step.order}_result"] = result.output
+                context[f"step_{step.order + 1}_result"] = result.output
                 if not result.success:
                     logger.warning("Step %d failed: %s — skipping and continuing", step.order, result.error)
                     context[f"step_{step.order}_result"] = f"[Step skipped: {result.error}]"
+                    context[f"step_{step.order + 1}_result"] = f"[Step skipped: {result.error}]"
                     continue
 
             task.status = TaskStatus.COMPLETED
