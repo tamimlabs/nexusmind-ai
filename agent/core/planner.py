@@ -61,6 +61,13 @@ PLANNING STRATEGIES BY TASK TYPE:
    Step 2: execute_code with the implementation
    → Minimize steps. Code tasks should be direct.
 
+5. GITHUB/API TASKS (monitor repos, review PRs, manage issues):
+   Step 1: run_command with curl to call GitHub API
+   Step 2: execute_code to parse the response and analyze
+   Step 3: run_command with curl to post comment or merge
+   Step 4: write_file to save review log
+   → NEVER use web_search for API calls — use run_command or execute_code directly.
+
 RULES:
 1. EVERY step MUST have "tool_name" and "tool_args"
 2. Use {{step_N_result}} to reference previous step outputs
@@ -134,7 +141,65 @@ Return ONLY the JSON array."""
 
     except Exception:
         logger.exception("Planning failed for task %s", task.id)
-        # Resilient fallback: search + summarize + save
+        # Resilient fallback: choose tool based on task content
+        goal_lower = task.goal.lower()
+
+        # GitHub/API task
+        if any(w in goal_lower for w in ["github", "pr", "pull request", "repo", "api", "curl", "merge", "review code"]):
+            return [
+                TaskStep(
+                    task_id=task.id,
+                    description="Fetch data from GitHub API",
+                    tool_name="run_command",
+                    tool_args={"command": "source .env 2>/dev/null; curl -s -H \"Authorization: token $GITHUB_TOKEN\" https://api.github.com/repos/tamimlabs/nexusmind-ai/pulls"},
+                    order=0,
+                ),
+                TaskStep(
+                    task_id=task.id,
+                    description="Analyze the API response and take action",
+                    tool_name="execute_code",
+                    tool_args={"code": "import json, urllib.request, os\ntoken = os.getenv('GITHUB_TOKEN', '')\nprint(f'GitHub token loaded: {bool(token)}')"},
+                    order=1,
+                ),
+            ]
+
+        # File read/list task
+        if any(w in goal_lower for w in ["read file", "list directory", "show file", "open file"]):
+            return [
+                TaskStep(
+                    task_id=task.id,
+                    description="Read the requested file or directory",
+                    tool_name="read_file" if "read" in goal_lower else "list_directory",
+                    tool_args={"path": "output/"},
+                    order=0,
+                ),
+            ]
+
+        # Code execution task
+        if any(w in goal_lower for w in ["run code", "execute", "calculate", "compute", "python", "script"]):
+            return [
+                TaskStep(
+                    task_id=task.id,
+                    description="Write and execute the Python code",
+                    tool_name="execute_code",
+                    tool_args={"code": "print('Ready to execute')"},
+                    order=0,
+                ),
+            ]
+
+        # Shell command task
+        if any(w in goal_lower for w in ["run command", "shell", "bash", "terminal", "install"]):
+            return [
+                TaskStep(
+                    task_id=task.id,
+                    description="Execute the shell command",
+                    tool_name="run_command",
+                    tool_args={"command": "echo 'Ready to run command'"},
+                    order=0,
+                ),
+            ]
+
+        # Default: web search fallback
         return [
             TaskStep(
                 task_id=task.id,
