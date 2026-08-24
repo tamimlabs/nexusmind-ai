@@ -105,10 +105,9 @@ class GitHubWatcher(BaseWatcher):
             goal = (
                 f"A new pull request was opened on GitHub repo {self.repo}.\n"
                 f"PR #{payload['number']}: '{payload['title']}' by @{payload['author']}\n"
-                f"Diff URL: {payload['diff_url']}\n"
-                f"API URL: https://api.github.com/repos/{self.repo}/pulls/{payload['number']}\n\n"
-                f"Fetch the PR diff, review the code changes for quality and security, "
-                f"post a review comment, and merge if safe or request changes if not."
+                f"API URL: https://api.github.com/repos/{self.repo}/pulls/{payload['number']}\n"
+                f"Diff URL: {payload['diff_url']}\n\n"
+                f"Decide what to do based on your memory and instructions."
             )
             return goal
 
@@ -117,7 +116,7 @@ class GitHubWatcher(BaseWatcher):
                 f"A new issue was opened on GitHub repo {self.repo}.\n"
                 f"Issue #{payload['number']}: '{payload['title']}'\n"
                 f"API URL: https://api.github.com/repos/{self.repo}/issues/{payload['number']}\n\n"
-                f"Analyze the issue and post a helpful comment."
+                f"Decide what to do based on your memory and instructions."
             )
 
         return None
