@@ -459,4 +459,6 @@ Patterns adapted from [OpenClaw](https://github.com/openclaw/openclaw) and [Herm
 
 Made with ❤️ by Tamim Hasan
 
+<!-- demo marker -->
+
 </div>
