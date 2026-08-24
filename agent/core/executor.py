@@ -18,11 +18,13 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.models import StepStatus, TaskStep, ToolResult
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -139,10 +141,9 @@ def is_safe_command(command: str) -> bool:
             return True
 
     # Check if it's just a Python script execution (read-only)
-    if cmd.startswith("python ") and not any(d in cmd for d in ["open(", "os.", "shutil.", "subprocess"]):
-        return True
-
-    return False
+    return cmd.startswith("python ") and not any(
+        d in cmd for d in ["open(", "os.", "shutil.", "subprocess"]
+    )
 
 
 def is_dangerous_command(command: str) -> bool:
@@ -296,8 +297,14 @@ def get_pending_approvals() -> list[dict[str, str]]:
 
 # ── Self-Correction with Gemini ───────────────────────────────────
 
+# Tools whose failures may legitimately be retried via web_search.
+_RESEARCH_TOOLS = {"web_search", "fetch_url"}
+
 async def self_correct(error: str, tool_name: str, original_args: dict[str, Any]) -> dict[str, Any] | None:
     """Analyze a failed tool call and suggest a fix or alternative approach.
+
+    Action tools are NEVER switched to web_search — a failed GitHub/API/file
+    operation must not turn into an internet search full of irrelevant noise.
 
     Returns:
         Corrected args dict, or None if no correction possible.
@@ -315,7 +322,9 @@ ALTERNATIVE STRATEGIES:
 - If fetch_url failed (DNS/network): Switch to web_search with the same topic
 - If web_search failed (CAPTCHA/blocked): Try a different query phrasing
 - If summarize_text got empty input: Return a request to skip (null)
-- If a tool keeps failing: Suggest a completely different approach
+- For run_command/execute_code/GitHub tools: fix the args (bad URL, missing
+  argument, quoting) or return null — do NOT switch them to web_search,
+  web searches CANNOT perform actions.
 
 Return ONLY one of:
 1. A JSON object with corrected args for the SAME tool
@@ -332,7 +341,7 @@ Return ONLY one of:
         response = response.strip()
         if response.startswith("```"):
             lines = response.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             response = "\n".join(lines)
 
         if response.lower() in ("null", "none", ""):
@@ -405,6 +414,7 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
         resolved_args[k] = v
     current_args = dict(resolved_args)
     last_error = ""
+    original_tool = step.tool_name
 
     for attempt in range(1, MAX_RETRIES + 2):
         try:
@@ -431,9 +441,16 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
             if corrected:
                 switch_to = corrected.pop("switch_to", None)
                 if switch_to and switch_to in _tool_registry:
-                    tool = _tool_registry[switch_to]
-                    step.tool_name = switch_to
-                    logger.info("Switching from %s to %s (attempt %d)", step.tool_name, switch_to, attempt + 1)
+                    if switch_to in _RESEARCH_TOOLS and original_tool not in _RESEARCH_TOOLS:
+                        # Never turn failed actions into web searches
+                        logger.warning(
+                            "Blocked self-correction switch %s -> %s (action tools must not search the web)",
+                            original_tool, switch_to,
+                        )
+                    else:
+                        tool = _tool_registry[switch_to]
+                        step.tool_name = switch_to
+                        logger.info("Switching from %s to %s (attempt %d)", step.tool_name, switch_to, attempt + 1)
                 current_args.update(corrected)
                 continue
             break  # No correction possible

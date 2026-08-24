@@ -1,0 +1,366 @@
+"""Tests for GitHub task routing — the agent must NEVER web-search these."""
+
+import asyncio
+
+import pytest
+
+from agent.core.planner import plan_task
+from agent.models import Task, TaskStep, ToolResult
+
+
+@pytest.fixture(autouse=True)
+def _ensure_skills_loaded():
+    import agent  # noqa: F401 — triggers skill/tool registration
+
+
+class TestGithubGoalDetection:
+    def test_detects_common_phrasings(self):
+        from agent.core.planner import _is_github_goal
+
+        goals = [
+            "see my repository and the pr and if needed merge or reject",
+            "check my repo",
+            "merge PR #5",
+            "review my pull requests",
+            "look at github issues",
+            "list all prs in tamimlabs/nexusmind-ai",
+            "reject the open pullrequest",
+        ]
+        for goal in goals:
+            assert _is_github_goal(goal), f"Should detect: {goal}"
+
+    def test_non_github_goals_not_matched(self):
+        from agent.core.planner import _is_github_goal
+
+        for goal in ["write me a poem", "what is quantum computing", "summarize this article"]:
+            assert not _is_github_goal(goal), f"Should NOT match: {goal}"
+
+
+class TestGithubPipeline:
+    def _plan(self, goal: str):
+        from agent.core.planner import plan_task
+
+        return asyncio.run(plan_task(Task(goal=goal)))
+
+    def test_user_scenario_full_pipeline(self):
+        """The exact scenario from the bug report."""
+        steps = self._plan("see my repository and the pr and if needed merge or reject")
+        tools = [s.tool_name for s in steps]
+        assert "web_search" not in tools
+        assert tools[0] == "github_resolve_repo"
+        assert "github_list_prs" in tools
+        assert "github_review_pr" in tools
+        assert tools[-1] == "github_apply_decisions"
+
+    def test_specific_pr_number(self):
+        steps = self._plan("review pr #42 in my repo and merge if it looks good")
+        review = next(s for s in steps if s.tool_name == "github_review_pr")
+        assert review.tool_args["pr_number"] == 42
+        assert any(s.tool_name == "github_apply_decisions" for s in steps)
+
+    def test_multiple_pr_numbers(self):
+        steps = self._plan("merge pr 3 and pr #7 if they are safe")
+        review = next(s for s in steps if s.tool_name == "github_review_pr")
+        assert review.tool_args["pr_list"] == '[{"number": 3}, {"number": 7}]'
+
+    def test_read_only_goal_does_not_mutate(self):
+        steps = self._plan("show me the open pull requests in my repository")
+        tools = [s.tool_name for s in steps]
+        assert "web_search" not in tools
+        assert "github_apply_decisions" not in tools
+        assert tools[-1] == "summarize_text"
+
+    def test_steps_are_ordered_and_use_templates(self):
+        steps = self._plan("handle the prs in my repo")
+        orders = [s.order for s in steps]
+        assert orders == list(range(len(steps)))
+        review = next(s for s in steps if s.tool_name == "github_review_pr")
+        assert review.tool_args["repo"] == "{{step_0_result}}"
+        decisions = next(s for s in steps if s.tool_name == "github_apply_decisions")
+        assert "{{step_" in decisions.tool_args["decisions"]
+
+    def test_explicit_repo_in_goal_is_forwarded(self):
+        steps = self._plan("review octocat/hello-world prs and merge what passes")
+        resolve = steps[0]
+        assert resolve.tool_name == "github_resolve_repo"
+        assert "octocat/hello-world" in resolve.tool_args["goal_text"]
+
+
+class TestFallbackSafety:
+    def test_parse_steps_json_returns_empty_not_websearch(self):
+        from agent.core.planner import _parse_steps_json
+
+        assert _parse_steps_json("this is not json at all") == []
+        assert _parse_steps_json('{"random": 1}') == []
+
+    def test_last_resort_action_goal_gets_diagnostic_not_websearch(self):
+        from agent.core.planner import _last_resort_step
+
+        step = _last_resort_step(Task(goal="deploy the service to production"))
+        assert step.tool_name != "web_search"
+        assert step.tool_name == "execute_code"
+
+    def test_last_resort_research_goal_may_still_search(self):
+        from agent.core.planner import _last_resort_step
+
+        step = _last_resort_step(Task(goal="what is the latest news about AI"))
+        assert step.tool_name == "web_search"
+
+    def test_planner_fallback_never_websearches_actions(self, monkeypatch):
+        """Even when both Gemini calls fail, action goals must not web-search."""
+        from agent.core import gemini_client
+        from agent.core.planner import plan_task
+
+        async def explode(**_):
+            raise RuntimeError("gemini down")
+
+        monkeypatch.setattr(gemini_client, "generate_content", explode)
+        steps = asyncio.run(plan_task(Task(goal="restart the database server")))
+        assert len(steps) == 1
+        assert steps[0].tool_name != "web_search"
+
+
+class TestSelfCorrectionGuard:
+    async def test_failed_action_tool_cannot_switch_to_web_search(self, monkeypatch):
+        from agent.core import executor as ex
+
+        @ex.register_tool("failing_action_tool_test")
+        async def failing(**_) -> ToolResult:
+            return ToolResult(success=False, output="", error="connection refused")
+
+        async def fake_self_correct(error, tool_name, original_args):
+            return {"switch_to": "web_search", "query": "how to restart server"}
+
+        monkeypatch.setattr(ex, "self_correct", fake_self_correct)
+
+        step = TaskStep(
+            description="run something real",
+            tool_name="failing_action_tool_test",
+            tool_args={},
+            order=0,
+        )
+        result = await ex.execute_step(step, context={})
+        assert not result.success
+        # The tool must NOT have been swapped to web_search
+        assert step.tool_name == "failing_action_tool_test"
+
+
+class TestMemoryGatedWatcher:
+    """Watcher acts ONLY when a standing instruction exists in memory."""
+
+    def _watcher(self):
+        from agent.watchers.github import GitHubWatcher
+
+        return GitHubWatcher("test_watcher", {"repo": "tamimlabs/nexusmind-ai"})
+
+    def _event(self, number=5, title="feat: new thing"):
+        return {
+            "event_type": "github.pr.opened",
+            "payload": {"number": number, "title": title, "author": "dev"},
+        }
+
+    async def test_no_instruction_means_no_action(self, monkeypatch):
+        from agent.core import memory as memory_mod
+
+        monkeypatch.setattr(
+            memory_mod.memory_store, "get_by_category", lambda cat: []
+        )
+        goal = await self._watcher().process_event(self._event())
+        assert goal is None  # nothing triggered at all
+
+    async def test_instruction_triggers_goal_with_pr_target(self, monkeypatch):
+        from agent.core import memory as memory_mod
+        from agent.models import MemoryEntry
+
+        instruction = MemoryEntry(
+            content="when you get a pr by watcher then test and marge or deslind it with comment",
+            category="instruction",
+        )
+        monkeypatch.setattr(
+            memory_mod.memory_store,
+            "get_by_category",
+            lambda cat: [instruction] if cat == "instruction" else [],
+        )
+        goal = await self._watcher().process_event(self._event())
+        assert goal is not None
+        assert "#5" in goal and "tamimlabs/nexusmind-ai" in goal
+        # The stored direction is carried into the goal verbatim
+        assert "marge or deslind" in goal
+
+    async def test_unrelated_instruction_is_ignored(self, monkeypatch):
+        from agent.core import memory as memory_mod
+        from agent.models import MemoryEntry
+
+        unrelated = MemoryEntry(content="always write python", category="instruction")
+        monkeypatch.setattr(
+            memory_mod.memory_store,
+            "get_by_category",
+            lambda cat: [unrelated] if cat == "instruction" else [],
+        )
+        goal = await self._watcher().process_event(self._event())
+        assert goal is None
+
+    async def test_stored_direction_routes_to_action_pipeline(self, monkeypatch):
+        """'test and marge or deslind with comment' -> merge/reject pipeline."""
+        from agent.core import memory as memory_mod
+        from agent.models import MemoryEntry
+
+        instruction = MemoryEntry(
+            content="when you get a pr by watcher then test and marge or deslind it with comment",
+            category="instruction",
+        )
+        monkeypatch.setattr(
+            memory_mod.memory_store,
+            "get_by_category",
+            lambda cat: [instruction] if cat == "instruction" else [],
+        )
+        goal = await self._watcher().process_event(self._event())
+        steps = await plan_task(Task(goal=goal))
+        tools = [s.tool_name for s in steps]
+        assert "web_search" not in tools
+        assert tools[0] == "github_resolve_repo"
+        assert "github_apply_decisions" in tools
+        review = next(s for s in steps if s.tool_name == "github_review_pr")
+        assert review.tool_args.get("pr_number") == 5
+
+
+class TestStandingInstructionStorage:
+    """Typing a durable instruction stores it instead of executing it."""
+
+    async def test_when_phrase_saved_not_executed(self, monkeypatch):
+        from agent.models import TaskStatus
+        from agent.orchestrator import Orchestrator
+
+        saved: list[str] = []
+
+        class FakeMemory:
+            def save_instruction(self, text):
+                saved.append(text)
+                return True
+
+        orch = Orchestrator()
+        orch.memory = FakeMemory()
+
+        task = await orch.handle_task(Task(goal="when you get a pr then test and merge it"))
+        assert task.status == TaskStatus.COMPLETED
+        assert "standing instruction" in (task.result or "").lower()
+        assert saved == ["when you get a pr then test and merge it"]
+        assert task.steps == []  # nothing was planned/executed
+
+    async def test_direct_command_not_misdetected(self):
+        from agent.orchestrator import _is_standing_instruction
+
+        assert not _is_standing_instruction("merge pr #7 if ok")
+        assert not _is_standing_instruction("review pull request 3")
+        assert _is_standing_instruction("whenever a pr opens, review it and merge if clean")
+
+
+class TestNotificationRateLimit:
+    """'No instruction' Telegram notices are rate-limited (anti-spam)."""
+
+    async def test_second_notice_within_window_is_suppressed(self, monkeypatch):
+        import agent.watchers.github as gh_mod
+        from agent.core import memory as memory_mod
+        from agent.watchers.github import GitHubWatcher
+
+        sent: list[str] = []
+
+        async def fake_send(msg):
+            sent.append(msg)
+
+        monkeypatch.setattr(
+            memory_mod.memory_store, "get_by_category", lambda cat: []
+        )
+        monkeypatch.setattr("agent.telegram.is_configured", lambda: True)
+        monkeypatch.setattr("agent.telegram.send_message", fake_send)
+        monkeypatch.setattr(gh_mod, "_last_no_instruction_notify", {})
+
+        w = GitHubWatcher("w1", {"repo": "o/r"})
+        await w._notify_no_instruction(1, "first PR")
+        await w._notify_no_instruction(2, "second PR")  # same window -> suppressed
+
+        assert len(sent) == 1
+
+    async def test_notice_allowed_again_after_window(self, monkeypatch):
+        import agent.watchers.github as gh_mod
+        from agent.core import memory as memory_mod
+        from agent.watchers.github import GitHubWatcher
+
+        sent: list[str] = []
+
+        async def fake_send(msg):
+            sent.append(msg)
+
+        monkeypatch.setattr(
+            memory_mod.memory_store, "get_by_category", lambda cat: []
+        )
+        monkeypatch.setattr("agent.telegram.is_configured", lambda: True)
+        monkeypatch.setattr("agent.telegram.send_message", fake_send)
+        monkeypatch.setattr(gh_mod, "_last_no_instruction_notify", {})
+
+        t = [0.0]
+        monkeypatch.setattr(gh_mod.time, "monotonic", lambda: t[0])
+
+        w = GitHubWatcher("w1", {"repo": "o/r"})
+        await w._notify_no_instruction(1, "a")
+        t[0] += 6 * 3600 + 1  # window elapsed
+        await w._notify_no_instruction(2, "b")
+
+        assert len(sent) == 2
+
+
+class TestGithubSkillUnits:
+    def test_parse_repo_url_https(self):
+        from agent.skills.github.skill import _parse_repo_url
+
+        assert _parse_repo_url("https://github.com/tamimlabs/nexusmind-ai.git") == "tamimlabs/nexusmind-ai"
+        assert _parse_repo_url("https://github.com/tamimlabs/nexusmind-ai/") == "tamimlabs/nexusmind-ai"
+
+    def test_parse_repo_url_ssh(self):
+        from agent.skills.github.skill import _parse_repo_url
+
+        assert _parse_repo_url("git@github.com:tamimlabs/nexusmind-ai.git") == "tamimlabs/nexusmind-ai"
+
+    async def test_resolve_repo_from_explicit_text(self):
+        from agent.skills.github.skill import github_resolve_repo
+
+        result = await github_resolve_repo(goal_text="check prs in octocat/hello-world please")
+        assert result.success
+        assert result.output == "octocat/hello-world"
+
+    async def test_resolve_repo_fails_without_any_source(self, monkeypatch):
+        from agent.skills.github import skill as gh
+
+        async def no_git(*_a, **_k):
+            raise FileNotFoundError("not a git repo")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", no_git)
+        monkeypatch.setattr(gh, "_default_repo", lambda: "")
+        result = await gh.github_resolve_repo(goal_text="my repository please")
+        assert not result.success
+        assert "GITHUB_DEFAULT_REPO" in (result.error or "")
+
+    async def test_heuristic_verdict_rejects_conflicts(self):
+        from agent.skills.github.skill import _heuristic_verdict
+
+        verdict = _heuristic_verdict({"mergeable_state": "dirty", "files": []})
+        assert verdict["decision"] == "reject"
+
+        verdict = _heuristic_verdict({"draft": True, "files": []})
+        assert verdict["decision"] == "skip"
+
+    async def test_apply_decisions_skips_uncertain(self):
+        from agent.skills.github.skill import github_apply_decisions
+
+        decisions = '[{"number": 1, "decision": "reject", "confidence": 0.2, "reason": "unsure"}]'
+        result = await github_apply_decisions(repo="x/y", decisions=decisions)
+        assert result.success
+        assert "skipped rejection" in result.output
+
+    async def test_apply_decisions_dry_run(self):
+        from agent.skills.github.skill import github_apply_decisions
+
+        decisions = '[{"number": 2, "decision": "merge", "confidence": 0.9, "reason": "clean"}]'
+        result = await github_apply_decisions(repo="x/y", decisions=decisions, dry_run=True)
+        assert result.success
+        assert "would merge" in result.output

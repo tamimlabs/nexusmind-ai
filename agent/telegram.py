@@ -185,7 +185,7 @@ async def handle_callback_query(callback_query: dict[str, Any]) -> None:
         return
 
     # Find the full step_id by matching the short prefix
-    from agent.core.executor import _approval_metadata, _pending_approvals
+    from agent.core.executor import _pending_approvals
 
     step_id = None
     for sid in list(_pending_approvals.keys()):

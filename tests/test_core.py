@@ -1,8 +1,9 @@
 """Tests for core agent components."""
 
 import pytest
-from agent.models import Task, TaskStep, TaskStatus, TaskPriority, ToolResult, MemoryEntry
+
 from agent.core.memory import MemoryStore
+from agent.models import MemoryEntry, Task, TaskPriority, TaskStatus, TaskStep, ToolResult
 
 
 class TestModels:
@@ -36,6 +37,13 @@ class TestModels:
 
 
 class TestMemory:
+    @pytest.fixture(autouse=True)
+    def _isolated_memory_file(self, tmp_path, monkeypatch):
+        """Keep tests off the real data/memory.json."""
+        import agent.core.memory as mem_mod
+
+        monkeypatch.setattr(mem_mod, "_MEMORY_FILE", tmp_path / "memory.json")
+
     def test_add_and_search(self):
         store = MemoryStore()
         store.add(MemoryEntry(content="Python is great for AI", category="general"))
@@ -95,7 +103,7 @@ class TestMemory:
 
 class TestExecutor:
     def test_tool_registration(self):
-        from agent.core.executor import register_tool, get_tool, list_tools
+        from agent.core.executor import get_tool, list_tools, register_tool
 
         @register_tool("test_tool_123")
         async def test_tool(**_):
@@ -106,7 +114,7 @@ class TestExecutor:
         assert get_tool("nonexistent") is None
 
     def test_high_risk_registration(self):
-        from agent.core.executor import register_tool, _high_risk_tools
+        from agent.core.executor import _high_risk_tools, register_tool
 
         @register_tool("dangerous_tool_xyz", high_risk=True)
         async def dangerous(**_):

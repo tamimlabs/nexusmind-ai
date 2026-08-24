@@ -7,6 +7,7 @@ Task execution is non-blocking — dashboard polls for live updates.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import pathlib
 import time
@@ -21,13 +22,16 @@ from pydantic import BaseModel
 import agent.config as _cfg
 from agent.core.executor import get_pending_approvals, list_tools, resolve_approval
 from agent.core.memory import memory_store
-from agent.models import Task, TaskPriority, TaskStatus
+from agent.models import MemoryEntry, Task, TaskPriority, TaskStatus
 from agent.observability import create_trace, get_trace, list_traces
 from api.credentials_routes import router as credentials_router
 from api.watcher_routes import router as watcher_router
 from cloud.pubsub.events import publish_task_event
 
 logger = logging.getLogger(__name__)
+
+# Strong references to background tasks (prevents GC cancelling mid-run)
+_bg_tasks: set[asyncio.Task] = set()
 
 app = FastAPI(
     title="NexusMind AI",
@@ -205,6 +209,12 @@ async def agent_status():
     """Return agent status for the dashboard sidebar."""
     tools = list_tools()
     high_risk = ["execute_code", "run_command"]
+    try:
+        from agent.skills.github.skill import _token_fingerprint
+
+        github_token_fp = _token_fingerprint()
+    except Exception:
+        github_token_fp = "<unknown>"
     return {
         "online": True,
         "model": _cfg.settings.gemini_model,
@@ -217,6 +227,15 @@ async def agent_status():
         "memory_categories": {
             cat: len(memory_store.get_by_category(cat))
             for cat in ["task_outcome", "reflection", "skill"]
+        },
+        "github": {
+            "token_fingerprint": github_token_fp,
+            "token_loaded": github_token_fp not in ("<none>", "<unknown>"),
+            "default_repo": _cfg.settings.github_default_repo or None,
+            "hint": (
+                "A stale GITHUB_TOKEN set in your OS/shell environment overrides "
+                ".env — unset it in the shell that launches this server."
+            ),
         },
     }
 
@@ -309,8 +328,8 @@ async def submit_task(req: SubmitTaskRequest):
     except Exception:
         logger.debug("Pub/Sub publish skipped (not configured)")
 
-    # Run in background — don't await
-    asyncio.create_task(_run_task_background(task.id, task))
+    # Run in background — don't await (keep a ref so GC can't cancel it)
+    _bg_tasks.add(asyncio.create_task(_run_task_background(task.id, task)))
 
     return {
         "id": task.id,
@@ -550,7 +569,7 @@ async def list_memory(
     category: str = Query(default=""),
     limit: int = Query(default=20),
 ):
-    """Search or list memory entries."""
+    """Search or list memory entries (with ids so they can be deleted)."""
     if query:
         entries = memory_store.search(query, top_k=limit, category=category or None)
     elif category:
@@ -560,6 +579,7 @@ async def list_memory(
 
     return [
         {
+            "id": e.id,
             "content": e.content[:500],
             "category": e.category,
             "metadata": e.metadata,
@@ -567,6 +587,66 @@ async def list_memory(
         }
         for e in entries
     ]
+
+
+class DeleteMemoryRequest(BaseModel):
+    ids: list[str] = []
+
+
+@app.delete("/api/memory/{entry_id}")
+async def delete_memory(entry_id: str):
+    """Delete a single memory entry by id."""
+    deleted = memory_store.delete(entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Memory entry not found: {entry_id}")
+    return {"deleted": entry_id}
+
+
+@app.post("/api/memory/delete")
+async def delete_memory_bulk(req: DeleteMemoryRequest):
+    """Delete multiple memory entries by id."""
+    deleted = [eid for eid in req.ids if memory_store.delete(eid)]
+    return {"deleted": deleted, "count": len(deleted)}
+
+
+@app.post("/api/memory/clear/{category}")
+async def clear_memory_category(category: str):
+    """Delete ALL memory entries in a category (e.g. old instructions)."""
+    removed = memory_store.clear_category(category)
+    return {"cleared": removed, "category": category}
+
+
+VALID_MEMORY_CATEGORIES = {"instruction", "reflection", "task_outcome", "skill", "general"}
+
+
+class AddMemoryRequest(BaseModel):
+    content: str
+    category: str = ""  # empty = auto-detect
+
+
+@app.post("/api/memory")
+async def add_memory(req: AddMemoryRequest):
+    """Manually add a memory entry (e.g. a standing instruction or a fact).
+
+    Entries in category 'instruction' act as durable policy the watcher obeys.
+    With no category given, standing-instruction phrasing ("whenever a PR...")
+    is detected automatically.
+    """
+    content = req.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content must not be empty")
+
+    if req.category:
+        category = req.category if req.category in VALID_MEMORY_CATEGORIES else "general"
+    else:
+        from agent.orchestrator import _is_standing_instruction
+
+        category = "instruction" if _is_standing_instruction(content) else "general"
+
+    entry = MemoryEntry(content=content, category=category)
+    memory_store.add(entry)
+    logger.info("Manual memory added (%s): %.80s", category, content)
+    return {"id": entry.id, "category": category}
 
 
 # ── Watchers ──────────────────────────────────────────────────────
@@ -596,12 +676,10 @@ async def receive_webhook(req: WebhookPayload):
     goal = f"Handle {req.event_type} event: {req.payload}"
     task = Task(goal=goal, context={"event_type": req.event_type, **req.payload})
 
-    try:
+    with contextlib.suppress(Exception):
         publish_task_event(task.id, task.goal, "pending", context=req.payload)
-    except Exception:
-        pass
 
-    asyncio.create_task(_run_task_background(task.id, task))
+    _bg_tasks.add(asyncio.create_task(_run_task_background(task.id, task)))
 
     return {"task_id": task.id, "status": "pending"}
 

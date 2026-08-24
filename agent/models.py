@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """Task lifecycle states."""
 
     PENDING = "pending"
@@ -21,7 +21,7 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 
-class StepStatus(str, Enum):
+class StepStatus(StrEnum):
     """Individual step states."""
 
     PENDING = "pending"
@@ -31,7 +31,7 @@ class StepStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-class TaskPriority(str, Enum):
+class TaskPriority(StrEnum):
     """Task priority levels."""
 
     LOW = "low"
@@ -40,7 +40,7 @@ class TaskPriority(str, Enum):
     CRITICAL = "critical"
 
 
-class TaskMode(str, Enum):
+class TaskMode(StrEnum):
     """How a task was initiated / how it should run.
 
     ONE_SHOT: User-initiated, runs once until completed or failed.

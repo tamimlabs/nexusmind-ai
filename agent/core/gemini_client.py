@@ -121,7 +121,7 @@ async def generate_content(
             if shortest > 0:
                 await asyncio.sleep(min(shortest, 5))
 
-        def _call() -> str:
+        def _call(client=client) -> str:
             contents = []
             if system:
                 contents.append(

@@ -1,13 +1,18 @@
 """Task decomposition planner — breaks goals into executable steps.
 
 Inspired by OpenClaw's multi-step decomposition and Hermes' skill-based planning.
-Now includes self-improvement: past reflections influence planning.
+Includes self-improvement: past reflections influence planning.
+
+GitHub/repository/PR goals are routed through a DETERMINISTIC pipeline built on
+the real GitHub skill tools — they never touch web_search and never depend on
+Gemini producing valid JSON to work.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from agent.config import settings
@@ -18,29 +23,27 @@ logger = logging.getLogger(__name__)
 PLANNER_SYSTEM_PROMPT = """You are NexusMind — an autonomous AI agent with REAL execution capabilities.
 
 YOU ARE NOT A CHATBOT. You have direct access to tools that execute real actions:
-- You can run shell commands (curl, git, python, any command)
-- You can execute Python code
+- You can run shell commands and Python code
 - You can read/write files
-- You can call APIs, merge PRs, post comments — all real actions
-
-Your job: decompose goals into executable steps using your REAL tools.
-
-CRITICAL: When a goal involves an action (GitHub, API, file operations, code execution),
-you MUST use run_command or execute_code — NEVER search the web for how to do it.
+- You can call APIs and take real actions
 
 AVAILABLE TOOLS:
 - web_search: Search the web. Args: {"query": "...", "num_results": 5}
-  → ONLY for research/information gathering. NEVER for action tasks.
+  → ONLY for research/information gathering about the outside world.
+  → NEVER for GitHub/repository/PR work, file operations, or command execution.
+
+- GITHUB TOOLS (use these for ANY repository/PR task — never curl, never web_search):
+  - github_resolve_repo: {"goal_text": "<original goal>"} → returns owner/name
+  - github_get_repo: {"repo": "owner/name"}
+  - github_list_prs: {"repo": "owner/name"}
+  - github_get_pr: {"repo": "owner/name", "pr_number": 123}
+  - github_review_pr: {"repo": "...", "pr_number": N} or {"repo": "...", "pr_list": "<json>"}
+  - github_merge_pr: {"repo": "...", "pr_number": N}
+  - github_close_pr: {"repo": "...", "pr_number": N, "comment": "..."}
+  - github_apply_decisions: {"repo": "...", "decisions": "<json from review>"}
 
 - run_command: Execute ANY shell command. Args: {"command": "..."}
-  → Examples: curl, git, python, mkdir, ls, cat, pip install, etc.
-  → You can call APIs: curl -s https://api.github.com/repos/owner/repo/pulls
-  → You can merge PRs: curl -X PUT https://api.github.com/repos/owner/repo/pulls/1/merge
-  → You can post comments, install packages, run tests — anything.
-
 - execute_code: Run Python code. Args: {"code": "..."}
-  → Parse API responses, analyze data, make decisions.
-
 - read_file / write_file / list_directory: File operations
 - summarize_text / extract_data / parse_json: Data processing
 
@@ -50,13 +53,9 @@ PLANNING STRATEGIES BY TASK TYPE:
    Step 1: web_search with focused query
    Step 2: web_search with broader/different query
    Step 3: summarize_text combining results
-   Step 4: write_file to save output
 
-2. GITHUB/API TASKS (PRs, issues, repos, webhooks):
-   Step 1: run_command with curl to fetch data from API
-   Step 2: execute_code to parse and analyze the response
-   Step 3: run_command with curl to take action (merge, comment, etc.)
-   → NEVER search the web for API documentation — just use curl directly.
+2. GITHUB/API TASKS (PRs, issues, repos):
+   Use the dedicated github_* tools above. NEVER web_search, NEVER curl.
 
 3. FILE/CREATION TASKS:
    Step 1: write_file with the content
@@ -67,26 +66,137 @@ PLANNING STRATEGIES BY TASK TYPE:
 RULES:
 1. EVERY step MUST have "tool_name" and "tool_args"
 2. Use {{step_N_result}} to reference previous step outputs
-3. For research tasks: use web_search
-4. For action tasks (GitHub, API, commands): use run_command with curl
-5. NEVER search the web when you can just DO the action
-6. Keep plans SHORT — 3-5 steps maximum
-7. Return ONLY valid JSON array
+3. NEVER search the web when you can just DO the action
+4. Keep plans SHORT — 3-5 steps maximum
+5. Return ONLY valid JSON array
 
 OUTPUT FORMAT (JSON array):
 [
-  {"description": "Fetch PR details from GitHub API", "tool_name": "run_command", "tool_args": {"command": "curl -s https://api.github.com/repos/owner/repo/pulls/1"}},
-  {"description": "Analyze the PR code changes", "tool_name": "execute_code", "tool_args": {"code": "import json\\ndata = json.loads('''{{step_0_result}}''')\\nprint('Title:', data.get('title'))"}},
-  {"description": "Merge the PR", "tool_name": "run_command", "tool_args": {"command": "curl -X PUT https://api.github.com/repos/owner/repo/pulls/1/merge"}}
+  {"description": "Fetch data", "tool_name": "run_command", "tool_args": {"command": "..."}},
+  {"description": "Analyze result", "tool_name": "execute_code", "tool_args": {"code": "..."}}
 ]
 
 IMPORTANT: Steps are 0-indexed. First step is step_0, second is step_1, etc.
 When referencing previous results, use {{step_0_result}}, {{step_1_result}}, etc.
 """
 
+# Goals matching this are handled by the deterministic GitHub pipeline.
+_GITHUB_GOAL_PATTERN = re.compile(
+    r"\bgithub\b"
+    r"|\brepo(?:sitorie)?s?\b"
+    r"|pull\s*requests?"
+    r"|\bprs?\b"
+    r"|\bmerges?\b"
+    r"|\breject(?:ed|ion)?s?\b"
+    r"|\bpullrequest\b",
+    re.IGNORECASE,
+)
+
+# Words implying the user wants mutations performed, not just information.
+_ACTION_INTENT_PATTERN = re.compile(
+    r"\b(merges?|marges?|rejects?|declines?|closes?|denys?|denies|approves?"
+    r"|handles?|processes?|manages?|acts?|cleanups?)\b",
+    re.IGNORECASE,
+)
+
+# A PR reference: "#123", "pr 123", "PR #123", "pull request 123", "prs 4 and 7".
+_PR_NUMBER_PATTERN = re.compile(r"#(\d{1,6})\b|\b(?:pr|pull\s+requests?)\s*#?(\d{1,6})\b", re.IGNORECASE)
+
+# Research-flavored goals where web_search is an acceptable last resort.
+_RESEARCH_HINTS = (
+    "what ", "who ", "when ", "where ", "why ", "how ", "news", "latest",
+    "search", "find information", "tell me about", "research", "explain",
+)
+
+
+def _is_github_goal(goal: str) -> bool:
+    """Return True if the goal clearly concerns repositories/PRs."""
+    return bool(_GITHUB_GOAL_PATTERN.search(goal))
+
+
+def _extract_pr_numbers(goal: str) -> list[int]:
+    """Extract explicitly referenced PR numbers, deduplicated in order."""
+    numbers: list[int] = []
+    for match in _PR_NUMBER_PATTERN.finditer(goal):
+        value = int(match.group(1) or match.group(2))
+        if value not in numbers:
+            numbers.append(value)
+    return numbers
+
+
+def _make_step(task_id: str, order: int, description: str, tool_name: str, tool_args: dict[str, Any]) -> TaskStep:
+    return TaskStep(task_id=task_id, description=description, tool_name=tool_name, tool_args=tool_args, order=order)
+
+
+def _github_pipeline(task: Task) -> list[TaskStep]:
+    """Build a deterministic multi-step plan for repository/PR goals.
+
+    Separate tasks per concern:
+      1. Resolve WHICH repository ("my repository" → git remote / default config)
+      2. Fetch (list open PRs, or the specific PRs mentioned)
+      3. Review each PR → independent merge/reject verdicts with reasons
+      4. Apply decisions: merge safe PRs, reject risky ones (only if requested)
+    """
+    tid = task.id
+    goal = task.goal
+    wants_action = bool(_ACTION_INTENT_PATTERN.search(goal))
+    pr_numbers = _extract_pr_numbers(goal)
+
+    steps: list[TaskStep] = [
+        _make_step(tid, 0, "Resolve which repository this goal refers to", "github_resolve_repo", {"goal_text": goal}),
+    ]
+    repo_ref = "{{step_0_result}}"
+    order = 1
+
+    if pr_numbers:
+        label = ", ".join(f"#{n}" for n in pr_numbers)
+        if len(pr_numbers) == 1:
+            steps.append(_make_step(
+                tid, order, f"Fetch and review PR {label}: analyze diff and decide",
+                "github_review_pr", {"repo": repo_ref, "pr_number": pr_numbers[0]},
+            ))
+        else:
+            steps.append(_make_step(
+                tid, order, f"Review PRs {label}: analyze diffs and decide",
+                "github_review_pr",
+                {"repo": repo_ref, "pr_list": json.dumps([{"number": n} for n in pr_numbers])},
+            ))
+    else:
+        steps.append(_make_step(
+            tid, order, "List open pull requests in {{step_0_result}}",
+            "github_list_prs", {"repo": repo_ref},
+        ))
+        order += 1
+        steps.append(_make_step(
+            tid, order, "Review every listed PR and recommend merge/reject/skip",
+            "github_review_pr", {"repo": repo_ref, "pr_list": "{{step_1_result}}"},
+        ))
+    review_order = order
+    order += 1
+
+    if wants_action:
+        steps.append(_make_step(
+            tid, order, "Apply review verdicts: merge clean PRs, reject risky ones, skip uncertain",
+            "github_apply_decisions",
+            {"repo": repo_ref, "decisions": f"{{{{step_{review_order}_result}}}}"},
+        ))
+    else:
+        steps.append(_make_step(
+            tid, order, "Summarize the repository/PR findings for the user",
+            "summarize_text", {"text": f"{{{{step_{review_order}_result}}}}", "max_length": 250},
+        ))
+
+    logger.info(
+        "Deterministic GitHub plan (%d steps, action=%s) for task %s", len(steps), wants_action, tid,
+    )
+    return steps
+
 
 async def plan_task(task: Task, available_skills: list[str] | None = None, lessons: list[str] | None = None) -> list[TaskStep]:
-    """Decompose a task into ordered steps using Gemini.
+    """Decompose a task into ordered steps.
+
+    GitHub/repository/PR goals bypass Gemini entirely and get a deterministic
+    pipeline — this guarantees they never degrade into web searches.
 
     Args:
         task: The task to plan.
@@ -97,82 +207,16 @@ async def plan_task(task: Task, available_skills: list[str] | None = None, lesso
         Ordered list of TaskStep objects.
 
     """
+    if _is_github_goal(task.goal):
+        return _github_pipeline(task)
+
     from agent.core.gemini_client import generate_content
-
-    # Hardcoded override: GitHub tasks MUST use curl, not web_search
-    goal_lower = task.goal.lower()
-    if any(kw in goal_lower for kw in ["github", "pr ", "pull request", "merge", "repo"]):
-        # Extract repo name from goal if present
-        import re
-        repo_match = re.search(r'tamimlabs/[\w-]+', task.goal)
-        repo = repo_match.group(0) if repo_match else "tamimlabs/nexusmind-ai"
-
-        # Extract PR number if present
-        pr_match = re.search(r'pr\s*#?(\d+)', task.goal)
-        pr_number = pr_match.group(1) if pr_match else None
-
-        # Common auth header for curl
-        auth_header = '-H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json"'
-
-        if pr_number:
-            steps = [
-                TaskStep(
-                    task_id=task.id,
-                    description=f"Fetch PR #{pr_number} details from GitHub API",
-                    tool_name="run_command",
-                    tool_args={"command": f"curl -s {auth_header} https://api.github.com/repos/{repo}/pulls/{pr_number}"},
-                    order=0,
-                ),
-                TaskStep(
-                    task_id=task.id,
-                    description=f"Fetch PR #{pr_number} diff from GitHub API",
-                    tool_name="run_command",
-                    tool_args={"command": f"curl -s {auth_header} https://api.github.com/repos/{repo}/pulls/{pr_number}.diff"},
-                    order=1,
-                ),
-                TaskStep(
-                    task_id=task.id,
-                    description="Analyze the PR code changes for quality and security",
-                    tool_name="execute_code",
-                    tool_args={"code": "import json\ntry:\n    data = json.loads(open('step_0_result.txt').read())\n    print(f\"PR #{data.get('number')}: {data.get('title')}\")\n    print(f\"Author: {data.get('user', {}).get('login')}\")\n    print(f\"State: {data.get('state')}\")\n    print(f\"Changed files: {data.get('changed_files')}\")\n    print(f\"Additions: +{data.get('additions')}, Deletions: -{data.get('deletions')}\")\nexcept Exception as e:\n    print(f'Error parsing PR: {e}')"},
-                    order=2,
-                ),
-            ]
-            # Add merge step
-            steps.append(
-                TaskStep(
-                    task_id=task.id,
-                    description=f"Merge PR #{pr_number} if safe",
-                    tool_name="run_command",
-                    tool_args={"command": f"curl -s -X PUT {auth_header} https://api.github.com/repos/{repo}/pulls/{pr_number}/merge"},
-                    order=3,
-                )
-            )
-        else:
-            # No specific PR — list all open PRs
-            steps = [
-                TaskStep(
-                    task_id=task.id,
-                    description="List all open PRs from GitHub API",
-                    tool_name="run_command",
-                    tool_args={"command": f"curl -s {auth_header} https://api.github.com/repos/{repo}/pulls?state=open"},
-                    order=0,
-                ),
-                TaskStep(
-                    task_id=task.id,
-                    description="Parse and analyze the PR list",
-                    tool_name="execute_code",
-                    tool_args={"code": "import json\ntry:\n    data = json.loads(open('step_0_result.txt').read())\n    if isinstance(data, list):\n        print(f'Found {len(data)} open PRs:')\n        for pr in data:\n            print(f\"  #{pr['number']}: {pr['title']} by @{pr.get('user', {}).get('login', 'unknown')}\")\n    else:\n        print('Response:', json.dumps(data, indent=2)[:500])\nexcept Exception as e:\n    print(f'Error: {e}')"},
-                    order=1,
-                ),
-            ]
-
-        logger.info("Planned %d steps (GitHub hardcoded) for task %s", len(steps), task.id)
-        return steps
 
     lessons_context = ""
     if lessons:
-        lessons_context = "\n\nLESSONS FROM PAST TASKS:\n" + "\n".join(f"- {l}" for l in lessons[:5])
+        lessons_context = "\n\nLESSONS FROM PAST TASKS:\n" + "\n".join(
+            f"- {lesson}" for lesson in lessons[:5]
+        )
 
     user_prompt = f"""Goal: {task.goal}
 Context: {json.dumps(task.context) if task.context else 'None'}{lessons_context}
@@ -188,11 +232,14 @@ Return ONLY the JSON array."""
         )
 
         steps_data = _parse_steps_json(response)
+        if not steps_data:
+            raise ValueError("Planner returned no parseable steps")
+
         steps: list[TaskStep] = []
         for i, step_data in enumerate(steps_data):
-            tool_name = step_data.get("tool_name")
+            tool_name = step_data.get("tool_name") or ""
             if not tool_name:
-                tool_name = "web_search"
+                raise ValueError("Plan contained a step without tool_name")
 
             step = TaskStep(
                 task_id=task.id,
@@ -208,57 +255,58 @@ Return ONLY the JSON array."""
 
     except Exception:
         logger.exception("Planning failed for task %s", task.id)
-        # Ask Gemini to pick the right tool for this task
-        try:
-            tool_prompt = f"""You are a tool selector. Given this task, pick the RIGHT tool.
+        return await _fallback_plan(task)
+
+
+async def _fallback_plan(task: Task) -> list[TaskStep]:
+    """Recover from planning failure WITHOUT inventing web-search noise."""
+    from agent.core.gemini_client import generate_content
+
+    try:
+        tool_prompt = f"""You are a tool selector. Given this task, pick the RIGHT tool.
 
 Task: {task.goal}
 
 Available tools:
-- web_search: Search the web. Use for research questions.
-- run_command: Shell command. Use for API calls (curl), system commands, git, etc.
+- web_search: Search the web. Use ONLY for research questions about the world.
+- run_command: Shell command. Use for system commands, git, local scripts.
 - execute_code: Python code. Use for data processing, analysis, calculations.
 - read_file: Read a file. Use when task asks to read/open a file.
 - write_file: Write a file. Use when task asks to create/save content.
 - list_directory: List files. Use when task asks to list/show files.
 
+Rules:
+- Never pick web_search unless the task explicitly asks to research/search the internet.
+
 Return ONLY a JSON object: {{"tool_name": "tool_name", "tool_args": {{...}}, "description": "what to do"}}"""
 
-            response = await generate_content(
-                model=settings.gemini_model,
-                system="You are a tool selector. Return only JSON.",
-                user=tool_prompt,
-            )
+        response = await generate_content(
+            model=settings.gemini_model,
+            system="You are a tool selector. Return only JSON.",
+            user=tool_prompt,
+        )
 
-            # Parse the response
-            import re as _re
-            json_match = _re.search(r'\{[^{}]+\}', response)
-            if json_match:
-                tool_data = json.loads(json_match.group())
-                tool_name = tool_data.get("tool_name", "web_search")
-                tool_args = tool_data.get("tool_args", {})
-                description = tool_data.get("description", task.goal[:100])
+        import re as _re
 
-                # Fix tool_args based on tool type
-                if tool_name == "run_command":
-                    if "command" not in tool_args:
-                        tool_args = {"command": task.goal}
-                elif tool_name == "execute_code":
-                    if "code" not in tool_args:
-                        tool_args = {"code": f"# {task.goal}\nprint('Ready to execute')"}
-                elif tool_name == "web_search":
-                    if "query" not in tool_args:
-                        tool_args = {"query": task.goal, "num_results": 5}
-                elif tool_name == "write_file":
-                    if "path" not in tool_args:
-                        tool_args = {"path": "output/result.md", "content": "{{step_0_result}}"}
-                elif tool_name == "read_file":
-                    if "path" not in tool_args:
-                        tool_args = {"path": "output/"}
-                elif tool_name == "list_directory":
-                    if "path" not in tool_args:
-                        tool_args = {"path": "output/"}
+        json_match = _re.search(r'\{[^{}]+\}', response)
+        if json_match:
+            tool_data = json.loads(json_match.group())
+            tool_name = tool_data.get("tool_name", "")
+            tool_args = tool_data.get("tool_args", {})
+            description = tool_data.get("description", task.goal[:100])
 
+            if tool_name == "run_command" and "command" not in tool_args:
+                tool_args = {"command": task.goal}
+            elif tool_name == "execute_code" and "code" not in tool_args:
+                tool_args = {"code": f"# {task.goal}\nprint('Ready to execute')"}
+            elif tool_name == "web_search" and "query" not in tool_args:
+                tool_args = {"query": task.goal, "num_results": 5}
+            elif tool_name == "write_file" and "path" not in tool_args:
+                tool_args = {"path": "output/result.md", "content": "{{step_0_result}}"}
+            elif tool_name in ("read_file", "list_directory") and "path" not in tool_args:
+                tool_args = {"path": "output/"}
+
+            if tool_name:
                 return [
                     TaskStep(
                         task_id=task.id,
@@ -268,36 +316,62 @@ Return ONLY a JSON object: {{"tool_name": "tool_name", "tool_args": {{...}}, "de
                         order=0,
                     ),
                 ]
+    except Exception as inner_e:
+        logger.warning("Tool selection also failed: %s", inner_e)
 
-        except Exception as inner_e:
-            logger.warning("Tool selection also failed: %s", inner_e)
+    return [_last_resort_step(task)]
 
-        # Last resort: web search
-        return [
-            TaskStep(
-                task_id=task.id,
-                description=f"Search for information about: {task.goal}",
-                tool_name="web_search",
-                tool_args={"query": task.goal, "num_results": 5},
-                order=0,
-            ),
-        ]
+
+def _last_resort_step(task: Task) -> TaskStep:
+    """Absolute last resort.
+
+    Research-style questions may still use web_search. Everything else gets an
+    honest diagnostic step instead of a random web search full of noise.
+    """
+    goal_lower = task.goal.lower()
+    if any(hint in goal_lower for hint in _RESEARCH_HINTS) and not _is_github_goal(task.goal):
+        return TaskStep(
+            task_id=task.id,
+            description=f"Search for information about: {task.goal}",
+            tool_name="web_search",
+            tool_args={"query": task.goal, "num_results": 5},
+            order=0,
+        )
+
+    return TaskStep(
+        task_id=task.id,
+        description="Report that the goal could not be planned automatically",
+        tool_name="execute_code",
+        tool_args={
+            "code": (
+                f"message = '''Automatic planning failed for this goal:\n{task.goal[:300]}\n\n"
+                "No reliable tool could be chosen, so NO action was taken.\n"
+                "Try rephrasing with an explicit tool or repository name.'''\nprint(message)"
+            )
+        },
+        order=0,
+    )
+
+
+def _coerce_steps(data: Any) -> list[dict[str, Any]]:
+    """Narrow parsed JSON into a list of step dicts."""
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict) and isinstance(data.get("steps"), list):
+        return [item for item in data["steps"] if isinstance(item, dict)]
+    return []
 
 
 def _parse_steps_json(text: str) -> list[dict[str, Any]]:
-    """Extract JSON array of steps from LLM response."""
+    """Extract JSON array of steps from LLM response. Empty list if unparseable."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         text = "\n".join(lines)
 
     try:
-        result = json.loads(text)
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict) and "steps" in result:
-            return result["steps"]
+        return _coerce_steps(json.loads(text))
     except json.JSONDecodeError:
         pass
 
@@ -305,9 +379,9 @@ def _parse_steps_json(text: str) -> list[dict[str, Any]]:
     end = text.rfind("]")
     if start != -1 and end != -1:
         try:
-            return json.loads(text[start : end + 1])
+            return _coerce_steps(json.loads(text[start : end + 1]))
         except json.JSONDecodeError:
             pass
 
-    logger.warning("Failed to parse steps JSON, returning fallback")
-    return [{"description": text[:500], "tool_name": "web_search", "tool_args": {"query": text[:100]}}]
+    logger.warning("Failed to parse steps JSON")
+    return []

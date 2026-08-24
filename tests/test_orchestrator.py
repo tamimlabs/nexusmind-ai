@@ -1,6 +1,7 @@
 """Tests for the orchestrator."""
 
 import pytest
+
 from agent.orchestrator import Orchestrator
 
 
@@ -19,7 +20,7 @@ class TestOrchestrator:
 
     @pytest.mark.asyncio
     async def test_handle_goal_mock(self, orch, monkeypatch):
-        from agent.models import Task, TaskStatus
+        from agent.models import TaskStatus
 
         async def mock_handle(task):
             task.status = TaskStatus.COMPLETED

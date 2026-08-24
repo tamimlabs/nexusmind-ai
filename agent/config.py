@@ -1,6 +1,9 @@
 """Global configuration using pydantic-settings.
 
 Environment variables are loaded from .env file and system environment.
+The .env file is resolved relative to the project root (this file's parent
+directory), NOT the current working directory, so the server works no matter
+where it is launched from.
 """
 
 import os
@@ -8,20 +11,24 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _load_dotenv() -> None:
     """Load .env file into os.environ so all modules can access env vars."""
-    env_file = Path(".env")
-    if not env_file.exists():
-        return
-    for line in env_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip("'\"")
-            if key not in os.environ:
-                os.environ[key] = value
+    for candidate in (_PROJECT_ROOT / ".env", Path(".env")):
+        env_file = candidate
+        if not env_file.exists():
+            continue
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("'\"")
+                if key not in os.environ:
+                    os.environ[key] = value
+        break
 
 
 _load_dotenv()
@@ -76,6 +83,9 @@ class Settings(BaseSettings):
 
     # --- GitHub ---
     github_token: str = ""
+    # Default repository (owner/name) used when a goal says "my repository"
+    # and no git remote is available. Example: "tamimlabs/nexusmind-ai"
+    github_default_repo: str = ""
 
     # --- Google Custom Search ---
     google_search_api_key: str = ""
@@ -85,7 +95,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8080
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+    model_config = {
+        "env_file": str(_PROJECT_ROOT / ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 settings = Settings()

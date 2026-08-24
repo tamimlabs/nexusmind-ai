@@ -21,7 +21,7 @@ from typing import Any
 from agent.core.executor import execute_step, list_tools, set_task_context
 from agent.core.memory import memory_store
 from agent.core.planner import plan_task
-from agent.models import Task, TaskStatus, StepStatus
+from agent.models import StepStatus, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,20 @@ _TRIVIAL_PATTERNS = [
     "what is", "what are", "who is", "tell me about",
     "hello", "hi", "hey", "thanks", "ok", "yes", "no",
 ]
+
+# Phrases that mark a goal as a STANDING INSTRUCTION (future policy) rather
+# than an immediate command. Stored in memory; the watcher enforces them later.
+_INSTRUCTION_TRIGGERS = (
+    "when you", "whenever", "every time", "each time", "from now on",
+    "in future", "in the future", "always ", "by default", "next time",
+    "if a new ", "if any new ", "going forward",
+)
+
+
+def _is_standing_instruction(goal: str) -> bool:
+    """True if the goal reads like a durable instruction, not a one-off command."""
+    g = goal.lower().strip()
+    return any(trigger in g[:80] for trigger in _INSTRUCTION_TRIGGERS)
 
 
 def _is_trivial(task: Task) -> bool:
@@ -85,6 +99,26 @@ class Orchestrator:
 
         # Set task context for Telegram approval messages
         set_task_context(task.id, task.goal)
+
+        # Standing instructions ("whenever a PR arrives, ...") are stored as
+        # policy for future watcher events — not executed now. Watcher- and
+        # webhook-triggered tasks carry event context and skip this check.
+        if _is_standing_instruction(task.goal) and "event_type" not in task.context:
+            self.memory.save_instruction(task.goal)
+            task.status = TaskStatus.COMPLETED
+            task.result = (
+                f"Saved as standing instruction (not executed now):\n{task.goal}\n\n"
+                "The agent will follow this automatically when matching events "
+                "arrive via watchers."
+            )
+            task.updated_at = datetime.now(UTC)
+            logger.info("Stored standing instruction from task %s", task.id)
+
+            from agent.telegram import is_configured, notify_task_completed
+
+            if is_configured():
+                await notify_task_completed(task.id, task.goal, "Standing instruction saved")
+            return task
 
         # Notify via Telegram
         from agent.telegram import is_configured, notify_task_started

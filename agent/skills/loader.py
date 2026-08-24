@@ -6,6 +6,7 @@ Skills self-register via @register_tool decorator when their module is imported.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import logging
 
@@ -15,6 +16,7 @@ _SKILL_PACKAGES = [
     "agent.skills.web_research",
     "agent.skills.file_management",
     "agent.skills.data_processing",
+    "agent.skills.github",
 ]
 
 _loaded = False
@@ -36,10 +38,8 @@ def load_all_skills() -> list[str]:
         try:
             importlib.import_module(package)
             # Also import the skill.py submodule if it exists
-            try:
+            with contextlib.suppress(ImportError):
                 importlib.import_module(f"{package}.skill")
-            except ImportError:
-                pass
             loaded.append(package)
             logger.info("Loaded skill: %s", package)
         except Exception:

@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
-from typing import Any
 
 from agent.models import MemoryEntry
 
@@ -176,6 +175,26 @@ class MemoryStore:
     def get_instructions(self) -> list[MemoryEntry]:
         """Get all stored user instructions."""
         return self.get_by_category("instruction")
+
+    def delete(self, entry_id: str) -> bool:
+        """Delete a single memory entry by id. Returns True if it existed."""
+        for i, entry in enumerate(self._entries):
+            if entry.id == entry_id:
+                self._entries.pop(i)
+                self._save()
+                logger.info("Memory entry deleted: %s", entry_id)
+                return True
+        return False
+
+    def clear_category(self, category: str) -> int:
+        """Delete ALL entries in a category. Returns number removed."""
+        before = len(self._entries)
+        self._entries = [e for e in self._entries if e.category != category]
+        removed = before - len(self._entries)
+        if removed:
+            self._save()
+            logger.info("Cleared %d memory entries in category '%s'", removed, category)
+        return removed
 
     def clear(self) -> None:
         """Clear all memory."""
