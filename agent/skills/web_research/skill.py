@@ -23,11 +23,17 @@ _google_day_start = 0
 
 
 def _init_google():
-    """Load Google search credentials from env."""
+    """Load Google search credentials from settings or env."""
     global _google_search_key, _google_cx
     import os
-    _google_search_key = _google_search_key or os.environ.get("GOOGLE_SEARCH_API_KEY", "")
-    _google_cx = _google_cx or os.environ.get("GOOGLE_SEARCH_CX", "")
+    # Try settings first, then env
+    try:
+        from agent.config import settings
+        _google_search_key = getattr(settings, 'google_search_api_key', '') or os.environ.get("GOOGLE_SEARCH_API_KEY", "")
+        _google_cx = getattr(settings, 'google_search_cx', '') or os.environ.get("GOOGLE_SEARCH_CX", "")
+    except Exception:
+        _google_search_key = os.environ.get("GOOGLE_SEARCH_API_KEY", "")
+        _google_cx = os.environ.get("GOOGLE_SEARCH_CX", "")
 
 
 def _google_available() -> bool:

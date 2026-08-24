@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # --- GitHub ---
     github_token: str = ""
 
+    # --- Google Custom Search ---
+    google_search_api_key: str = ""
+    google_search_cx: str = ""
+
     # --- API ---
     api_host: str = "0.0.0.0"
     api_port: int = 8080
