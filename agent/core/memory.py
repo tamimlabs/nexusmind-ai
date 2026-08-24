@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _MAX_ENTRIES = 100
 _MAX_REFLECTIONS = 30
 _MAX_TASK_OUTCOMES = 20
+_MAX_INSTRUCTIONS = 25
 
 # Persistence file
 _MEMORY_FILE = pathlib.Path("data/memory.json")
@@ -89,6 +90,7 @@ class MemoryStore:
         max_for_cat = {
             "reflection": _MAX_REFLECTIONS,
             "task_outcome": _MAX_TASK_OUTCOMES,
+            "instruction": _MAX_INSTRUCTIONS,
         }.get(cat, _MAX_ENTRIES)
 
         if len(cat_entries) >= max_for_cat:
@@ -100,9 +102,14 @@ class MemoryStore:
 
         self._entries.append(entry)
 
-        # Global limit
+        # Global limit — standing instructions are POLICY and must never be
+        # evicted by episodic data (task outcomes/reflections). Trim the
+        # newest-100 of everything else; instructions only count when room.
         if len(self._entries) > _MAX_ENTRIES:
-            self._entries = self._entries[-_MAX_ENTRIES:]
+            instructions = [e for e in self._entries if e.category == "instruction"]
+            others = [e for e in self._entries if e.category != "instruction"]
+            others = others[-(_MAX_ENTRIES - len(instructions)):]
+            self._entries = others + instructions
 
         # Persist to disk
         self._save()

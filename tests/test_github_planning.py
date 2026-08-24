@@ -407,6 +407,42 @@ class TestAllWatchersMemoryGated:
             assert cls.INSTRUCTION_KEYWORDS, f"{cls.__name__} missing INSTRUCTION_KEYWORDS"
 
 
+class TestLogicAuditRegressions:
+    """Regressions for logic flaws found in the full-suite audit."""
+
+    async def test_question_goals_stay_read_only(self):
+        """'explain how git handles merges' must NOT build an apply pipeline."""
+        steps = await plan_task(Task(goal="explain how git handles merges in my repo"))
+        tools = [s.tool_name for s in steps]
+        assert "github_apply_decisions" not in tools
+        assert tools[-1] == "summarize_text"
+
+    def test_mid_sentence_trigger_words_still_execute(self, monkeypatch):
+        """'merge pr #7 always using squash' is a command, not a policy."""
+        from agent.orchestrator import _is_standing_instruction
+
+        assert not _is_standing_instruction("merge pr #7 always using squash commits")
+        assert not _is_standing_instruction("review the pr and by default branch checks too")
+        # Genuine directives still detected
+        assert _is_standing_instruction("always merge clean prs with squash")
+        assert _is_standing_instruction("if a new pr arrives, review and merge if clean")
+
+    def test_instructions_survive_memory_churn(self, monkeypatch, tmp_path):
+        """Task outcomes flooding memory must NEVER evict standing instructions."""
+        import agent.core.memory as mem_mod
+        from agent.models import MemoryEntry
+
+        monkeypatch.setattr(mem_mod, "_MEMORY_FILE", tmp_path / "memory.json")
+        store = mem_mod.MemoryStore()
+
+        store.save_instruction("when a pr arrives, review and merge if clean")
+        for i in range(120):  # flood past the global cap of 100
+            store.add(MemoryEntry(content=f"unique outcome number {i} for eviction test", category="task_outcome"))
+
+        surviving = [e.content for e in store.get_by_category("instruction")]
+        assert any("merge if clean" in c for c in surviving)
+
+
 class TestGithubSkillUnits:
     def test_parse_repo_url_https(self):
         from agent.skills.github.skill import _parse_repo_url

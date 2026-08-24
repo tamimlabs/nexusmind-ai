@@ -41,9 +41,14 @@ _INSTRUCTION_TRIGGERS = (
 
 
 def _is_standing_instruction(goal: str) -> bool:
-    """True if the goal reads like a durable instruction, not a one-off command."""
-    g = goal.lower().strip()
-    return any(trigger in g[:80] for trigger in _INSTRUCTION_TRIGGERS)
+    """True if the goal reads like a durable instruction, not a one-off command.
+
+    Anchored to the START of the goal so one-off commands that merely contain
+    a trigger word mid-sentence (e.g. "merge pr #7 always using squash")
+    are still executed immediately.
+    """
+    g = goal.lower().lstrip()
+    return g.startswith(_INSTRUCTION_TRIGGERS)
 
 
 def _is_trivial(task: Task) -> bool:

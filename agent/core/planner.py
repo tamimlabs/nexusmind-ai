@@ -108,6 +108,13 @@ _RESEARCH_HINTS = (
     "search", "find information", "tell me about", "research", "explain",
 )
 
+# Goals starting with these ask a question — they must stay read-only even
+# if action verbs appear later ("how do I merge a pr?").
+_QUESTION_PREFIXES = (
+    "what ", "who ", "when ", "where ", "why ", "how ",
+    "explain", "tell me", "describe", "compare",
+)
+
 
 def _is_github_goal(goal: str) -> bool:
     """Return True if the goal clearly concerns repositories/PRs."""
@@ -139,7 +146,10 @@ def _github_pipeline(task: Task) -> list[TaskStep]:
     """
     tid = task.id
     goal = task.goal
-    wants_action = bool(_ACTION_INTENT_PATTERN.search(goal))
+    # A question is a request for information, never permission to mutate —
+    # even when it contains action verbs ("explain how git handles merges").
+    is_question = goal.lower().lstrip().startswith(_QUESTION_PREFIXES)
+    wants_action = bool(_ACTION_INTENT_PATTERN.search(goal)) and not is_question
     pr_numbers = _extract_pr_numbers(goal)
 
     steps: list[TaskStep] = [
