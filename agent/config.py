@@ -3,7 +3,28 @@
 Environment variables are loaded from .env file and system environment.
 """
 
+import os
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+
+def _load_dotenv() -> None:
+    """Load .env file into os.environ so all modules can access env vars."""
+    env_file = Path(".env")
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key not in os.environ:
+                os.environ[key] = value
+
+
+_load_dotenv()
 
 
 class Settings(BaseSettings):
