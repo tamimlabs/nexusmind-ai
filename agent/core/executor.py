@@ -485,11 +485,22 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
 @register_tool("run_command", high_risk=True)
 async def run_command(command: str, **_: Any) -> ToolResult:
     """Run a shell command."""
+    # Load .env vars into subprocess environment
+    env = os.environ.copy()
+    env_file = Path(".env")
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                env[key.strip()] = value.strip().strip("'\"")
+
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         success = proc.returncode == 0
