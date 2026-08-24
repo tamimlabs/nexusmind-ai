@@ -141,65 +141,71 @@ Return ONLY the JSON array."""
 
     except Exception:
         logger.exception("Planning failed for task %s", task.id)
-        # Resilient fallback: choose tool based on task content
-        goal_lower = task.goal.lower()
+        # Ask Gemini to pick the right tool for this task
+        try:
+            tool_prompt = f"""You are a tool selector. Given this task, pick the RIGHT tool.
 
-        # GitHub/API task
-        if any(w in goal_lower for w in ["github", "pr", "pull request", "repo", "api", "curl", "merge", "review code"]):
-            return [
-                TaskStep(
-                    task_id=task.id,
-                    description="Fetch data from GitHub API",
-                    tool_name="run_command",
-                    tool_args={"command": "source .env 2>/dev/null; curl -s -H \"Authorization: token $GITHUB_TOKEN\" https://api.github.com/repos/tamimlabs/nexusmind-ai/pulls"},
-                    order=0,
-                ),
-                TaskStep(
-                    task_id=task.id,
-                    description="Analyze the API response and take action",
-                    tool_name="execute_code",
-                    tool_args={"code": "import json, urllib.request, os\ntoken = os.getenv('GITHUB_TOKEN', '')\nprint(f'GitHub token loaded: {bool(token)}')"},
-                    order=1,
-                ),
-            ]
+Task: {task.goal}
 
-        # File read/list task
-        if any(w in goal_lower for w in ["read file", "list directory", "show file", "open file"]):
-            return [
-                TaskStep(
-                    task_id=task.id,
-                    description="Read the requested file or directory",
-                    tool_name="read_file" if "read" in goal_lower else "list_directory",
-                    tool_args={"path": "output/"},
-                    order=0,
-                ),
-            ]
+Available tools:
+- web_search: Search the web. Use for research questions.
+- run_command: Shell command. Use for API calls (curl), system commands, git, etc.
+- execute_code: Python code. Use for data processing, analysis, calculations.
+- read_file: Read a file. Use when task asks to read/open a file.
+- write_file: Write a file. Use when task asks to create/save content.
+- list_directory: List files. Use when task asks to list/show files.
 
-        # Code execution task
-        if any(w in goal_lower for w in ["run code", "execute", "calculate", "compute", "python", "script"]):
-            return [
-                TaskStep(
-                    task_id=task.id,
-                    description="Write and execute the Python code",
-                    tool_name="execute_code",
-                    tool_args={"code": "print('Ready to execute')"},
-                    order=0,
-                ),
-            ]
+Return ONLY a JSON object: {{"tool_name": "tool_name", "tool_args": {{...}}, "description": "what to do"}}"""
 
-        # Shell command task
-        if any(w in goal_lower for w in ["run command", "shell", "bash", "terminal", "install"]):
-            return [
-                TaskStep(
-                    task_id=task.id,
-                    description="Execute the shell command",
-                    tool_name="run_command",
-                    tool_args={"command": "echo 'Ready to run command'"},
-                    order=0,
-                ),
-            ]
+            response = await generate_content(
+                model=settings.gemini_model,
+                system="You are a tool selector. Return only JSON.",
+                user=tool_prompt,
+            )
 
-        # Default: web search fallback
+            # Parse the response
+            import re as _re
+            json_match = _re.search(r'\{[^{}]+\}', response)
+            if json_match:
+                tool_data = json.loads(json_match.group())
+                tool_name = tool_data.get("tool_name", "web_search")
+                tool_args = tool_data.get("tool_args", {})
+                description = tool_data.get("description", task.goal[:100])
+
+                # Fix tool_args based on tool type
+                if tool_name == "run_command":
+                    if "command" not in tool_args:
+                        tool_args = {"command": task.goal}
+                elif tool_name == "execute_code":
+                    if "code" not in tool_args:
+                        tool_args = {"code": f"# {task.goal}\nprint('Ready to execute')"}
+                elif tool_name == "web_search":
+                    if "query" not in tool_args:
+                        tool_args = {"query": task.goal, "num_results": 5}
+                elif tool_name == "write_file":
+                    if "path" not in tool_args:
+                        tool_args = {"path": "output/result.md", "content": "{{step_0_result}}"}
+                elif tool_name == "read_file":
+                    if "path" not in tool_args:
+                        tool_args = {"path": "output/"}
+                elif tool_name == "list_directory":
+                    if "path" not in tool_args:
+                        tool_args = {"path": "output/"}
+
+                return [
+                    TaskStep(
+                        task_id=task.id,
+                        description=description,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        order=0,
+                    ),
+                ]
+
+        except Exception as inner_e:
+            logger.warning("Tool selection also failed: %s", inner_e)
+
+        # Last resort: web search
         return [
             TaskStep(
                 task_id=task.id,
@@ -207,20 +213,6 @@ Return ONLY the JSON array."""
                 tool_name="web_search",
                 tool_args={"query": task.goal, "num_results": 5},
                 order=0,
-            ),
-            TaskStep(
-                task_id=task.id,
-                description="Create a comprehensive summary",
-                tool_name="summarize_text",
-                tool_args={"text": "{{step_0_result}}"},
-                order=1,
-            ),
-            TaskStep(
-                task_id=task.id,
-                description="Save the summary to output file",
-                tool_name="write_file",
-                tool_args={"path": "output/summary.md", "content": "{{step_1_result}}"},
-                order=2,
             ),
         ]
 
