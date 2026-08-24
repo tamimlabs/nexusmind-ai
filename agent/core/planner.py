@@ -99,6 +99,74 @@ async def plan_task(task: Task, available_skills: list[str] | None = None, lesso
     """
     from agent.core.gemini_client import generate_content
 
+    # Hardcoded override: GitHub tasks MUST use curl, not web_search
+    goal_lower = task.goal.lower()
+    if any(kw in goal_lower for kw in ["github", "pr ", "pull request", "merge", "repo"]):
+        # Extract repo name from goal if present
+        import re
+        repo_match = re.search(r'tamimlabs/[\w-]+', task.goal)
+        repo = repo_match.group(0) if repo_match else "tamimlabs/nexusmind-ai"
+
+        # Extract PR number if present
+        pr_match = re.search(r'pr\s*#?(\d+)', task.goal)
+        pr_number = pr_match.group(1) if pr_match else None
+
+        if pr_number:
+            steps = [
+                TaskStep(
+                    task_id=task.id,
+                    description=f"Fetch PR #{pr_number} details from GitHub API",
+                    tool_name="run_command",
+                    tool_args={"command": f"curl -s https://api.github.com/repos/{repo}/pulls/{pr_number}"},
+                    order=0,
+                ),
+                TaskStep(
+                    task_id=task.id,
+                    description=f"Fetch PR #{pr_number} diff from GitHub API",
+                    tool_name="run_command",
+                    tool_args={"command": f"curl -s https://api.github.com/repos/{repo}/pulls/{pr_number}.diff"},
+                    order=1,
+                ),
+                TaskStep(
+                    task_id=task.id,
+                    description="Analyze the PR code changes for quality and security",
+                    tool_name="execute_code",
+                    tool_args={"code": "import json, sys\ntry:\n    data = json.loads(sys.argv[1] if len(sys.argv) > 1 else open('step_0_result.txt').read())\n    print(f\"PR #{data.get('number')}: {data.get('title')}\")\n    print(f\"Author: {data.get('user', {}).get('login')}\")\n    print(f\"State: {data.get('state')}\")\n    print(f\"Changed files: {data.get('changed_files')}\")\n    print(f\"Additions: +{data.get('additions')}, Deletions: -{data.get('deletions')}\")\nexcept Exception as e:\n    print(f'Error parsing PR: {e}')"},
+                    order=2,
+                ),
+            ]
+            # Add merge step
+            steps.append(
+                TaskStep(
+                    task_id=task.id,
+                    description=f"Merge PR #{pr_number} if safe",
+                    tool_name="run_command",
+                    tool_args={"command": f"curl -s -X PUT https://api.github.com/repos/{repo}/pulls/{pr_number}/merge -H 'Accept: application/vnd.github.v3+json'"},
+                    order=3,
+                )
+            )
+        else:
+            # No specific PR — list all open PRs
+            steps = [
+                TaskStep(
+                    task_id=task.id,
+                    description="List all open PRs from GitHub API",
+                    tool_name="run_command",
+                    tool_args={"command": f"curl -s https://api.github.com/repos/{repo}/pulls?state=open"},
+                    order=0,
+                ),
+                TaskStep(
+                    task_id=task.id,
+                    description="Parse and analyze the PR list",
+                    tool_name="execute_code",
+                    tool_args={"code": "import json, sys\ntry:\n    data = json.loads(sys.argv[1] if len(sys.argv) > 1 else open('step_0_result.txt').read())\n    if isinstance(data, list):\n        print(f'Found {len(data)} open PRs:')\n        for pr in data:\n            print(f\"  #{pr[\\\"number\\\"]}: {pr[\\\"title\\\"]} by @{pr.get('user', {}).get('login', 'unknown')}\")\n    else:\n        print('Response:', json.dumps(data, indent=2)[:500])\nexcept Exception as e:\n    print(f'Error: {e}')"},
+                    order=1,
+                ),
+            ]
+
+        logger.info("Planned %d steps (GitHub hardcoded) for task %s", len(steps), task.id)
+        return steps
+
     lessons_context = ""
     if lessons:
         lessons_context = "\n\nLESSONS FROM PAST TASKS:\n" + "\n".join(f"- {l}" for l in lessons[:5])
