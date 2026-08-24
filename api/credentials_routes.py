@@ -19,7 +19,7 @@ _ENV_FILE = Path(".env")
 CREDENTIAL_FIELDS: dict[str, list[dict[str, Any]]] = {
     "AI & LLM": [
         {"key": "GEMINI_API_KEY", "label": "Gemini API Keys", "placeholder": "key1,key2,key3 (comma-separated)", "secret": True, "multi": True},
-        {"key": "GEMINI_MODEL", "label": "Gemini Model", "placeholder": "gemini-3.6-flash", "secret": False},
+        {"key": "GEMINI_MODEL", "label": "Gemini Model", "placeholder": "gemini-3.5-flash", "secret": False},
     ],
     "Google Cloud": [
         {"key": "GOOGLE_CLOUD_PROJECT", "label": "Project ID", "placeholder": "my-gcp-project", "secret": False},
