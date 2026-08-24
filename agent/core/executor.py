@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -449,6 +450,16 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
 async def execute_code(code: str, language: str = "python", **_: Any) -> ToolResult:
     """Execute code in a sandboxed subprocess."""
     if language == "python":
+        # Load .env vars into subprocess environment
+        env = os.environ.copy()
+        env_file = pathlib.Path(".env")
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    env[key.strip()] = value.strip().strip("'\"")
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             f.flush()
@@ -457,6 +468,7 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
                     sys.executable, f.name,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=env,
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
                 success = proc.returncode == 0
