@@ -150,22 +150,36 @@ NexusMind fits into event-driven workflows:
 - **Pub/Sub** publishes task events as work happens
 - A **webhook endpoint** accepts external events and turns them into tasks
 
-### 11. Persistent Memory (Local JSON + Optional Firestore)
-Memory persists across restarts:
-- **Local JSON store** (`data/memory.json`) — fast, zero-config, works out of the box
-- **Optional Firestore integration** (`cloud/firestore/client.py`) for task state in cloud deployments
-- **Five categories:** instruction, reflection, task_outcome, skill, general
-- **Keyword search** across stored entries
-- **Curated:** entries are capped per category, and similar entries are deduplicated automatically
-- **Full CRUD:** add manually, delete single or bulk, clear per category — via the dashboard or REST API
+### 11. Persistent Memory (SQLite + Hybrid Retrieval + Trust)
+Memory persists across restarts — a Hermes-inspired system, not a flat list:
+- **Local SQLite store** (`data/memory.db`) with **FTS5 full-text search** kept in sync by triggers; zero-config, works out of the box (legacy `memory.json` is migrated automatically on first run)
+- **Hybrid retrieval:** BM25 candidates → token-overlap rerank → **holographic phase-vector similarity (HRR)** — no embedding API required → trust weighting
+- **Trust scoring:** rate memories helpful (+0.05) or unhelpful (−0.10); good memories rise, outdated ones sink faster than they rise. Retrieval is weighted by trust
+- **Compositional recall:** probe all facts about an entity, find related facts, or reason across multiple entities in vector space (`POST /api/memory/query`)
+- **Contradiction detection:** flags stored facts that share entities but make conflicting claims
+- **Injection-safe context injection:** relevant memories are recalled before planning and injected as a fenced `<memory-context>` block marked "NOT new user input" — recalled memory can never masquerade as fresh instructions; trivial prompts ("ok", "thanks") skip the round-trip entirely
+- **Auto-extraction:** durable preferences ("I prefer...") and decisions ("we decided to...") are harvested from task text into long-lived categories
+- **Curated:** global cap with instruction protection — standing instructions can never be evicted by task-outcome churn; exact duplicates rejected automatically
+- **Full CRUD + feedback:** add manually, delete single or bulk, clear per category, rate after use — via the dashboard or REST API
 
-### 12. Unified Credentials Management
+### 12. Self-Evolving Skill Library (Hermes Adaptation)
+The agent doesn't just solve tasks — it **remembers how** it solved them:
+- **SKILL.md packages:** each skill is a markdown folder (`data/skills/<name>/`) with frontmatter metadata (name, description, version, provenance) and a procedure body
+- **Auto-synthesis:** when a task finishes with ≥2 successful steps across ≥2 distinct tools, Gemini distills the workflow into a reusable skill — gated by a similarity dedup check so near-duplicates are never saved; failures never break the task
+- **Skills steer planning:** before every plan, the planner receives a fenced `<available-skills>` index (descriptions only); the single best-matched skill's full procedure is auto-injected via lexical scoring with light stemming — no embedding API required
+- **Usage telemetry:** every match bumps `use_count` / `last_used_at` in a sidecar JSON (observability only, never destructive)
+- **Deterministic lifecycle:** skills idle 30 days go `active → stale`, 90 days → archived (moved to `.archive/`, recoverable); pinned skills exempt
+- **Provenance + audit ledger:** every create/patch/archive/restore/delete is appended to a sha256-hashed `.ledger.jsonl`; agent-created skills carry `created_by: agent` + originating task ID, and survive patches forever
+- **Hard validation gates:** name slug rules, description budgets (60 chars for agent-created, trigger-first), content caps — the same gates for manual and auto-created skills
+- **Full REST API:** list, create, inspect, archive, restore, purge, and audit (`/api/skills*`)
+
+### 13. Unified Credentials Management
 All API keys and secrets managed in one place:
 - **10 categories** on a single credentials page
 - **Secure:** Secret values masked in UI, stored in `.env` (gitignored)
 - **Auto-fill:** Watchers use saved credentials automatically
 
-### 13. Traceability Dashboard
+### 14. Traceability Dashboard
 Every step is logged and visible in real-time:
 - **Tool calls** (blue) — what the agent did
 - **Reasoning steps** (purple) — what the agent was thinking
@@ -173,7 +187,7 @@ Every step is logged and visible in real-time:
 - **Errors** (red) — what went wrong and how it recovered
 - **Live Thinking tab** polls while a task runs, in a minimize-able side panel
 
-### 14. Multi-Step Task Decomposition
+### 15. Multi-Step Task Decomposition
 Complex goals are automatically broken into manageable steps:
 - Dependencies are resolved (step A before step B)
 - Each step maps to a specific tool
@@ -200,13 +214,13 @@ Complex goals are automatically broken into manageable steps:
 |-------|-----------|
 | **LLM** | Gemini Flash (via Gemini API, model configurable through `GEMINI_MODEL`, multi-key rotation with rate-limit backoff) |
 | **Agent Framework** | Google ADK (Agent Development Kit) wrapper |
-| **State Persistence** | Local JSON memory store; optional Google Cloud Firestore in cloud deployments |
+| **State Persistence** | Local SQLite memory store (FTS5 + HRR vector recall) + SKILL.md skill packages; optional Google Cloud Firestore in cloud deployments |
 | **Event Routing** | Google Cloud Pub/Sub |
 | **Deployment** | Google Cloud Run (scales to zero) |
 | **API** | FastAPI (Python) |
 | **Frontend** | Real-time traceability dashboard |
 | **Language** | Python 3.11+ |
-| **Testing** | 65 passing tests |
+| **Testing** | 113 passing tests |
 
 ---
 

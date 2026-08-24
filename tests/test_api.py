@@ -46,7 +46,8 @@ class TestMemoryDeletion:
         import agent.core.memory as mem_mod
         import api.main as api_main
 
-        monkeypatch.setattr(mem_mod, "_MEMORY_FILE", tmp_path / "memory.json")
+        monkeypatch.setattr(mem_mod, "_DB_PATH", tmp_path / "memory.db")
+        monkeypatch.setattr(mem_mod, "_LEGACY_JSON_PATH", tmp_path / "no-legacy.json")
         store = mem_mod.MemoryStore()
         monkeypatch.setattr(api_main, "memory_store", store)
         return store
@@ -99,7 +100,8 @@ class TestManualMemoryAdd:
         import agent.core.memory as mem_mod
         import api.main as api_main
 
-        monkeypatch.setattr(mem_mod, "_MEMORY_FILE", tmp_path / "memory.json")
+        monkeypatch.setattr(mem_mod, "_DB_PATH", tmp_path / "memory.db")
+        monkeypatch.setattr(mem_mod, "_LEGACY_JSON_PATH", tmp_path / "no-legacy.json")
         store = mem_mod.MemoryStore()
         monkeypatch.setattr(api_main, "memory_store", store)
         return store
@@ -147,7 +149,8 @@ class TestManualMemoryAdd:
         import api.main as api_main
         from agent.watchers.github import GitHubWatcher
 
-        monkeypatch.setattr(mem_mod, "_MEMORY_FILE", tmp_path / "memory.json")
+        monkeypatch.setattr(mem_mod, "_DB_PATH", tmp_path / "memory.db")
+        monkeypatch.setattr(mem_mod, "_LEGACY_JSON_PATH", tmp_path / "no-legacy.json")
         store = mem_mod.MemoryStore()
         monkeypatch.setattr(api_main, "memory_store", store)
         # The watcher resolves the singleton from the memory module at call time

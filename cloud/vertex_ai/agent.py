@@ -11,11 +11,9 @@ from typing import Any
 
 from google.adk import Agent, Runner
 from google.adk.tools import FunctionTool
-from google.genai import types
 
 from agent.config import settings
-from agent.orchestrator import orchestrator
-from agent.core.executor import list_tools, get_tool
+from agent.core.executor import get_tool, list_tools
 
 logger = logging.getLogger(__name__)
 

@@ -202,7 +202,13 @@ def _github_pipeline(task: Task) -> list[TaskStep]:
     return steps
 
 
-async def plan_task(task: Task, available_skills: list[str] | None = None, lessons: list[str] | None = None) -> list[TaskStep]:
+async def plan_task(
+    task: Task,
+    available_skills: list[str] | None = None,
+    lessons: list[str] | None = None,
+    memory_context: str | None = None,
+    skill_context: str | None = None,
+) -> list[TaskStep]:
     """Decompose a task into ordered steps.
 
     GitHub/repository/PR goals bypass Gemini entirely and get a deterministic
@@ -212,6 +218,11 @@ async def plan_task(task: Task, available_skills: list[str] | None = None, lesso
         task: The task to plan.
         available_skills: Optional list of available skill names.
         lessons: Past reflections/lessons learned from previous tasks.
+        memory_context: Fenced <memory-context> block recalled from persistent
+            memory (see agent.core.memory.MemoryStore.prefetch).
+        skill_context: Fenced <available-skills> block with the procedural
+            skill index and any matched procedure body (see
+            agent.core.skill_library.SkillLibrary.plan_context).
 
     Returns:
         Ordered list of TaskStep objects.
@@ -230,6 +241,10 @@ async def plan_task(task: Task, available_skills: list[str] | None = None, lesso
 
     user_prompt = f"""Goal: {task.goal}
 Context: {json.dumps(task.context) if task.context else 'None'}{lessons_context}
+
+{skill_context or ''}
+
+{memory_context or ''}
 
 Create a RESILIENT plan that will produce useful output even if some steps fail.
 Return ONLY the JSON array."""

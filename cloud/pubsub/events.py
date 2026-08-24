@@ -9,15 +9,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Callable, Awaitable
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from agent.config import settings
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 _publisher = None
 _subscriber = None
+_background_tasks: set[asyncio.Future[Any]] = set()
 
 
 def _get_publisher():
@@ -60,7 +64,7 @@ def publish_task_event(
         "status": status,
         "priority": priority,
         "context": context or {},
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     future = publisher.publish(
@@ -82,7 +86,7 @@ def publish_event(event_type: str, payload: dict[str, Any]) -> str:
     data = {
         "event_type": event_type,
         "payload": payload,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     future = publisher.publish(
@@ -117,7 +121,7 @@ def subscribe_to_tasks(callback: Callable[[dict[str, Any]], Awaitable[None]]) ->
             logger.info("Received task event: %s", data.get("task_id", "unknown"))
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.ensure_future(callback(data))
+                _background_tasks.add(asyncio.ensure_future(callback(data)))
             else:
                 loop.run_until_complete(callback(data))
             message.ack()

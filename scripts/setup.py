@@ -44,8 +44,9 @@ def check_firestore():
     """Check Firestore connectivity."""
     try:
         from google.cloud import firestore
+
         from agent.config import settings
-        client = firestore.Client(project=settings.google_cloud_project)
+        firestore.Client(project=settings.google_cloud_project)
         print(f"Firestore connected: {settings.google_cloud_project}")
         return True
     except Exception as e:

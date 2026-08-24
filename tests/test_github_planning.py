@@ -432,15 +432,18 @@ class TestLogicAuditRegressions:
         import agent.core.memory as mem_mod
         from agent.models import MemoryEntry
 
-        monkeypatch.setattr(mem_mod, "_MEMORY_FILE", tmp_path / "memory.json")
+        monkeypatch.setattr(mem_mod, "_DB_PATH", tmp_path / "memory.db")
+        monkeypatch.setattr(mem_mod, "_MAX_ENTRIES", 50)
         store = mem_mod.MemoryStore()
 
         store.save_instruction("when a pr arrives, review and merge if clean")
-        for i in range(120):  # flood past the global cap of 100
+        for i in range(120):  # flood well past the capped limit
             store.add(MemoryEntry(content=f"unique outcome number {i} for eviction test", category="task_outcome"))
 
         surviving = [e.content for e in store.get_by_category("instruction")]
         assert any("merge if clean" in c for c in surviving)
+        # Eviction actually happened — episodic entries were trimmed to the cap
+        assert store.size <= 50
 
 
 class TestGithubSkillUnits:

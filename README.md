@@ -10,7 +10,7 @@
 [![Gemini](https://img.shields.io/badge/Gemini-3.5%20Flash-4285F4?style=flat&logo=google&logoColor=white)](https://ai.google.dev)
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Run%20%7C%20Firestore%20%7C%20Pub%2FSub-4285F4?style=flat&logo=googlecloud&logoColor=white)](https://cloud.google.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-21%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-113%20passing-brightgreen)](#testing)
 
 **Built for the [Google "All Things Agentic" Hackathon](https://allthingsagentic.devpost.com) -- Track: The Taskmaster**
 
@@ -269,6 +269,19 @@ Credentials are stored in `.env` (gitignored) and never exposed to the frontend 
 | `GET` | `/api/approvals` | List pending approvals |
 | `POST` | `/api/approvals/{id}` | Approve or deny an action |
 | `GET` | `/api/memory` | Search/list memory entries |
+| `POST` | `/api/memory` | Add a memory entry (auto-detects instruction phrasing) |
+| `DELETE` | `/api/memory/{id}` | Delete a memory entry |
+| `POST` | `/api/memory/delete` | Bulk delete memory entries |
+| `POST` | `/api/memory/clear/{category}` | Clear a memory category |
+| `POST` | `/api/memory/{id}/feedback` | Rate a memory helpful/unhelpful (trains trust score) |
+| `POST` | `/api/memory/query` | Compositional recall: search / probe / related / reason |
+| `GET` | `/api/memory/contradictions` | Facts making conflicting claims |
+| `GET` | `/api/skills` | Procedural skill index with usage telemetry + lifecycle states |
+| `POST` | `/api/skills` | Create a skill (full SKILL.md or bare markdown) |
+| `GET` | `/api/skills/{name}` | Skill detail: frontmatter, markdown body, usage stats |
+| `DELETE` | `/api/skills/{name}` | Archive a skill (recoverable); `?purge=true` hard-deletes |
+| `POST` | `/api/skills/{name}/restore` | Restore the newest archived copy |
+| `GET` | `/api/skills/ledger` | Audit trail of every skill mutation (sha256-chained) |
 | `GET` | `/api/watchers` | List active event watchers |
 | `POST` | `/api/watchers` | Create a new watcher |
 | `POST` | `/api/watchers/{id}/start` | Start a stopped watcher |
@@ -344,7 +357,11 @@ nexusmind-ai/
 │   │   ├── planner.py              # Task decomposition via Gemini
 │   │   ├── executor.py             # Tool execution + smart approval
 │   │   ├── gemini_client.py        # Multi-key Gemini client
-│   │   └── memory.py               # Hermes-inspired memory store
+│   │   └── memory/                 # Hermes-inspired memory system
+│   │       ├── hrr.py              # Holographic Reduced Representations (phase vectors)
+│   │       ├── store.py            # SQLite facts + FTS5 + entity resolution + trust
+│   │       └── retrieval.py        # Hybrid BM25/Jaccard/HRR retriever
+│   │   ├── skill_library.py        # Self-evolving SKILL.md packages (Hermes adaptation)
 │   ├── skills/
 │   │   ├── web_research/           # Web search + URL fetch
 │   │   ├── file_management/        # File read/write/list
@@ -378,7 +395,7 @@ nexusmind-ai/
 │   ├── dashboard.html              # Live traceability dashboard
 │   ├── watcher_routes.py           # Watcher CRUD API endpoints
 │   └── credentials_routes.py       # Credentials management API
-├── tests/                          # 21 passing tests
+├── tests/                          # 113 passing tests
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
 ├── pyproject.toml                  # Dependencies + tool config
 └── README.md
@@ -392,10 +409,10 @@ nexusmind-ai/
 |---------|-------------|-------------------|
 | Multi-step task decomposition | [OpenClaw](https://github.com/openclaw/openclaw) | Gemini-powered planner with JSON step extraction |
 | Tool registry + sandboxed execution | OpenClaw | `@register_tool` decorator + subprocess isolation |
-| Persistent cross-session memory | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | Firestore-backed store with category filtering |
+| Persistent cross-session memory | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | SQLite + FTS5 store, hybrid BM25/Jaccard/HRR retrieval, trust scoring |
+| Self-evolving skill library | Hermes | Auto-synthesized SKILL.md packages from solved tasks, usage telemetry, stale/archive lifecycle, audit ledger |
 | Self-improvement reflection | Hermes | Post-task Gemini reflection saves learnings |
 | Event-driven scheduling | Hermes | Cloud Pub/Sub replaces in-process cron |
-| Memory lifecycle (active -> stale) | Hermes | Skill states with automatic transitions |
 | Self-correcting retry loops | Custom | Error analysis -> Gemini -> parameter adjustment -> retry |
 | Human-in-the-loop approval | Custom | Smart approval gate with Telegram bot for remote control |
 | Transparent traceability | Custom | In-memory trace collector -> live dashboard |
@@ -413,7 +430,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **21 tests** covering models, memory, executor, orchestrator, and API endpoints.
+All **113 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), executor, orchestrator, and API endpoints.
 
 ---
 

@@ -21,6 +21,7 @@ from typing import Any
 from agent.core.executor import execute_step, list_tools, set_task_context
 from agent.core.memory import memory_store
 from agent.core.planner import plan_task
+from agent.core.skill_library import skill_library as _skill_library
 from agent.models import StepStatus, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class Orchestrator:
 
     def __init__(self) -> None:
         self.memory = memory_store
+        self.skills = _skill_library
         self._running = False
 
     def _extract_lessons(self, goal: str) -> list[str]:
@@ -131,6 +133,13 @@ class Orchestrator:
             await notify_task_started(task.id, task.goal)
 
         try:
+            # Prefetch relevant memory for this turn (Hermes pattern): a fenced
+            # <memory-context> block with trust-ranked, hybrid-retrieved facts.
+            # Trivial prompts are gated inside prefetch() and return "".
+            memory_context = self.memory.prefetch(task.goal)
+            if memory_context:
+                logger.info("Recalled %d chars of memory context for planning", len(memory_context))
+
             # Check memory for similar past tasks (for context, not always needed)
             similar = self.memory.search(task.goal, top_k=3, category="task_outcome")
             if similar:
@@ -141,14 +150,29 @@ class Orchestrator:
             if lessons:
                 logger.info("Applying %d past lessons to planning", len(lessons))
 
+            # Procedural skill index + best-matched procedure body (Hermes
+            # description-as-router pattern). matched skills get use-credit
+            # when the task completes successfully.
+            skill_context, matched_skills = self.skills.plan_context(task.goal)
+            if skill_context:
+                logger.info(
+                    "Injected skill context (%d matched procedure(s))", len(matched_skills)
+                )
+
             # Get available skills
             available_skills = [
                 e.metadata.get("skill_name", "")
                 for e in self.memory.get_by_category("skill")
             ]
 
-            # Plan with lessons (self-improvement feeds into planning)
-            task.steps = await plan_task(task, available_skills or None, lessons or None)
+            # Plan with lessons + recalled memory + procedural skills
+            task.steps = await plan_task(
+                task,
+                available_skills or None,
+                lessons or None,
+                memory_context or None,
+                skill_context or None,
+            )
             task.status = TaskStatus.EXECUTING
 
             # Execute steps
@@ -185,6 +209,19 @@ class Orchestrator:
             if not _is_trivial(task) and len(task.steps) > 1:
                 self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
 
+            # Auto-extract durable preferences/decisions from this interaction
+            # (Hermes session-harvest pattern, applied per-task instead).
+            extracted = self.memory.extract_and_store(task.goal)
+            if extracted:
+                logger.info("Auto-extracted %d durable fact(s) from task goal", extracted)
+
+            # Credit any injected procedural skills that were actually followed,
+            # then try to grow the library from this task (self-evolution).
+            for name in matched_skills:
+                self.skills.record_use(name)
+                logger.info("Skill '%s' used by task %s", name, task.id)
+            await self._maybe_create_skill(task)
+
             await self._self_reflect(task)
 
             # Notify via Telegram
@@ -213,6 +250,104 @@ class Orchestrator:
         """Create and handle a task from a goal string."""
         task = Task(goal=goal, context=context or {})
         return await self.handle_task(task)
+
+    async def _maybe_create_skill(self, task: Task) -> None:
+        """Auto-create a reusable skill from a solved multi-step task.
+
+        Hermes' trigger heuristics (skill_manager_tool schema): complex task
+        succeeded, non-trivial workflow discovered. We gate deterministically
+        (>=2 successful steps of >=2 DISTINCT tools), then let Gemini write the
+        SKILL.md, then enforce the same hard validation gates as manual creates.
+        Failures are logged and swallowed — never break task completion.
+        """
+        if _is_trivial(task) or len(task.steps) < 2:
+            return
+        successful = [s for s in task.steps if s.status == StepStatus.SUCCESS]
+        distinct_tools = {s.tool_name for s in successful if s.tool_name}
+        if len(successful) < 2 or len(distinct_tools) < 2:
+            logger.debug("Task %s too routine for skill creation", task.id)
+            return
+
+        # Dedup gate: skip if an existing skill already covers this procedure.
+        probe = f"{task.goal} {(task.result or '')[:200]}"
+        similar = self.skills.find_similar(probe)
+        if similar:
+            logger.info("Similar skill exists (%s); skipping auto-creation", similar[0]["name"])
+            return
+
+        try:
+            from agent.core.gemini_client import generate_content
+
+            steps_summary = "\n".join(
+                f"- [{s.tool_name}] {s.description}: {(s.result or '')[:120]}"
+                for s in successful[:6]
+            )
+            synthesis_prompt = f"""A task was just completed successfully. Decide whether it contains a
+REUSABLE PROCEDURE worth saving as a skill for future similar tasks.
+
+Goal: {task.goal}
+
+Steps executed:
+{steps_summary}
+
+Final result: {(task.result or '')[:400]}
+
+RULES:
+- Skills must encode a REPEATABLE WORKFLOW (trigger + steps + pitfalls), NOT task-specific facts.
+- If this was routine/one-off with nothing reusable, output exactly: NOTHING_TO_SAVE
+- description MUST be <= 60 chars: 'Use when <trigger>. <behavior>.' One sentence.
+- name MUST be lowercase-kebab-case slug.
+
+Output ONLY the SKILL.md file:
+
+---
+name: <kebab-slug>
+description: "<=60 chars, trigger first"
+version: 1.0.0
+---
+
+# <Title>
+
+## When to Use
+<bullet triggers>
+
+## Procedure
+<numbered steps referencing real tools: web_search, fetch_url, run_command,
+execute_code, read_file, write_file, github_*>
+
+## Pitfalls
+<what went wrong or could go wrong>"""
+
+            response = await generate_content(
+                system=(
+                    "You are a self-evolving AI agent that distills solved tasks "
+                    "into reusable markdown skills. Be extremely selective."
+                ),
+                user=synthesis_prompt,
+                temperature=0.3,
+                max_tokens=900,
+            )
+            if not response or "NOTHING_TO_SAVE" in response.upper():
+                logger.debug("No skill synthesized from task %s", task.id)
+                return
+
+            content = response.strip()
+            if content.startswith("```"):
+                content = "\n".join(
+                    line for line in content.splitlines() if not line.strip().startswith("```")
+                ).strip()
+
+            meta, _body = self.skills.split_frontmatter(content)
+            name = self.skills.create(
+                name=str(meta.get("name") or task.goal),
+                content=content,
+                actor="agent",
+                created_by="agent",
+                origin_task=task.id,
+            )
+            logger.info("Auto-created skill '%s' from task %s", name, task.id)
+        except Exception:
+            logger.warning("Skill auto-creation failed for task %s (non-critical)", task.id, exc_info=True)
 
     async def _self_reflect(self, task: Task) -> None:
         """Post-task reflection — adapted from Hermes' self-improvement loop.

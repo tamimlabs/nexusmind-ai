@@ -7,7 +7,7 @@ and can resume long-running tasks.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from agent.config import settings
@@ -41,7 +41,7 @@ class FirestoreTaskStore:
     def save_task(self, task_data: dict[str, Any]) -> None:
         """Save or update a task document."""
         doc_id = task_data.get("id", "unknown")
-        task_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        task_data["updated_at"] = datetime.now(UTC).isoformat()
         self._col().document(doc_id).set(task_data, merge=True)
         logger.debug("Saved task %s to Firestore", doc_id)
 
@@ -83,7 +83,7 @@ class FirestoreMemoryStore:
     def save_memory(self, entry: dict[str, Any]) -> None:
         """Save a memory entry."""
         doc_id = entry.get("id", "auto")
-        entry["created_at"] = datetime.now(timezone.utc).isoformat()
+        entry["created_at"] = datetime.now(UTC).isoformat()
         self._col().document(doc_id).set(entry, merge=True)
 
     def search_memories(self, category: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -116,7 +116,7 @@ class FirestoreSkillStore:
     def save_skill(self, skill_data: dict[str, Any]) -> None:
         """Save a skill."""
         name = skill_data.get("name", "unknown")
-        skill_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        skill_data["updated_at"] = datetime.now(UTC).isoformat()
         self._col().document(name).set(skill_data, merge=True)
 
     def get_skill(self, name: str) -> dict[str, Any] | None:

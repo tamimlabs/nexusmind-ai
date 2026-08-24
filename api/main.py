@@ -22,6 +22,8 @@ from pydantic import BaseModel
 import agent.config as _cfg
 from agent.core.executor import get_pending_approvals, list_tools, resolve_approval
 from agent.core.memory import memory_store
+from agent.core.skill_library import SkillError
+from agent.core.skill_library import skill_library as _skill_library
 from agent.models import MemoryEntry, Task, TaskPriority, TaskStatus
 from agent.observability import create_trace, get_trace, list_traces
 from api.credentials_routes import router as credentials_router
@@ -224,10 +226,7 @@ async def agent_status():
         ],
         "tools_count": len(tools),
         "memory_size": memory_store.size,
-        "memory_categories": {
-            cat: len(memory_store.get_by_category(cat))
-            for cat in ["task_outcome", "reflection", "skill"]
-        },
+        "memory_categories": memory_store.categories(),
         "github": {
             "token_fingerprint": github_token_fp,
             "token_loaded": github_token_fp not in ("<none>", "<unknown>"),
@@ -616,7 +615,15 @@ async def clear_memory_category(category: str):
     return {"cleared": removed, "category": category}
 
 
-VALID_MEMORY_CATEGORIES = {"instruction", "reflection", "task_outcome", "skill", "general"}
+VALID_MEMORY_CATEGORIES = {
+    "instruction",
+    "reflection",
+    "task_outcome",
+    "skill",
+    "general",
+    "user_pref",  # auto-extracted ("I prefer...")
+    "project",  # auto-extracted ("we decided to...")
+}
 
 
 class AddMemoryRequest(BaseModel):
@@ -647,6 +654,185 @@ async def add_memory(req: AddMemoryRequest):
     memory_store.add(entry)
     logger.info("Manual memory added (%s): %.80s", category, content)
     return {"id": entry.id, "category": category}
+
+
+class MemoryFeedbackRequest(BaseModel):
+    helpful: bool
+
+
+@app.post("/api/memory/{entry_id}/feedback")
+async def memory_feedback(entry_id: str, req: MemoryFeedbackRequest):
+    """Rate a memory after use — trains asymmetric trust scores.
+
+    helpful=True raises trust by 0.05; helpful=False drops it by 0.10 so
+    outdated memories sink faster than good ones rise.
+    """
+    try:
+        result = memory_store.record_feedback(entry_id, helpful=req.helpful)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"Memory entry not found: {entry_id}"
+        ) from None
+    return result
+
+
+class MemoryQueryRequest(BaseModel):
+    mode: str = "search"  # search | probe | related | reason
+    query: str = ""
+    entity: str = ""
+    entities: list[str] = []
+    limit: int = 10
+
+
+@app.post("/api/memory/query")
+async def memory_query(req: MemoryQueryRequest):
+    """Compositional memory recall (Hermes holographic pattern).
+
+    - search: hybrid BM25 + Jaccard + HRR vector retrieval
+    - probe: ALL facts where an entity plays a structural role
+    - related: facts structurally connected to an entity
+    - reason: multi-entity intersection (vector-space JOIN)
+    """
+    mode = req.mode.lower()
+    limit = max(1, min(req.limit, 50))
+    if mode == "search":
+        entries = memory_store.search(req.query, top_k=limit) if req.query.strip() else []
+    elif mode == "probe" and req.entity.strip():
+        entries = memory_store.probe(req.entity.strip(), limit=limit)
+    elif mode == "related" and req.entity.strip():
+        entries = memory_store.related(req.entity.strip(), limit=limit)
+    elif mode == "reason" and req.entities:
+        entries = memory_store.reason([e for e in req.entities if e.strip()], limit=limit)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode '{req.mode}' requires its input (query/entity/entities)",
+        )
+    return [
+        {
+            "id": e.id,
+            "content": e.content[:500],
+            "category": e.category,
+            "score": e.metadata.get("score"),
+            "trust_score": e.metadata.get("trust_score"),
+            "created_at": e.created_at.isoformat(),
+        }
+        for e in entries
+    ]
+
+
+@app.get("/api/memory/contradictions")
+async def memory_contradictions(limit: int = Query(default=10)):
+    """Facts that share entities but make conflicting claims (memory hygiene)."""
+    return memory_store.find_contradictions(limit=max(1, min(limit, 50)))
+
+
+# ── Skill Library (self-evolving procedures) ──────────────────────
+
+
+def _skill_summary(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": entry["name"],
+        "description": entry["description"],
+        "version": entry["version"],
+        "created_by": entry.get("created_by"),
+        "category": entry.get("category") or "",
+        "state": entry.get("state", "active"),
+        "archived": entry.get("archived", False),
+        "use_count": entry.get("use_count", 0),
+        "patch_count": entry.get("patch_count", 0),
+        "last_used_at": entry.get("last_used_at"),
+        "origin_task": entry.get("origin_task"),
+    }
+
+
+@app.get("/api/skills")
+async def list_skills(include_archived: bool = Query(default=False)):
+    """Procedural skill index with usage telemetry and lifecycle states."""
+    _skill_library.apply_transitions()
+    return [
+        _skill_summary(e) for e in _skill_library.list_skills(include_archived=include_archived)
+    ]
+
+
+class CreateSkillRequest(BaseModel):
+    name: str
+    description: str = ""  # used only when content has no frontmatter
+    content: str
+
+
+@app.post("/api/skills")
+async def create_skill(req: CreateSkillRequest):
+    """Create a procedural skill manually.
+
+    Accepts either a full SKILL.md document (with frontmatter) or a bare
+    markdown body — frontmatter is then synthesized from name/description.
+    """
+    content = req.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content must not be empty")
+    if not content.startswith("---"):
+        description = (req.description or content.splitlines()[0]).strip().replace('"', "'")
+        content = (
+            "---\n"
+            f"name: {req.name.strip().lower()}\n"
+            f'description: "{description[:1024]}"\n'
+            "version: 1.0.0\n"
+            "---\n\n"
+            + content
+        )
+    try:
+        name = _skill_library.create(name=req.name, content=content, actor="user")
+    except SkillError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"created": name}
+
+
+@app.get("/api/skills/ledger")
+async def skill_ledger(limit: int = Query(default=50)):
+    """Audit trail of every skill mutation (who/what/when/sha256)."""
+    return _skill_library.read_ledger(limit=max(1, min(limit, 200)))
+
+
+@app.get("/api/skills/{name}")
+async def get_skill(name: str):
+    """Full skill detail: frontmatter metadata, markdown body, and usage stats."""
+    try:
+        path, meta, body = _skill_library._read(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {name}") from None
+    return {
+        **_skill_summary({**meta, **_skill_library.usage_of(name), "path": str(path)}),
+        "body": body,
+    }
+
+
+@app.delete("/api/skills/{name}")
+async def delete_skill(name: str, purge: bool = Query(default=False)):
+    """Archive a skill (recoverable), or hard-delete with ?purge=true."""
+    try:
+        removed = (
+            _skill_library.delete(name, actor="user")
+            if purge
+            else _skill_library.archive(name, actor="user")
+        )
+    except SkillError as exc:  # restore collision etc.
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {name}")
+    return {"removed": name, "purged": purge}
+
+
+@app.post("/api/skills/{name}/restore")
+async def restore_skill(name: str):
+    """Restore the newest archived copy of a skill."""
+    try:
+        restored = _skill_library.restore(name, actor="user")
+    except SkillError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if not restored:
+        raise HTTPException(status_code=404, detail=f"No archived copy of: {name}")
+    return {"restored": name}
 
 
 # ── Watchers ──────────────────────────────────────────────────────

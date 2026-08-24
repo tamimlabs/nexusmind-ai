@@ -16,6 +16,8 @@ AGENTS.md
 *_summary.txt
 data/watcher_state.json
 data/memory.json
+data/memory.db*
+data/skills/
 output/
 
 # ----- Downloaded Reference Code (never commit) -----

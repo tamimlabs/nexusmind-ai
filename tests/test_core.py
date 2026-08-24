@@ -38,11 +38,12 @@ class TestModels:
 
 class TestMemory:
     @pytest.fixture(autouse=True)
-    def _isolated_memory_file(self, tmp_path, monkeypatch):
-        """Keep tests off the real data/memory.json."""
+    def _isolated_memory_db(self, tmp_path, monkeypatch):
+        """Keep tests off the real data/memory.db."""
         import agent.core.memory as mem_mod
 
-        monkeypatch.setattr(mem_mod, "_MEMORY_FILE", tmp_path / "memory.json")
+        monkeypatch.setattr(mem_mod, "_DB_PATH", tmp_path / "memory.db")
+        monkeypatch.setattr(mem_mod, "_LEGACY_JSON_PATH", tmp_path / "no-legacy.json")
 
     def test_add_and_search(self):
         store = MemoryStore()
