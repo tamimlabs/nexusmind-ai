@@ -457,4 +457,6 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 
 Patterns adapted from [OpenClaw](https://github.com/openclaw/openclaw) and [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 
+Made with ❤️ by Tamim Hasan
+
 </div>
