@@ -103,7 +103,7 @@ class GitHubWatcher(BaseWatcher):
 
         if event_type == "github.pr.opened":
             goal = (
-                f"Use run_command with curl to fetch PR details from {payload['diff_url']}.\n"
+                f"Use run_command with curl to fetch PR details from https://api.github.com/repos/{self.repo}/pulls/{payload['number']}.\n"
                 f"Then use execute_code to analyze the code changes for quality and security.\n"
                 f"Finally use run_command with curl to post a review comment on the PR.\n"
                 f"Decide whether to merge or request changes based on your memory and instructions.\n"
@@ -113,7 +113,7 @@ class GitHubWatcher(BaseWatcher):
 
         elif event_type == "github.issue.opened":
             return (
-                f"Use run_command with curl to fetch issue details from the API.\n"
+                f"Use run_command with curl to fetch issue details from https://api.github.com/repos/{self.repo}/issues/{payload['number']}.\n"
                 f"Analyze the issue and post a helpful comment.\n"
                 f"Issue #{payload['number']}: '{payload['title']}'"
             )
