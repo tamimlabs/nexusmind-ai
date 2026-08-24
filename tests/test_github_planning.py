@@ -256,12 +256,12 @@ class TestStandingInstructionStorage:
 
 
 class TestNotificationRateLimit:
-    """'No instruction' Telegram notices are rate-limited (anti-spam)."""
+    """'No instruction' Telegram notices are rate-limited (anti-spam), all watchers."""
 
     async def test_second_notice_within_window_is_suppressed(self, monkeypatch):
-        import agent.watchers.github as gh_mod
+        import agent.watchers.base as base_mod
         from agent.core import memory as memory_mod
-        from agent.watchers.github import GitHubWatcher
+        from agent.watchers.rss import RSSWatcher
 
         sent: list[str] = []
 
@@ -273,18 +273,18 @@ class TestNotificationRateLimit:
         )
         monkeypatch.setattr("agent.telegram.is_configured", lambda: True)
         monkeypatch.setattr("agent.telegram.send_message", fake_send)
-        monkeypatch.setattr(gh_mod, "_last_no_instruction_notify", {})
+        monkeypatch.setattr(base_mod, "_last_no_instruction_notify", {})
 
-        w = GitHubWatcher("w1", {"repo": "o/r"})
-        await w._notify_no_instruction(1, "first PR")
-        await w._notify_no_instruction(2, "second PR")  # same window -> suppressed
+        w = RSSWatcher("w1", {"feed_url": "http://example.com/rss"})
+        await w.notify_unhandled_event("first event")
+        await w.notify_unhandled_event("second event")  # same window -> suppressed
 
         assert len(sent) == 1
 
     async def test_notice_allowed_again_after_window(self, monkeypatch):
-        import agent.watchers.github as gh_mod
+        import agent.watchers.base as base_mod
         from agent.core import memory as memory_mod
-        from agent.watchers.github import GitHubWatcher
+        from agent.watchers.rss import RSSWatcher
 
         sent: list[str] = []
 
@@ -296,17 +296,115 @@ class TestNotificationRateLimit:
         )
         monkeypatch.setattr("agent.telegram.is_configured", lambda: True)
         monkeypatch.setattr("agent.telegram.send_message", fake_send)
-        monkeypatch.setattr(gh_mod, "_last_no_instruction_notify", {})
+        monkeypatch.setattr(base_mod, "_last_no_instruction_notify", {})
 
         t = [0.0]
-        monkeypatch.setattr(gh_mod.time, "monotonic", lambda: t[0])
+        monkeypatch.setattr(base_mod.time, "monotonic", lambda: t[0])
 
-        w = GitHubWatcher("w1", {"repo": "o/r"})
-        await w._notify_no_instruction(1, "a")
+        w = RSSWatcher("w1", {"feed_url": "http://example.com/rss"})
+        await w.notify_unhandled_event("a")
         t[0] += 6 * 3600 + 1  # window elapsed
-        await w._notify_no_instruction(2, "b")
+        await w.notify_unhandled_event("b")
 
         assert len(sent) == 2
+
+    async def test_rate_limit_is_per_watcher(self, monkeypatch):
+        import agent.watchers.base as base_mod
+        from agent.core import memory as memory_mod
+        from agent.watchers.reddit import RedditWatcher
+
+        sent: list[str] = []
+
+        async def fake_send(msg):
+            sent.append(msg)
+
+        monkeypatch.setattr(
+            memory_mod.memory_store, "get_by_category", lambda cat: []
+        )
+        monkeypatch.setattr("agent.telegram.is_configured", lambda: True)
+        monkeypatch.setattr("agent.telegram.send_message", fake_send)
+        monkeypatch.setattr(base_mod, "_last_no_instruction_notify", {})
+
+        w1 = RedditWatcher("w1", {})
+        w2 = RedditWatcher("w2", {})
+        await w1.notify_unhandled_event("w1 event")
+        await w2.notify_unhandled_event("w2 event")  # different watcher -> allowed
+
+        assert len(sent) == 2
+
+
+class TestAllWatchersMemoryGated:
+    """The memory gate applies uniformly to every auto-triggering watcher."""
+
+    def _instruction(self):
+        from agent.models import MemoryEntry
+
+        return MemoryEntry(content="whenever something new shows up, summarize it for me", category="instruction")
+
+    async def test_rss_watcher_gate(self, monkeypatch):
+        from agent.core import memory as memory_mod
+        from agent.watchers.rss import RSSWatcher
+
+        event = {
+            "event_type": "rss.new_item",
+            "payload": {"title": "Big news", "link": "http://x/1", "description": ""},
+        }
+
+        # No instruction -> silent
+        monkeypatch.setattr(memory_mod.memory_store, "get_by_category", lambda cat: [])
+        assert await RSSWatcher("rss1", {"feed_url": "http://x"}).process_event(event) is None
+
+        # With instruction -> gated goal carrying the owner's words + event details
+        monkeypatch.setattr(
+            memory_mod.memory_store, "get_by_category", lambda cat: [self._instruction()]
+        )
+        goal = await RSSWatcher("rss1", {"feed_url": "http://x"}).process_event(event)
+        assert goal and "summarize it for me" in goal and "Big news" in goal
+
+    async def test_jira_watcher_gate(self, monkeypatch):
+        from agent.core import memory as memory_mod
+        from agent.models import MemoryEntry
+        from agent.watchers.jira import JiraWatcher
+
+        event = {
+            "event_type": "jira.issue.new",
+            "payload": {"key": "PROJ-9", "title": "Login broken", "status": "new", "comment_count": 0},
+        }
+        monkeypatch.setattr(memory_mod.memory_store, "get_by_category", lambda cat: [])
+        assert await JiraWatcher("jira1", {}).process_event(event) is None
+
+        # Domain-specific instruction is required — generic ones don't unlock Jira
+        jira_instruction = MemoryEntry(
+            content="when a new jira issue appears, analyze it and suggest a fix",
+            category="instruction",
+        )
+        monkeypatch.setattr(
+            memory_mod.memory_store,
+            "get_by_category",
+            lambda cat: [jira_instruction] if cat == "instruction" else [],
+        )
+        goal = await JiraWatcher("jira1", {}).process_event(event)
+        assert goal and "PROJ-9" in goal
+
+    async def test_cron_watcher_is_pre_authorized(self):
+        """Owner-configured cron goals run without a stored instruction."""
+        from agent.watchers.cron import CronWatcher
+
+        w = CronWatcher("cron1", {"goal": "Check deployment health"})
+        assert w.INSTRUCTION_KEYWORDS == ()  # no gate keywords by design
+        goal = await w.process_event({"event_type": "cron.trigger", "payload": {}})
+        assert goal == "Check deployment health"
+
+    def test_every_auto_watcher_declares_keywords(self):
+        from agent.watchers.discord import DiscordWatcher
+        from agent.watchers.email_watcher import EmailWatcher
+        from agent.watchers.gitlab import GitLabWatcher
+        from agent.watchers.hackernews import HackerNewsWatcher
+        from agent.watchers.reddit import RedditWatcher
+        from agent.watchers.slack import SlackWatcher
+
+        for cls in (DiscordWatcher, EmailWatcher, GitLabWatcher, HackerNewsWatcher, RedditWatcher, SlackWatcher):
+            assert cls.INSTRUCTION_KEYWORDS, f"{cls.__name__} missing INSTRUCTION_KEYWORDS"
 
 
 class TestGithubSkillUnits:

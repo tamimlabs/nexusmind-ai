@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 class GitLabWatcher(BaseWatcher):
     """Watch a GitLab project for new MRs and issues."""
 
+    INSTRUCTION_KEYWORDS = ("gitlab", "mr ", "merge request", "repo", "review")
+
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
         self.project_id = config.get("project_id", "")
@@ -85,16 +87,28 @@ class GitLabWatcher(BaseWatcher):
         payload = event["payload"]
         event_type = event["event_type"]
 
+        if not event_type.startswith("gitlab."):
+            return None
+
+        instruction = self.standing_instruction()
+        if instruction is None:
+            await self.notify_unhandled_event(
+                f"GitLab {payload['number']} in project {self.project_id}: '{payload['title']}'"
+            )
+            return None
+
         if event_type == "gitlab.mr.opened":
-            return (
-                f"Review GitLab MR !{payload['number']}: "
-                f"'{payload['title']}'. Analyze changes, check for issues, "
-                f"and provide a summary with recommendations."
+            return self.gated_goal(
+                instruction,
+                f"GitLab MR !{payload['number']}: '{payload['title']}'. "
+                f"Analyze changes, check for issues, and provide a summary "
+                f"with recommendations.",
             )
         elif event_type == "gitlab.issue.opened":
-            return (
-                f"Analyze GitLab issue #{payload['number']}: "
-                f"'{payload['title']}'. Understand the problem, research solutions, "
-                f"and provide a helpful response."
+            return self.gated_goal(
+                instruction,
+                f"GitLab issue #{payload['number']}: '{payload['title']}'. "
+                f"Understand the problem, research solutions, and provide a "
+                f"helpful response.",
             )
         return None

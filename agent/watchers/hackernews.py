@@ -20,6 +20,8 @@ HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
 class HackerNewsWatcher(BaseWatcher):
     """Watch Hacker News for new front-page stories and comments."""
 
+    INSTRUCTION_KEYWORDS = ("hacker news", "hn", "story", "news")
+
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
         self.watch_stories = config.get("watch_stories", True)
@@ -102,15 +104,26 @@ class HackerNewsWatcher(BaseWatcher):
         """Convert an HN event into an agent goal."""
         payload = event["payload"]
 
+        instruction = self.standing_instruction()
+        if instruction is None:
+            await self.notify_unhandled_event(
+                f"New HN activity: '{payload['title'] if 'title' in payload else payload.get('story_title', '')}'"
+            )
+            return None
+
         if event["event_type"] == "hn.story.new":
-            return (
-                f"New HN story: '{payload['title']}' ({payload['url']}). "
-                f"Summarize key points and discuss."
+            return self.gated_goal(
+                instruction,
+                f"the new HN story '{payload['title']}' ({payload['url']}). "
+                f"Summarize key points and discuss.",
             )
         elif event["event_type"] == "hn.comment.new":
-            return (
-                f"New HN comment by '{payload['author']}' on '{payload['story_title']}': "
-                f"'{payload['text']}'. Analyze the discussion and provide insights."
+            return self.gated_goal(
+                instruction,
+                f"the new HN comment by '{payload['author']}' on "
+                f"'{payload['story_title']}': '{payload['text']}'. "
+                f"Analyze the discussion and provide insights.",
             )
+        return None
 
         return None

@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 class RSSWatcher(BaseWatcher):
     """Watch an RSS/Atom feed for new items."""
 
+    INSTRUCTION_KEYWORDS = ("rss", "feed", "article", "news", "summar")
+
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
         self.feed_url = config.get("feed_url", "")
@@ -84,8 +86,16 @@ class RSSWatcher(BaseWatcher):
 
     async def process_event(self, event: dict[str, Any]) -> str | None:
         payload = event["payload"]
-        return (
-            f"Analyze new article: '{payload['title']}'. "
-            f"URL: {payload['link']}. "
-            f"Fetch the content, summarize key points, and provide insights."
+
+        instruction = self.standing_instruction()
+        if instruction is None:
+            await self.notify_unhandled_event(
+                f"New RSS article: '{payload['title']}' ({payload['link']})"
+            )
+            return None
+
+        return self.gated_goal(
+            instruction,
+            f"the new article '{payload['title']}' ({payload['link']}). "
+            f"Fetch the content, summarize key points, and provide insights.",
         )

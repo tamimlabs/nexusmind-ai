@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 class RedditWatcher(BaseWatcher):
     """Watch subreddits for new posts via the Reddit JSON API."""
 
+    INSTRUCTION_KEYWORDS = ("reddit", "subreddit", "post")
+
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
         self.subreddits: list[str] = config.get("subreddits", [])
@@ -82,9 +84,17 @@ class RedditWatcher(BaseWatcher):
         payload = event["payload"]
 
         if event["event_type"] == "reddit.post.new":
-            return (
-                f"New post in r/{payload['subreddit']}: '{payload['title']}'. "
-                f"Analyze discussion and summarize."
+            instruction = self.standing_instruction()
+            if instruction is None:
+                await self.notify_unhandled_event(
+                    f"New Reddit post in r/{payload['subreddit']}: '{payload['title']}'"
+                )
+                return None
+
+            return self.gated_goal(
+                instruction,
+                f"the new post in r/{payload['subreddit']}: '{payload['title']}'. "
+                f"Analyze discussion and summarize.",
             )
 
         return None

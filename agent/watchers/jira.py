@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 class JiraWatcher(BaseWatcher):
     """Watch a Jira project for new and updated issues."""
 
+    INSTRUCTION_KEYWORDS = ("jira", "issue", "ticket")
+
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
         self.domain = config.get("domain", "")  # e.g. "company.atlassian.net"
@@ -132,16 +134,28 @@ class JiraWatcher(BaseWatcher):
         payload = event["payload"]
         event_type = event["event_type"]
 
+        if not event_type.startswith("jira."):
+            return None
+
+        instruction = self.standing_instruction()
+        if instruction is None:
+            await self.notify_unhandled_event(
+                f"Jira {payload['key']} ({payload.get('status', 'new')}): '{payload['title']}'"
+            )
+            return None
+
         if event_type == "jira.issue.new":
-            return (
-                f"New Jira issue {payload['key']}: '{payload['title']}'. "
-                f"Analyze the issue and provide a solution."
+            return self.gated_goal(
+                instruction,
+                f"the new Jira issue {payload['key']}: '{payload['title']}'. "
+                f"Analyze the issue and provide a solution.",
             )
         elif event_type == "jira.issue.updated":
-            return (
-                f"Jira issue {payload['key']} was updated "
+            return self.gated_goal(
+                instruction,
+                f"the update to Jira issue {payload['key']} "
                 f"(status: {payload['status']}, comments: {payload['comment_count']}): "
-                f"'{payload['title']}'. Review the update and provide a helpful response."
+                f"'{payload['title']}'. Review the update and provide a helpful response.",
             )
 
         return None

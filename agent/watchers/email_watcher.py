@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 class EmailWatcher(BaseWatcher):
     """Watch an IMAP inbox for new (or unread) emails."""
 
+    INSTRUCTION_KEYWORDS = ("email", "mail", "inbox", "reply", "respond")
+
     MAX_FETCH_PER_CHECK = 20
 
     def __init__(self, watcher_id: str, config: dict[str, Any]):
@@ -140,9 +142,17 @@ class EmailWatcher(BaseWatcher):
         payload = event["payload"]
 
         if event["event_type"] == "email.received":
-            return (
-                f"New email from '{payload['sender']}': '{payload['subject']}'. "
-                f"Analyze and draft response."
+            instruction = self.standing_instruction()
+            if instruction is None:
+                await self.notify_unhandled_event(
+                    f"New email from '{payload['sender']}': '{payload['subject']}'"
+                )
+                return None
+
+            return self.gated_goal(
+                instruction,
+                f"the new email from '{payload['sender']}': "
+                f"'{payload['subject']}'. Analyze and draft response.",
             )
 
         return None

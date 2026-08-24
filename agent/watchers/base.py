@@ -5,10 +5,15 @@ import abc
 import asyncio
 import contextlib
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Notify the owner about unhandled events AT MOST once per window (anti-spam)
+_NO_INSTRUCTION_NOTIFY_WINDOW_SECONDS = 6 * 3600
+_last_no_instruction_notify: dict[str, float] = {}
 
 
 class BaseWatcher(abc.ABC):
@@ -17,7 +22,21 @@ class BaseWatcher(abc.ABC):
     Watchers monitor external event sources and trigger agent tasks
     when events are detected. They are token-efficient: only call
     the LLM when there's actual work to do.
+
+    Autonomy policy — MEMORY-GATED ACTIONS:
+    Watchers that auto-generate goals MUST NOT act on their own initiative.
+    Before triggering a task, they check agent memory for a standing
+    instruction from the owner relevant to their domain. Found -> the goal
+    embeds that instruction. Not found -> NO action; the owner gets a
+    rate-limited notification instead.
+    Watchers whose goal text is explicitly configured by the owner (cron,
+    webhook) are pre-authorized and skip this gate.
     """
+
+    # Subclasses with auto-generated goals override this with keywords that
+    # mark a stored instruction as relevant to their domain, e.g.
+    # ("pr", "merge", "review"). Empty tuple = gate can never pass.
+    INSTRUCTION_KEYWORDS: tuple[str, ...] = ()
 
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         self.watcher_id = watcher_id
@@ -27,6 +46,64 @@ class BaseWatcher(abc.ABC):
         self._last_check: datetime | None = None
         self._events_processed: int = 0
         self._state: dict[str, Any] = {}
+
+    def standing_instruction(self) -> str | None:
+        """Most recent user instruction relevant to this watcher, if any.
+
+        This is the permission layer: the watcher acts ONLY on events when
+        the owner previously stated a direction (stored in memory).
+        """
+        if not self.INSTRUCTION_KEYWORDS:
+            return None
+        from agent.core.memory import memory_store
+
+        entries = memory_store.get_by_category("instruction")
+        for entry in reversed(entries):  # most recent wins
+            content = entry.content.lower()
+            if any(kw in content for kw in self.INSTRUCTION_KEYWORDS):
+                return entry.content
+        return None
+
+    def gated_goal(self, instruction: str, event_description: str) -> str:
+        """Build a goal that applies the owner's standing instruction to an event."""
+        return (
+            f'Standing instruction from my owner: "{instruction}"\n'
+            f"Apply it to this event: {event_description}"
+        )
+
+    def _should_notify_no_instruction(self) -> bool:
+        """Anti-spam: at most one 'event arrived, no orders' message per window."""
+        now = time.monotonic()
+        last = _last_no_instruction_notify.get(self.watcher_id)
+        if last is not None and (now - last) < _NO_INSTRUCTION_NOTIFY_WINDOW_SECONDS:
+            return False
+        _last_no_instruction_notify[self.watcher_id] = now
+        return True
+
+    async def notify_unhandled_event(self, summary: str) -> None:
+        """Quietly inform the owner an event arrived but no standing orders exist.
+
+        Rate-limited to one message per window per watcher — never spam.
+        """
+        try:
+            from agent.telegram import is_configured, send_message
+
+            if is_configured() and self._should_notify_no_instruction():
+                await send_message(
+                    f"👀 <b>Event detected</b>\n{summary[:400]}\n\n"
+                    f"No standing instruction on file — taking NO action.\n"
+                    f"Tell me what to do for these events and I'll handle "
+                    f"them automatically.\n"
+                    f"(You'll get this notice at most once every 6 hours)"
+                )
+            else:
+                logger.info(
+                    "Watcher %s: unhandled event suppressed by rate limit "
+                    "or Telegram not configured",
+                    self.watcher_id,
+                )
+        except Exception:
+            logger.debug("No-instruction notification skipped")
 
     @abc.abstractmethod
     async def check_for_events(self) -> list[dict[str, Any]]:

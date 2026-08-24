@@ -19,6 +19,8 @@ DISCORD_API_URL = "https://discord.com/api/v10"
 class DiscordWatcher(BaseWatcher):
     """Watch Discord channels for new messages."""
 
+    INSTRUCTION_KEYWORDS = ("discord", "channel", "mention", "reply", "respond", "message")
+
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
         self.token = config.get("token", "")  # Bot token
@@ -100,10 +102,19 @@ class DiscordWatcher(BaseWatcher):
         payload = event["payload"]
 
         if event["event_type"] == "discord.message.new":
-            return (
-                f"New message in channel '{payload['channel_name']}' from "
+            instruction = self.standing_instruction()
+            if instruction is None:
+                await self.notify_unhandled_event(
+                    f"Discord message in '{payload['channel_name']}' "
+                    f"from {payload['author']}: '{payload['content']}'"
+                )
+                return None
+
+            return self.gated_goal(
+                instruction,
+                f"the new message in channel '{payload['channel_name']}' from "
                 f"{payload['author']}: '{payload['content']}'. "
-                f"Analyze and respond if relevant."
+                f"Analyze and respond if relevant.",
             )
 
         return None

@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class WebhookWatcher(BaseWatcher):
-    """Receive custom webhook events instead of polling an external API."""
+    """Receive custom webhook events instead of polling an external API.
+
+    Pre-authorized: the owner explicitly configured the event-to-goal
+    mapping, which acts as the standing instruction — no memory gate.
+    """
 
     MAX_QUEUE_SIZE = 100
     MAX_EVENTS_PER_CHECK = 50

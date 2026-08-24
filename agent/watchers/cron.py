@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 class CronWatcher(BaseWatcher):
-    """Trigger a recurring goal on a simple interval-based schedule."""
+    """Trigger a recurring goal on a simple interval-based schedule.
+
+    Pre-authorized: the goal text was explicitly configured by the owner,
+    which itself acts as the standing instruction — no memory gate needed.
+    """
 
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)

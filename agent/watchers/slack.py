@@ -19,6 +19,8 @@ SLACK_API_URL = "https://slack.com/api"
 class SlackWatcher(BaseWatcher):
     """Watch Slack channels for new messages."""
 
+    INSTRUCTION_KEYWORDS = ("slack", "channel", "mention", "reply", "respond", "message")
+
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
         self.token = config.get("token", "")  # Bot token (xoxb-...)
@@ -108,15 +110,24 @@ class SlackWatcher(BaseWatcher):
         payload = event["payload"]
 
         if event["event_type"] == "slack.message.new":
+            instruction = self.standing_instruction()
+            if instruction is None:
+                await self.notify_unhandled_event(
+                    f"Slack message in #{payload['channel_name']} "
+                    f"from {payload['user']}: '{payload['text']}'"
+                )
+                return None
+
             mention_note = (
                 " This is a direct mention - prioritize a response."
                 if payload.get("is_mention")
                 else ""
             )
-            return (
-                f"New message in #{payload['channel_name']} "
+            return self.gated_goal(
+                instruction,
+                f"the new message in #{payload['channel_name']} "
                 f"from {payload['user']}: '{payload['text']}'. "
-                f"Analyze and respond if relevant.{mention_note}"
+                f"Analyze and respond if relevant.{mention_note}",
             )
 
         return None
