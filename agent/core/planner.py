@@ -111,27 +111,30 @@ async def plan_task(task: Task, available_skills: list[str] | None = None, lesso
         pr_match = re.search(r'pr\s*#?(\d+)', task.goal)
         pr_number = pr_match.group(1) if pr_match else None
 
+        # Common auth header for curl
+        auth_header = '-H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json"'
+
         if pr_number:
             steps = [
                 TaskStep(
                     task_id=task.id,
                     description=f"Fetch PR #{pr_number} details from GitHub API",
                     tool_name="run_command",
-                    tool_args={"command": f"curl -s https://api.github.com/repos/{repo}/pulls/{pr_number}"},
+                    tool_args={"command": f"curl -s {auth_header} https://api.github.com/repos/{repo}/pulls/{pr_number}"},
                     order=0,
                 ),
                 TaskStep(
                     task_id=task.id,
                     description=f"Fetch PR #{pr_number} diff from GitHub API",
                     tool_name="run_command",
-                    tool_args={"command": f"curl -s https://api.github.com/repos/{repo}/pulls/{pr_number}.diff"},
+                    tool_args={"command": f"curl -s {auth_header} https://api.github.com/repos/{repo}/pulls/{pr_number}.diff"},
                     order=1,
                 ),
                 TaskStep(
                     task_id=task.id,
                     description="Analyze the PR code changes for quality and security",
                     tool_name="execute_code",
-                    tool_args={"code": "import json, sys\ntry:\n    data = json.loads(sys.argv[1] if len(sys.argv) > 1 else open('step_0_result.txt').read())\n    print(f\"PR #{data.get('number')}: {data.get('title')}\")\n    print(f\"Author: {data.get('user', {}).get('login')}\")\n    print(f\"State: {data.get('state')}\")\n    print(f\"Changed files: {data.get('changed_files')}\")\n    print(f\"Additions: +{data.get('additions')}, Deletions: -{data.get('deletions')}\")\nexcept Exception as e:\n    print(f'Error parsing PR: {e}')"},
+                    tool_args={"code": "import json\ntry:\n    data = json.loads(open('step_0_result.txt').read())\n    print(f\"PR #{data.get('number')}: {data.get('title')}\")\n    print(f\"Author: {data.get('user', {}).get('login')}\")\n    print(f\"State: {data.get('state')}\")\n    print(f\"Changed files: {data.get('changed_files')}\")\n    print(f\"Additions: +{data.get('additions')}, Deletions: -{data.get('deletions')}\")\nexcept Exception as e:\n    print(f'Error parsing PR: {e}')"},
                     order=2,
                 ),
             ]
@@ -141,7 +144,7 @@ async def plan_task(task: Task, available_skills: list[str] | None = None, lesso
                     task_id=task.id,
                     description=f"Merge PR #{pr_number} if safe",
                     tool_name="run_command",
-                    tool_args={"command": f"curl -s -X PUT https://api.github.com/repos/{repo}/pulls/{pr_number}/merge -H 'Accept: application/vnd.github.v3+json'"},
+                    tool_args={"command": f"curl -s -X PUT {auth_header} https://api.github.com/repos/{repo}/pulls/{pr_number}/merge"},
                     order=3,
                 )
             )
@@ -152,14 +155,14 @@ async def plan_task(task: Task, available_skills: list[str] | None = None, lesso
                     task_id=task.id,
                     description="List all open PRs from GitHub API",
                     tool_name="run_command",
-                    tool_args={"command": f"curl -s https://api.github.com/repos/{repo}/pulls?state=open"},
+                    tool_args={"command": f"curl -s {auth_header} https://api.github.com/repos/{repo}/pulls?state=open"},
                     order=0,
                 ),
                 TaskStep(
                     task_id=task.id,
                     description="Parse and analyze the PR list",
                     tool_name="execute_code",
-                    tool_args={"code": "import json, sys\ntry:\n    data = json.loads(sys.argv[1] if len(sys.argv) > 1 else open('step_0_result.txt').read())\n    if isinstance(data, list):\n        print(f'Found {len(data)} open PRs:')\n        for pr in data:\n            print(f\"  #{pr[\\\"number\\\"]}: {pr[\\\"title\\\"]} by @{pr.get('user', {}).get('login', 'unknown')}\")\n    else:\n        print('Response:', json.dumps(data, indent=2)[:500])\nexcept Exception as e:\n    print(f'Error: {e}')"},
+                    tool_args={"code": "import json\ntry:\n    data = json.loads(open('step_0_result.txt').read())\n    if isinstance(data, list):\n        print(f'Found {len(data)} open PRs:')\n        for pr in data:\n            print(f\"  #{pr['number']}: {pr['title']} by @{pr.get('user', {}).get('login', 'unknown')}\")\n    else:\n        print('Response:', json.dumps(data, indent=2)[:500])\nexcept Exception as e:\n    print(f'Error: {e}')"},
                     order=1,
                 ),
             ]
