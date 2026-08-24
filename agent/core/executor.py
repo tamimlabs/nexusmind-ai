@@ -452,7 +452,7 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
     if language == "python":
         # Load .env vars into subprocess environment
         env = os.environ.copy()
-        env_file = pathlib.Path(".env")
+        env_file = Path(".env")
         if env_file.exists():
             for line in env_file.read_text().splitlines():
                 line = line.strip()
