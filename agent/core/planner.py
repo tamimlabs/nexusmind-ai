@@ -77,6 +77,7 @@ RULES:
 5. ALWAYS end with write_file to save meaningful output to output/ directory
 6. Keep plans SHORT — 3-5 steps maximum. Efficiency > thoroughness.
 7. Return ONLY valid JSON array
+8. If goal mentions GitHub, PRs, merge, repository, or API — use run_command with curl, NEVER web_search
 
 OUTPUT FORMAT (JSON array):
 [
