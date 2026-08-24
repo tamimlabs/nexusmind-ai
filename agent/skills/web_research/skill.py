@@ -34,6 +34,8 @@ def _init_google():
     except Exception:
         _google_search_key = os.environ.get("GOOGLE_SEARCH_API_KEY", "")
         _google_cx = os.environ.get("GOOGLE_SEARCH_CX", "")
+    import logging
+    logging.getLogger(__name__).warning("Google search: key=%s cx=%s", _google_search_key[:10] if _google_search_key else "EMPTY", _google_cx[:10] if _google_cx else "EMPTY")
 
 
 def _google_available() -> bool:
