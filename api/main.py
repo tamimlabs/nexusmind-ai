@@ -61,6 +61,47 @@ async def restore_watchers_on_startup():
     except Exception:
         logger.exception("Failed to restore watchers on startup")
 
+
+@app.on_event("startup")
+async def start_telegram_polling():
+    """Start Telegram long-polling in background for approval buttons."""
+    import httpx
+
+    from agent.telegram import _get_api_url, process_update
+
+    if not _cfg.settings.telegram_bot_token:
+        logger.info("Telegram not configured — skipping polling")
+        return
+
+    async def _poll_loop():
+        offset = 0
+        logger.info("Telegram long-polling started")
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.get(
+                        _get_api_url("getUpdates"),
+                        params={"offset": offset, "timeout": 10},
+                    )
+                    data = resp.json()
+                    if data.get("ok") and data.get("result"):
+                        for update in data["result"]:
+                            offset = update["update_id"] + 1
+                            try:
+                                await process_update(update)
+                            except Exception:
+                                logger.exception("Error processing Telegram update")
+            except asyncio.CancelledError:
+                logger.info("Telegram polling stopped")
+                break
+            except Exception:
+                logger.exception("Telegram polling error, retrying in 5s")
+                await asyncio.sleep(5)
+
+    task = asyncio.create_task(_poll_loop())
+    import atexit
+    atexit.register(lambda: task.cancel())
+
 # Serve docs folder for logos
 docs_path = pathlib.Path(__file__).parent.parent / "docs"
 if docs_path.exists():
