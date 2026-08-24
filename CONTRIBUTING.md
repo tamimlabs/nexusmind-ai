@@ -33,6 +33,8 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 ## Development Setup
 
+Requires Python 3.11+.
+
 ```bash
 # Clone
 git clone https://github.com/tamimlabs/nexusmind-ai.git
@@ -48,7 +50,7 @@ pip install -e .
 
 # Copy environment template
 cp .env.example .env
-# Edit .env with your Gemini API keys
+# Edit .env with your Gemini API key(s)
 
 # Run tests
 python -m pytest tests/ -v
@@ -64,14 +66,23 @@ ruff format .
 
 - **Formatter:** ruff format (Black-compatible)
 - **Linter:** ruff
-- **Type Checking:** mypy
-- **Line Length:** 120 characters max
+- **Type Checking:** mypy (`mypy <file>` on individual files, or `mypy agent/`)
+- **Line Length:** 100 characters max
 - **Quotes:** Double quotes for strings
 - **Trailing Commas:** Yes, in multi-line structures
 
 ## Commit Messages
 
-Use clear, descriptive commit messages:
+Use conventional commit prefixes:
+
+- `feat:` new features
+- `fix:` bug fixes
+- `docs:` documentation changes
+- `test:` test additions or updates
+- `refactor:` code refactoring
+- `chore:` maintenance tasks
+
+Examples:
 
 - `feat: add new web scraping skill`
 - `fix: handle rate limit in Gemini client`
@@ -80,6 +91,10 @@ Use clear, descriptive commit messages:
 - `refactor: simplify orchestrator loop`
 
 ## Testing
+
+The current suite has 65 passing tests covering models, memory, executor,
+orchestrator, API, the planner/GitHub pipeline, and watcher gating. Async tests
+run with `pytest-asyncio` in auto mode.
 
 - Write tests for new features
 - Ensure all existing tests pass
@@ -98,33 +113,52 @@ python -m pytest tests/ --cov=agent --cov-report=term-missing
 
 ```
 nexusmind-ai/
-├── agent/              # Core agent logic
-│   ├── core/           # Planner, executor, memory, Gemini client
-│   ├── skills/         # Modular skill plugins
-│   ├── watchers/       # Always-awake event monitors (11 platforms)
-│   └── orchestrator.py # Main agent loop
-├── cloud/              # Google Cloud integrations
-├── api/                # REST API + dashboard + credentials
-├── tests/              # Test suite
-└── scripts/            # Deployment scripts
+├── agent/                    # Core agent logic
+│   ├── core/                 # Planner, executor, Gemini client, memory
+│   ├── skills/               # Modular skills (web_research, file_management,
+│   │                         # data_processing, github)
+│   ├── watchers/             # Event monitors (11 watchers + base.py + manager.py)
+│   ├── orchestrator.py       # Main agent loop
+│   ├── telegram.py           # Telegram integration
+│   └── observability.py      # Observability helpers
+├── cloud/                    # Google Cloud integrations
+│   ├── vertex_ai/
+│   ├── firestore/
+│   ├── pubsub/
+│   └── cloud_run/
+├── api/                      # REST API layer
+│   ├── main.py               # App entrypoint
+│   ├── dashboard.html        # Web dashboard
+│   ├── watcher_routes.py     # Watcher endpoints
+│   └── credentials_routes.py # Credentials endpoints
+├── tests/                    # Test suite
+└── scripts/                  # Setup and deployment scripts
 ```
 
 ## Adding a New Skill
 
-1. Create a new directory in `agent/skills/your_skill/`
-2. Create `skill.py` with your tool functions
-3. Register tools using `@register_tool` decorator
-4. Add tests in `tests/`
-5. Update documentation if needed
+1. Create a new directory under `agent/skills/<name>/` containing a `skill.py`
+2. Define your tool functions with the `@register_tool` decorator (imported from `agent.core.executor`)
+3. Add the package name to the `_SKILL_PACKAGES` list in `agent/skills/loader.py` so it auto-loads
+4. For high-risk tools, pass `high_risk=True` so approval gates apply
+5. Add tests in `tests/`
+6. Update documentation if needed
 
 ## Adding a New Watcher
 
-1. Create a new file in `agent/watchers/your_watcher.py`
-2. Inherit from `BaseWatcher`
-3. Implement `check_for_events()` and `process_event()`
-4. Register in `agent/watchers/manager.py` `_WATCHER_TYPES` dict
-5. Add to `agent/watchers/__init__.py` exports
-6. Add tests in `tests/`
+1. Create a new module in `agent/watchers/your_watcher.py`
+2. Subclass `BaseWatcher` and implement `check_for_events()` and `process_event()`
+3. Register the type in the `_WATCHER_TYPES` dict in `agent/watchers/manager.py`
+4. Add tests in `tests/`
+
+### Memory Gate (Important)
+
+If your watcher auto-generates goals, set the class attribute
+`INSTRUCTION_KEYWORDS` to domain keywords so the memory gate works. Events then
+require a matching standing instruction in memory before acting; use the
+inherited helpers `standing_instruction()`, `gated_goal()`, and
+`notify_unhandled_event()`. Only owner-configured-goal watchers (such as cron
+and webhook) may skip this gate.
 
 ## Questions?
 

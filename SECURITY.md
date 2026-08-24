@@ -4,11 +4,11 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| 0.1.x   | Yes                |
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability within NexusMind AI, please send an email to Tamim Hasan. All security vulnerabilities will be promptly addressed.
+If you discover a security vulnerability within NexusMind AI, please send an email to [contact.tamimlabs@gmail.com](mailto:contact.tamimlabs@gmail.com). All security vulnerabilities will be promptly addressed.
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
@@ -25,6 +25,10 @@ When using NexusMind AI:
 4. **Cloud Deployment**: When deploying to Cloud Run, ensure proper IAM roles and minimal permissions.
 
 5. **Environment Variables**: Use separate API keys for development and production.
+
+6. **Watcher Autonomy Is Memory-Gated**: Watcher-generated goals require a matching standing instruction in memory. Anyone who can add memory instructions effectively grants automation powers, so protect dashboard and API access accordingly.
+
+7. **Local Token Storage**: GitHub and other watcher tokens stored in `data/watcher_state.json` and `.env` are stored as plaintext locally. Ensure appropriate host access control, and rotate any token that may have been leaked.
 
 ## Authentication
 
