@@ -38,7 +38,17 @@
         .tb-btn:hover{border-color:var(--bhover);color:var(--t2);background:var(--bg3)}
         .page{flex:1;overflow-y:auto;padding:20px}
 
-        .rpanel{width:400px;border-left:1px solid var(--border);background:var(--bg1);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+        .rpanel{width:400px;border-left:1px solid var(--border);background:var(--bg1);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;transition:width .25s ease;position:relative}
+        .rpanel-toggle{position:absolute;top:7px;right:7px;z-index:5;background:none;border:none;color:var(--t4);cursor:pointer;padding:4px;border-radius:6px;display:flex;align-items:center}
+        .rpanel-toggle:hover{color:var(--t1);background:var(--bg3)}
+        .rpanel-toggle svg{transition:transform .25s ease}
+        body.rp-min .rpanel{width:36px}
+        body.rp-min .rpanel-tabs,body.rp-min .rpanel-body{display:none}
+        body.rp-min .rpanel-toggle{position:static;margin-top:8px;align-self:center}
+        body.rp-min .rpanel-toggle svg{transform:rotate(180deg)}
+        .rp-collapsed-label{display:none;writing-mode:vertical-rl;font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--t4);margin-top:12px;cursor:pointer;user-select:none}
+        body.rp-min .rp-collapsed-label{display:block}
+        .rp-collapsed-label:hover{color:var(--accent)}
         .rpanel-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
         .rpanel-tab{flex:1;padding:10px;text-align:center;font-size:12px;font-weight:600;color:var(--t4);cursor:pointer;border-bottom:2px solid transparent;transition:all var(--tr)}
         .rpanel-tab:hover{color:var(--t2)}.rpanel-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
@@ -216,6 +226,10 @@
     </div>
 
     <aside class="rpanel">
+        <button class="rpanel-toggle" onclick="toggleRPanel()" title="Minimize / restore panel (state is remembered)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <div class="rp-collapsed-label" onclick="toggleRPanel()" title="Restore panel">Panel</div>
         <div class="rpanel-tabs">
             <div class="rpanel-tab active" onclick="switchRTab('trace')">Trace</div>
             <div class="rpanel-tab" onclick="switchRTab('thinking')">Thinking</div>
@@ -499,6 +513,10 @@ function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selec
 function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500)}
 function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}S.liveTaskId=null}
 async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.trace=d.trace||t.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}if(['completed','failed'].includes(d.status)){stopLivePoll();S.liveEvents=[];refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
+
+/* ── Right Panel Minimize ─────────────────────────────────────── */
+function toggleRPanel(){const min=!document.body.classList.contains('rp-min');document.body.classList.toggle('rp-min',min);try{localStorage.setItem('nm_rpanel_min',min?'1':'0')}catch(e){}}
+try{if(localStorage.getItem('nm_rpanel_min')==='1')document.body.classList.add('rp-min')}catch(e){}
 
 /* ── Init ─────────────────────────────────────────────────────── */
 setInterval(refreshApprovals,3000);
