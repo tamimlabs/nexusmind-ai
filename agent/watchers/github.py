@@ -1,6 +1,7 @@
 """GitHub watcher - monitors repos for new PRs and issues.
 
 Token-efficient: only calls Gemini when new events are detected.
+Now supports auto-merge and auto-reject based on review.
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ class GitHubWatcher(BaseWatcher):
         self.watch_prs = config.get("watch_prs", True)
         self.watch_issues = config.get("watch_issues", True)
         self.token = config.get("token", "")  # GitHub token (optional)
+        self.auto_merge = config.get("auto_merge", True)  # Auto-merge safe PRs
+        self.auto_comment = config.get("auto_comment", True)  # Post review comments
 
     def _get_headers(self) -> dict[str, str]:
         headers = {"Accept": "application/vnd.github.v3+json"}
@@ -54,6 +57,9 @@ class GitHubWatcher(BaseWatcher):
                                     "body": (pr.get("body") or "")[:500],
                                     "author": pr["user"]["login"],
                                     "url": pr["html_url"],
+                                    "diff_url": pr.get("diff_url", ""),
+                                    "head_sha": pr.get("head", {}).get("sha", ""),
+                                    "base_branch": pr.get("base", {}).get("ref", "main"),
                                     "action": "opened",
                                 },
                             })
@@ -91,21 +97,37 @@ class GitHubWatcher(BaseWatcher):
         return events
 
     async def process_event(self, event: dict[str, Any]) -> str | None:
-        """Convert a GitHub event into an agent goal."""
+        """Convert a GitHub event into an agent goal with actions."""
         payload = event["payload"]
         event_type = event["event_type"]
 
         if event_type == "github.pr.opened":
-            return (
+            # Build goal with merge/reject instructions
+            goal = (
                 f"Review GitHub PR #{payload['number']} in {self.repo}: "
-                f"'{payload['title']}'. Analyze the changes, check for issues, "
-                f"and provide a summary with recommendations."
+                f"'{payload['title']}' by @{payload['author']}. "
+                f"URL: {payload['url']}\n\n"
+                f"Steps:\n"
+                f"1. Fetch the PR diff and read all code changes\n"
+                f"2. Analyze code quality, security, and best practices\n"
+                f"3. If the code is SAFE and HIGH QUALITY:\n"
+                f"   - Post a comment: '✅ Auto-approved by NexusMind AI. Code looks good.'\n"
+                f"   - Merge the PR using GitHub API\n"
+                f"4. If the code has ISSUES:\n"
+                f"   - Post a comment explaining what's wrong\n"
+                f"   - Do NOT merge\n"
+                f"5. If the code is DANGEROUS (security risks, hardcoded secrets, malicious code):\n"
+                f"   - Post a comment: '🚫 Rejected by NexusMind AI. Reason: [explain]'\n"
+                f"   - Request changes\n\n"
+                f"Use execute_code tool to call GitHub API. Your GitHub token is configured."
             )
+            return goal
+
         elif event_type == "github.issue.opened":
             return (
                 f"Analyze GitHub issue #{payload['number']} in {self.repo}: "
                 f"'{payload['title']}'. Understand the problem, research solutions, "
-                f"and provide a helpful response."
+                f"and provide a helpful response as a comment."
             )
 
         return None
