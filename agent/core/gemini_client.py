@@ -112,7 +112,7 @@ async def generate_content(
     model_name = model or settings.gemini_model
     last_error = None
 
-    for attempt in range(min(rotator.key_count, 3)):
+    for attempt in range(rotator.key_count):
         client, key_used = rotator.get_client()
 
         # If all keys in cooldown, async wait before trying
@@ -156,9 +156,9 @@ async def generate_content(
             last_error = exc
             error_str = str(exc).lower()
 
-            if "rate" in error_str or "429" in error_str or "quota" in error_str:
-                rotator.mark_rate_limited(key_used, retry_after=30 + attempt * 30)
-                logger.warning("Rate limited on key ...%s (attempt %d), rotating", key_used[-6:], attempt + 1)
+            if "rate" in error_str or "429" in error_str or "quota" in error_str or "503" in error_str or "unavailable" in error_str:
+                rotator.mark_rate_limited(key_used, retry_after=15 + attempt * 15)
+                logger.warning("Rate limited/unavailable on key ...%s (attempt %d), rotating", key_used[-6:], attempt + 1)
                 continue
             elif "invalid" in error_str and "key" in error_str:
                 rotator.mark_rate_limited(key_used, retry_after=86400)
