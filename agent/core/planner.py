@@ -67,6 +67,7 @@ PLANNING STRATEGIES BY TASK TYPE:
    Step 3: run_command with curl to post comment or merge
    Step 4: write_file to save review log
    → NEVER use web_search for API calls — use run_command or execute_code directly.
+   → curl commands are SAFE and auto-approved — use them freely for API calls.
 
 RULES:
 1. EVERY step MUST have "tool_name" and "tool_args"

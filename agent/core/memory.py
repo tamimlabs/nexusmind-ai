@@ -1,14 +1,18 @@
-"""Memory system — persistent cross-session memory backed by Firestore.
+"""Memory system — persistent cross-session memory with JSON file storage.
 
 Inspired by Hermes Agent's curated memory approach:
 - Hard size limits (don't grow unbounded)
 - Deduplication (don't store duplicates)
 - Only meaningful entries (not routine task logs)
+- Persists to data/memory.json for cross-session survival
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import pathlib
+from typing import Any
 
 from agent.models import MemoryEntry
 
@@ -19,17 +23,48 @@ _MAX_ENTRIES = 100
 _MAX_REFLECTIONS = 30
 _MAX_TASK_OUTCOMES = 20
 
+# Persistence file
+_MEMORY_FILE = pathlib.Path("data/memory.json")
+
 
 class MemoryStore:
-    """In-memory store with Firestore persistence.
+    """In-memory store with JSON file persistence.
 
-    For the hackathon, we use an in-memory list as primary store
-    and Firestore for persistence. Memory is curated — not everything
-    gets stored, only meaningful entries.
+    Memory is curated — not everything gets stored, only meaningful entries.
+    Automatically saves to disk after each add and loads on startup.
     """
 
     def __init__(self) -> None:
         self._entries: list[MemoryEntry] = []
+        self._load()
+
+    def _load(self) -> None:
+        """Load memory from JSON file."""
+        if not _MEMORY_FILE.exists():
+            return
+        try:
+            data = json.loads(_MEMORY_FILE.read_text(encoding="utf-8"))
+            for item in data:
+                self._entries.append(MemoryEntry(**item))
+            logger.info("Loaded %d memory entries from %s", len(self._entries), _MEMORY_FILE)
+        except Exception:
+            logger.exception("Failed to load memory from %s", _MEMORY_FILE)
+
+    def _save(self) -> None:
+        """Save memory to JSON file."""
+        try:
+            _MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = []
+            for entry in self._entries:
+                data.append({
+                    "content": entry.content,
+                    "category": entry.category,
+                    "metadata": entry.metadata,
+                    "created_at": entry.created_at.isoformat() if entry.created_at else None,
+                })
+            _MEMORY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to save memory to %s", _MEMORY_FILE)
 
     def add(self, entry: MemoryEntry) -> bool:
         """Add a memory entry. Returns False if rejected (duplicate/full)."""
@@ -70,6 +105,9 @@ class MemoryStore:
         if len(self._entries) > _MAX_ENTRIES:
             self._entries = self._entries[-_MAX_ENTRIES:]
 
+        # Persist to disk
+        self._save()
+
         logger.debug("Memory added: [%s] %s", entry.category, entry.content[:80])
         return True
 
@@ -100,7 +138,6 @@ class MemoryStore:
 
     def save_task_outcome(self, task_goal: str, result: str, success: bool) -> bool:
         """Store a task outcome. Returns False if rejected."""
-        # Truncate result to keep memory lean
         result_short = result[:200] if result else ""
         content = f"Task: {task_goal}\nResult: {result_short}\nSuccess: {success}"
         entry = MemoryEntry(
@@ -127,9 +164,23 @@ class MemoryStore:
         )
         return self.add(entry)
 
+    def save_instruction(self, instruction: str) -> bool:
+        """Store a user instruction for future reference."""
+        entry = MemoryEntry(
+            content=f"User instruction: {instruction[:500]}",
+            category="instruction",
+            metadata={"type": "user_instruction"},
+        )
+        return self.add(entry)
+
+    def get_instructions(self) -> list[MemoryEntry]:
+        """Get all stored user instructions."""
+        return self.get_by_category("instruction")
+
     def clear(self) -> None:
         """Clear all memory."""
         self._entries.clear()
+        self._save()
 
     @property
     def size(self) -> int:

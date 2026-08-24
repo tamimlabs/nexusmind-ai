@@ -103,20 +103,19 @@ class GitHubWatcher(BaseWatcher):
 
         if event_type == "github.pr.opened":
             goal = (
-                f"A new pull request was opened on GitHub repo {self.repo}.\n"
-                f"PR #{payload['number']}: '{payload['title']}' by @{payload['author']}\n"
-                f"API URL: https://api.github.com/repos/{self.repo}/pulls/{payload['number']}\n"
-                f"Diff URL: {payload['diff_url']}\n\n"
-                f"Decide what to do based on your memory and instructions."
+                f"Use run_command with curl to fetch PR details from {payload['diff_url']}.\n"
+                f"Then use execute_code to analyze the code changes for quality and security.\n"
+                f"Finally use run_command with curl to post a review comment on the PR.\n"
+                f"Decide whether to merge or request changes based on your memory and instructions.\n"
+                f"PR #{payload['number']}: '{payload['title']}' by @{payload['author']}"
             )
             return goal
 
         elif event_type == "github.issue.opened":
             return (
-                f"A new issue was opened on GitHub repo {self.repo}.\n"
-                f"Issue #{payload['number']}: '{payload['title']}'\n"
-                f"API URL: https://api.github.com/repos/{self.repo}/issues/{payload['number']}\n\n"
-                f"Decide what to do based on your memory and instructions."
+                f"Use run_command with curl to fetch issue details from the API.\n"
+                f"Analyze the issue and post a helpful comment.\n"
+                f"Issue #{payload['number']}: '{payload['title']}'"
             )
 
         return None
