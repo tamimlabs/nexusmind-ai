@@ -141,11 +141,13 @@ async def request_approval_via_telegram(
     msg_text = "\n".join(line for line in msg_lines if line is not None)
 
     # Inline keyboard with approve/deny buttons
+    # Telegram callback_data max is 64 bytes — use short format
+    short_id = step_id[:8]
     reply_markup = {
         "inline_keyboard": [
             [
-                {"text": "✅ Approve", "callback_data": json.dumps({"action": "approve", "step_id": step_id})},
-                {"text": "❌ Deny", "callback_data": json.dumps({"action": "deny", "step_id": step_id})},
+                {"text": "✅ Approve", "callback_data": f"approve:{short_id}"},
+                {"text": "❌ Deny", "callback_data": f"deny:{short_id}"},
             ]
         ]
     }
@@ -171,17 +173,28 @@ async def handle_callback_query(callback_query: dict[str, Any]) -> None:
     callback_id = callback_query.get("id", "")
     data_str = callback_query.get("data", "")
 
-    try:
-        data = json.loads(data_str)
-    except (json.JSONDecodeError, TypeError):
+    # Parse short format: "approve:short_id" or "deny:short_id"
+    if ":" not in data_str:
         await answer_callback(callback_id, "Invalid action")
         return
 
-    action = data.get("action")
-    step_id = data.get("step_id")
+    action, short_id = data_str.split(":", 1)
+
+    if action not in ("approve", "deny"):
+        await answer_callback(callback_id, "Invalid action")
+        return
+
+    # Find the full step_id by matching the short prefix
+    from agent.core.executor import _approval_metadata, _pending_approvals
+
+    step_id = None
+    for sid in list(_pending_approvals.keys()):
+        if sid[:8] == short_id:
+            step_id = sid
+            break
 
     if not step_id:
-        await answer_callback(callback_id, "Missing step ID")
+        await answer_callback(callback_id, "Approval not found (may have expired)")
         return
 
     # Resolve the approval
@@ -191,15 +204,11 @@ async def handle_callback_query(callback_query: dict[str, Any]) -> None:
     resolve_approval(step_id, approved)
 
     # Edit the original message to show result
-    msg_id = _telegram_approvals.pop(step_id, {}).get("message_id")
+    approval_info = _telegram_approvals.pop(step_id, {})
+    msg_id = approval_info.get("message_id")
+    tool_name = approval_info.get("tool_name", "")
     if msg_id:
         status = "✅ Approved" if approved else "❌ Denied"
-        tool_name = ""
-        for sid, info in list(_telegram_approvals.items()):
-            if sid == step_id:
-                tool_name = info.get("tool_name", "")
-                break
-
         new_text = (
             f"{status}\n"
             f"<b>Tool:</b> <code>{tool_name}</code>\n"
