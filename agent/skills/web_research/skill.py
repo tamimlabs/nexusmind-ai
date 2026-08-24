@@ -94,8 +94,8 @@ async def _search_google(query: str, num_results: int) -> str | None:
 
 
 async def _search_ddg_library(query: str, num_results: int) -> str:
-    """Use duckduckgo-search library — handles anti-bot internally."""
-    from duckduckgo_search import DDGS
+    """Use ddgs library — handles anti-bot internally."""
+    from ddgs import DDGS
 
     def _do_search():
         with DDGS() as ddgs:
