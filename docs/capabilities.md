@@ -1,6 +1,6 @@
 # NexusMind AI — What Can This Agent Do?
 
-**An autonomous AI agent that plans, executes, self-corrects, and learns — powered by Gemini 3.6 Flash and Google Cloud.**
+**An autonomous AI agent that plans, executes, self-corrects, and learns — powered by Gemini 3.5 Flash and Google Cloud.**
 
 ---
 
@@ -18,7 +18,7 @@
 ## Core Capabilities
 
 ### 1. Autonomous Task Planning
-Give NexusMind a goal in plain English. It uses **Gemini 3.6 Flash** to break it into concrete, ordered steps — no manual guidance needed.
+Give NexusMind a goal in plain English. It uses **Gemini 3.5 Flash** to break it into concrete, ordered steps — no manual guidance needed.
 
 > **User:** "Find the top 3 Python web frameworks and compare their performance"
 >
@@ -155,7 +155,7 @@ Complex goals are automatically broken into manageable steps:
 
 | Layer | Technology |
 |-------|-----------|
-| **LLM** | Gemini 3.6 Flash (Google) |
+| **LLM** | Gemini 3.5 Flash (Google) |
 | **Agent Framework** | Google ADK (Agent Development Kit) |
 | **State Persistence** | Google Cloud Firestore |
 | **Event Routing** | Google Cloud Pub/Sub |
@@ -174,7 +174,7 @@ User submits goal
        ▼
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
 │  Orchestrator│────▶│   Planner    │────▶│   Gemini    │
-│   (main loop)│     │  (decompose) │     │  3.6 Flash  │
+│   (main loop)│     │  (decompose) │     │  3.5 Flash  │
 └──────┬──────┘     └──────────────┘     └─────────────┘
        │
        ▼

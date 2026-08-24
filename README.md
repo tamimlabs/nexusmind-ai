@@ -7,7 +7,7 @@
 ### Autonomous Task-Execution Agent on Google Cloud
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=flat&logo=python&logoColor=white)](https://python.org)
-[![Gemini](https://img.shields.io/badge/Gemini-3.6%20Flash-4285F4?style=flat&logo=google&logoColor=white)](https://ai.google.dev)
+[![Gemini](https://img.shields.io/badge/Gemini-3.5%20Flash-4285F4?style=flat&logo=google&logoColor=white)](https://ai.google.dev)
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Run%20%7C%20Firestore%20%7C%20Pub%2FSub-4285F4?style=flat&logo=googlecloud&logoColor=white)](https://cloud.google.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-21%20passing-brightgreen)](#testing)
@@ -49,7 +49,7 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
                         ┌──────────────▼──────────────┐
                         │        Orchestrator           │
                         │  ┌────────────────────────┐  │
-                        │  │  Gemini 3.6 Planner    │──┼-- Step decomposition
+                        │  │  Gemini 3.5 Planner    │──┼-- Step decomposition
                         │  │  Tool Executor         │──┼-- Sandboxed execution
                         │  │  Self-Correction       │──┼-- Error -> Gemini -> Retry
                         │  │  Approval Gate         │──┼-- Human-in-the-loop
@@ -322,7 +322,7 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 
 | Layer | Technology |
 |-------|-----------|
-| **LLM** | Gemini 3.6 Flash (4-key rotation) |
+| **LLM** | Gemini 3.5 Flash (4-key rotation) |
 | **Agent Framework** | Google ADK 2.x |
 | **Cloud Run** | Serverless deployment (scales to zero) |
 | **Firestore** | Persistent task state + agent memory |
@@ -422,7 +422,7 @@ All **21 tests** covering models, memory, executor, orchestrator, and API endpoi
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GEMINI_API_KEY` | Yes | Gemini API key(s), comma-separated for rotation |
-| `GEMINI_MODEL` | Yes | Model name (default: `gemini-3.6-flash`) |
+| `GEMINI_MODEL` | Yes | Model name (default: `gemini-3.5-flash`) |
 | `GOOGLE_CLOUD_PROJECT` | For cloud | GCP project ID |
 | `GOOGLE_CLOUD_REGION` | For cloud | GCP region (default: `us-central1`) |
 | `GOOGLE_SEARCH_API_KEY` | No | Google Custom Search API key |

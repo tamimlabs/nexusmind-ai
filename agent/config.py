@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     google_cloud_region: str = "us-central1"
 
     # --- Gemini / Vertex AI ---
-    gemini_model: str = "gemini-3.6-flash"
+    gemini_model: str = "gemini-3.5-flash"
     gemini_api_key: str = ""
 
     # --- Firestore ---

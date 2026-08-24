@@ -25,7 +25,7 @@ If applicable, add screenshots to help explain your problem.
 **Environment:**
  - OS: [e.g., Windows 11, Ubuntu 22.04]
  - Python version: [e.g., 3.13.12]
- - Gemini model: [e.g., gemini-3.6-flash]
+ - Gemini model: [e.g., gemini-3.5-flash]
 
 **Additional context**
 Add any other context about the problem here.
