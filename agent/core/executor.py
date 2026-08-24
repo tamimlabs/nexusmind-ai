@@ -76,7 +76,7 @@ _SAFE_COMMANDS = {
     "node --version", "npm --version",
     "docker ps", "docker images", "docker logs",
     "ps aux", "top", "df", "du", "free", "uptime",
-    "curl -I", "wget --spider",
+    "curl -I", "curl -s", "curl", "wget --spider",
 }
 
 # Dangerous patterns that ALWAYS need approval

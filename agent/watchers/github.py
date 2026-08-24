@@ -102,29 +102,22 @@ class GitHubWatcher(BaseWatcher):
         event_type = event["event_type"]
 
         if event_type == "github.pr.opened":
-            # Build goal with merge/reject instructions
             goal = (
-                f"Review GitHub PR #{payload['number']} in {self.repo}: "
-                f"'{payload['title']}' by @{payload['author']}. "
-                f"URL: {payload['url']}\n\n"
-                f"IMPORTANT: Save all intermediate results to files in output/ directory. "
-                f"Never embed multi-line data in code strings.\n\n"
-                f"Steps:\n"
-                f"1. Use run_command with curl to fetch PR info and save to output/pr_info.json\n"
-                f"2. Use run_command with curl to fetch PR diff and save to output/pr_diff.txt\n"
-                f"3. Use execute_code to read output/pr_info.json and output/pr_diff.txt, analyze the code\n"
-                f"4. Use run_command with curl to post a review comment on the PR\n"
-                f"5. Use execute_code to decide: if safe, merge; if not, reject\n"
-                f"6. Use run_command with curl to execute the merge or reject\n\n"
-                f"Use your GITHUB_TOKEN from .env for all API calls."
+                f"A new pull request was opened on GitHub repo {self.repo}.\n"
+                f"PR #{payload['number']}: '{payload['title']}' by @{payload['author']}\n"
+                f"Diff URL: {payload['diff_url']}\n"
+                f"API URL: https://api.github.com/repos/{self.repo}/pulls/{payload['number']}\n\n"
+                f"Fetch the PR diff, review the code changes for quality and security, "
+                f"post a review comment, and merge if safe or request changes if not."
             )
             return goal
 
         elif event_type == "github.issue.opened":
             return (
-                f"Analyze GitHub issue #{payload['number']} in {self.repo}: "
-                f"'{payload['title']}'. Understand the problem, research solutions, "
-                f"and provide a helpful response as a comment."
+                f"A new issue was opened on GitHub repo {self.repo}.\n"
+                f"Issue #{payload['number']}: '{payload['title']}'\n"
+                f"API URL: https://api.github.com/repos/{self.repo}/issues/{payload['number']}\n\n"
+                f"Analyze the issue and post a helpful comment."
             )
 
         return None
