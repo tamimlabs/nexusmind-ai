@@ -404,9 +404,9 @@ async function removeWatcher(id){const ok=await modalConfirm('Remove Watcher','T
 
 async function refreshWatchers(){try{const res=await fetch('/api/watchers');S.watchers=await res.json();document.getElementById('watcherCount').textContent=S.watchers.length;if(S.page==='watchers')renderPage()}catch(e){}}
 
-async function refreshMemoryCount(){try{const res=await fetch('/api/memory');S.memory=await res.json();document.getElementById('memCount').textContent=S.memory.length;if(S.page==='memory')renderMemoryPage(document.getElementById('pageContent'))}catch(e){}}
+async function refreshMemoryCount(){try{const res=await fetch('/api/memory');S.memory=await res.json();const el=document.getElementById('memCount');if(el)el.textContent=S.memory.length;if(S.page==='memory')renderMemoryPage(document.getElementById('pageContent'))}catch(e){}}
 
-async function refreshCredCount(){try{const res=await fetch('/api/credentials');const creds=await res.json();let total=0,configured=0;Object.values(creds).forEach(fields=>{fields.forEach(f=>{total++;if(f.configured)configured++})});document.getElementById('credCount').textContent=configured+'/'+total}catch(e){}}
+async function refreshCredCount(){try{const res=await fetch('/api/credentials');const creds=await res.json();let total=0,configured=0;Object.values(creds).forEach(fields=>{fields.forEach(f=>{total++;if(f.configured)configured++})});const el=document.getElementById('credCount');if(el)el.textContent=configured+'/'+total}catch(e){}}
 
 /* ── Credentials Page ───────────────────────────────────────── */
 let S_creds={};
@@ -476,9 +476,9 @@ async function searchMemory(){const q=document.getElementById('memSearch');const
 function filterMem(f){S.memFilter=f;searchMemory()}
 function toggleAutoRefresh(){S.autoRefresh=!S.autoRefresh;const t=document.getElementById('autoToggle');if(t)t.classList.toggle('on',S.autoRefresh);if(S.autoRefresh){S.pollInterval=setInterval(()=>{refreshAgentStatus();refreshApprovals()},10000);refreshAgentStatus();refreshApprovals()}else if(S.pollInterval){clearInterval(S.pollInterval);S.pollInterval=null}}
 
-async function refreshAgentStatus(){try{const res=await fetch('/api/agent/status');const s=await res.json();S.agentStatus=s;document.getElementById('toolCount').textContent=s.tools_count;document.getElementById('memSize').textContent=s.memory_size;document.getElementById('agentModel').textContent=s.model;const total=Object.values(s.memory_categories).reduce((a,b)=>a+b,0);document.getElementById('memCount').textContent=total;document.getElementById('apiText').textContent='Connected';document.getElementById('apiDot').className='sdot on'}catch(e){document.getElementById('apiText').textContent='Disconnected';document.getElementById('apiDot').className='sdot off'}}
+async function refreshAgentStatus(){try{const res=await fetch('/api/agent/status');const s=await res.json();S.agentStatus=s;const e=id=>document.getElementById(id);if(e('toolCount'))e('toolCount').textContent=s.tools_count;if(e('memSize'))e('memSize').textContent=s.memory_size;if(e('agentModel'))e('agentModel').textContent=s.model;const total=Object.values(s.memory_categories).reduce((a,b)=>a+b,0);if(e('memCount'))e('memCount').textContent=total;if(e('apiText'))e('apiText').textContent='Connected';if(e('apiDot'))e('apiDot').className='sdot on'}catch(e){const el=id=>document.getElementById(id);if(el('apiText'))el('apiText').textContent='Disconnected';if(el('apiDot'))el('apiDot').className='sdot off'}}
 
-async function refreshApprovals(){try{const res=await fetch('/api/approvals');S.approvals=await res.json();const count=S.approvals.length;document.getElementById('approvalCount').textContent=count;const badge=document.querySelector('[data-page="approvals"] .nb');if(badge)badge.classList.toggle('alert',count>0);if(S.rtab==='approvals')renderApprovalPanel(document.getElementById('rpanelBody'))}catch(e){}}
+async function refreshApprovals(){try{const res=await fetch('/api/approvals');S.approvals=await res.json();const count=S.approvals.length;const el=document.getElementById('approvalCount');if(el)el.textContent=count;const badge=document.querySelector('[data-page="approvals"] .nb');if(badge)badge.classList.toggle('alert',count>0);if(S.rtab==='approvals')renderApprovalPanel(document.getElementById('rpanelBody'))}catch(e){}}
 
 function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks();refreshMemoryCount()}
 
