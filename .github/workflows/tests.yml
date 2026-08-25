@@ -46,28 +46,16 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          python -m pytest tests/ -q --no-header -p no:cacheprovider 2>&1 | tee pytest_output.txt
+          python -m pytest tests/ --junitxml=pytest_report.xml -q --no-header -p no:cacheprovider 2>&1 | tee pytest_output.txt
 
+      # Counts come from the JUnit XML report (machine-readable, stable
+      # schema) instead of grepping pytest stdout.
       - name: Update badge and commit (master only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
-          PASSED=$(grep -oE '[0-9]+ passed' pytest_output.txt | tail -1 | cut -d' ' -f1)
-          FAILED=$(grep -oE '[0-9]+ failed' pytest_output.txt | tail -1 | cut -d' ' -f1)
-          ERRORS=$(grep -oE '[0-9]+ error' pytest_output.txt | tail -1 | cut -d' ' -f1)
-          FAILED=${FAILED:-0}
-          ERRORS=${ERRORS:-0}
-
-          if [ "${{ steps.pytest.outcome }}" = "success" ]; then
-            printf '{"schemaVersion": 1, "label": "tests", "message": "%s passing", "color": "brightgreen"}\n' \
-              "$PASSED" > .github/badges/tests.json
-          elif [ -z "$PASSED" ] && [ "$ERRORS" != "0" ]; then
-            printf '{"schemaVersion": 1, "label": "tests", "message": "%s collection errors", "color": "red"}\n' \
-              "$ERRORS" > .github/badges/tests.json
-          else
-            printf '{"schemaVersion": 1, "label": "tests", "message": "%s passing, %s failed", "color": "red"}\n' \
-              "${PASSED:-0}" "$FAILED" > .github/badges/tests.json
-          fi
-          cat .github/badges/tests.json
+          mkdir -p .github/badges
+          python .github/scripts/update_badge.py \
+            pytest_report.xml .github/badges/tests.json "${{ steps.pytest.outcome }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
