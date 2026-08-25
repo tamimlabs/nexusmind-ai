@@ -92,7 +92,7 @@ Examples:
 
 ## Testing
 
-The current suite has 143 passing tests covering models, memory (hybrid
+The current suite has 158 Passing Tests covering models, memory (hybrid
 retrieval, HRR vectors, trust scoring), the self-evolving skill library
 (validation gates, lifecycle, matching, audit ledger), deterministic routing
 (command gate, tool-name repair ladder), executor, orchestrator, API, the

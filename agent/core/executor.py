@@ -497,8 +497,8 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
         for line in env_file.read_text().splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                env[key.strip()] = value.strip().strip("'\"")
+                key_part, _sep, value_part = line.partition("=")
+                env[key_part.strip()] = value_part.strip().strip("'\"")
 
     # WinError 32 fix: fully CLOSE our handle BEFORE spawning the child
     # (NamedTemporaryFile held it open for the whole run), and delete
@@ -529,7 +529,7 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
             error=stderr.decode(errors="replace") if not success else None,
         )
     finally:
-        for _ in range(3):
+        for _attempt in range(3):
             try:
                 script.unlink()
                 break
@@ -549,8 +549,8 @@ async def run_command(command: str, **_: Any) -> ToolResult:
         for line in env_file.read_text().splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                env[key.strip()] = value.strip().strip("'\"")
+                key_part, _sep, value_part = line.partition("=")
+                env[key_part.strip()] = value_part.strip().strip("'\"")
 
     try:
         proc = await asyncio.create_subprocess_shell(

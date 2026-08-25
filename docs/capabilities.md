@@ -180,6 +180,8 @@ Adapted from Hermes and OpenClaw — the right action happens without wasting mo
 - **Dynamic tool catalog:** the planner prompt is generated from the live tool registry (name + docstring), so prompts can never drift from what actually exists
 - **Hallucinated-tool repair ladder:** if Gemini plans a step with a nonexistent tool, it's repaired locally — normalize separators → strip `_tool` suffix → alias map (`"search"` → `web_search`) → fuzzy match ≥ 0.7
 - **Corrective re-plan with catalog feedback:** unrepairable tools trigger exactly ONE corrective round where the planner receives the valid-tool list; still-invalid steps are dropped deterministically instead of failing at runtime
+- **Truncate-tolerant plan salvage:** if Gemini's response is cut off by output-token limits (common for ambitious goals), completed steps are recovered from the partial JSON instead of discarding the whole plan; the planner budget was raised to 8,192 tokens and prompts forbid inlining large file content (generate it programmatically instead)
+- **Deterministic creative pipeline:** build goals ("redesign the YouTube homepage") that outlive planner failures still ship a real artifact — an interactive HTML mockup generated via `execute_code` with zero further LLM calls, immune to rate limits
 
 ### 14. Unified Credentials Management
 All API keys and secrets managed in one place:
@@ -228,7 +230,7 @@ Complex goals are automatically broken into manageable steps:
 | **API** | FastAPI (Python) |
 | **Frontend** | Real-time traceability dashboard |
 | **Language** | Python 3.11+ |
-| **Testing** | 143 passing tests |
+| **Testing** | 158 Passing Tests |
 
 ---
 

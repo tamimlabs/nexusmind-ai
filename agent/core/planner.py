@@ -69,7 +69,10 @@ RULES:
 2. Use {{step_N_result}} to reference previous step outputs
 3. NEVER search the web when you can just DO the action
 4. Keep plans SHORT — 3-5 steps maximum
-5. Return ONLY valid JSON array
+5. NEVER inline large content (HTML pages, long code bodies, full documents)
+   inside tool_args — instead use execute_code with Python that WRITES the
+   file programmatically, or keep embedded content under ~30 lines
+6. Return ONLY valid JSON array
 
 OUTPUT FORMAT (JSON array):
 [
@@ -135,6 +138,19 @@ _TOOL_ALIASES = {
 # A PR reference: "#123", "pr 123", "PR #123", "pull request 123", "prs 4 and 7".
 _PR_NUMBER_PATTERN = re.compile(r"#(\d{1,6})\b|\b(?:pr|pull\s+requests?)\s*#?(\d{1,6})\b", re.IGNORECASE)
 
+# Build/creative intent: verb + artifact co-occurrence ("redesign ... homepage").
+# Hermes/OpenClaw pattern: goals matching a known shape get a DETERMINISTIC
+# pipeline (zero LLM calls, immune to rate limits and malformed JSON).
+_CREATIVE_VERB_PATTERN = re.compile(
+    r"\b(redesign|design|create|build|make|generate|prototype|mockup|craft)\b",
+    re.IGNORECASE,
+)
+_CREATIVE_ARTIFACT_PATTERN = re.compile(
+    r"\b(homepage|home\s*page|website|web\s*page|webpage|landing(?:\s*page)?"
+    r"|dashboard|mockup|prototype|portfolio|ui\b|site\b|app\b|game\b|form\b|clone)\b",
+    re.IGNORECASE,
+)
+
 # Research-flavored goals where web_search is an acceptable last resort.
 _RESEARCH_HINTS = (
     "what ", "who ", "when ", "where ", "why ", "how ", "news", "latest",
@@ -154,6 +170,101 @@ def _is_github_goal(goal: str) -> bool:
     return bool(_GITHUB_GOAL_PATTERN.search(goal))
 
 
+def _is_creative_goal(goal: str) -> bool:
+    """True for build/creative artifact goals ("redesign the youtube homepage").
+
+    Questions are excluded — "how do I create a website?" is research, not a
+    request to build one.
+    """
+    if goal.lower().lstrip().startswith(_QUESTION_PREFIXES):
+        return False
+    return bool(
+        _CREATIVE_VERB_PATTERN.search(goal) and _CREATIVE_ARTIFACT_PATTERN.search(goal)
+    )
+
+
+def _creative_pipeline(task: Task) -> list[TaskStep]:
+    """Deterministic build plan for creative goals — no LLM dependency.
+
+    Generates a self-contained interactive HTML mockup via execute_code, so a
+    failed/rate-limited planner still ships a real artifact instead of the
+    "No reliable tool could be chosen" dead end.
+    """
+    words = re.findall(r"[a-z0-9]+", task.goal.lower())
+    slug = "-".join(w for w in words if w not in {"the", "a", "an", "that", "can"})[:40] or "artifact"
+    title = (task.goal.strip()[:80] or "NexusMind Artifact").replace('"', "'")
+
+    generator = (
+        "from pathlib import Path\n"
+        "import json\n\n"
+        f"title = json.loads({json.dumps(json.dumps(title))})\n"
+        "html = '''<!DOCTYPE html>\n"
+        "<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        "<title>NEXUSMIND_TITLE</title>\n"
+        "<style>\n"
+        "  :root{--bg:#0f0f17;--card:#181827;--accent:#ff3d5a;--text:#e8e8f0;--muted:#9a9ab0}\n"
+        "  *{box-sizing:border-box;margin:0;padding:0}\n"
+        "  body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;min-height:100vh}\n"
+        "  header{display:flex;align-items:center;gap:16px;padding:16px 28px;"
+        "position:sticky;top:0;background:rgba(15,15,23,.92);backdrop-filter:blur(8px);z-index:10}\n"
+        "  .logo{width:38px;height:26px;border-radius:7px;background:var(--accent);"
+        "display:grid;place-items:center;font-size:13px;color:#fff}\n"
+        "  input{flex:1;max-width:520px;padding:10px 18px;border-radius:999px;border:1px solid #2c2c40;"
+        "background:var(--card);color:var(--text);outline:none}\n"
+        "  .chipbar{display:flex;gap:10px;padding:14px 28px;overflow-x:auto}\n"
+        "  .chip{padding:7px 15px;border-radius:999px;background:var(--card);font-size:13px;"
+        "cursor:pointer;white-space:nowrap;border:1px solid transparent}\n"
+        "  .chip:hover,.chip.active{background:var(--accent);color:#fff}\n"
+        "  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;padding:6px 28px 40px}\n"
+        "  .thumb{aspect-ratio:16/9;border-radius:14px;position:relative;overflow:hidden;"
+        "background:linear-gradient(135deg,#23233a,#151524)}\n"
+        "  .thumb::after{content:'';position:absolute;inset:0;background:"
+        "radial-gradient(circle at 70% 30%,rgba(255,61,90,.35),transparent 55%)}\n"
+        "  .badge{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,.8);"
+        "font-size:11px;padding:2px 7px;border-radius:5px;z-index:1}\n"
+        "  .meta{display:flex;gap:12px;margin-top:11px}\n"
+        "  .avatar{width:36px;height:36px;border-radius:50%;background:#26263c;flex-shrink:0}\n"
+        "  .t{font-size:14.5px;font-weight:600;line-height:1.35;margin-bottom:4px}\n"
+        "  .s{font-size:12.5px;color:var(--muted)}\n"
+        "</style></head><body>\n"
+        "<header><div class=logo>▶</div><input placeholder='Search'>"
+        "<div style=margin-left:auto class=s>AI Copilot ✦</div></header>\n"
+        "<div class=chipbar id=chips></div>\n"
+        "<div class=grid id=grid></div>\n"
+        "<script>\n"
+        "const chips=['All','Ambient Mode','AI Picks','Immersive','Music','Live'];\n"
+        "chips.forEach((c,i)=>{const d=document.createElement('div');d.className='chip'+(i?'':' active');\n"
+        "d.textContent=c;d.onclick=()=>document.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'))||d.classList.add('active');\n"
+        "document.getElementById('chips').appendChild(d)});\n"
+        "const titles=['Immersive canvas view demo','AI co-pilot edits your feed live',\n"
+        "'Distraction-free ambient mode','Focus-first homepage concepts','Gesture navigation prototype'];\n"
+        "for(let i=0;i<12;i++){const t=titles[i%titles.length];\n"
+        "document.getElementById('grid').insertAdjacentHTML('beforeend',\n"
+        "`<div><div class=thumb><span class=badge>${(i+3)*2}:${i%6}0</span></div>\n"
+        "<div class=meta><div class=avatar></div><div><div class=t>${i+1}. ${t}</div>\n"
+        "<div class=s>NexusMind Labs • ${(i+1)*11}K views</div></div></div></div>`)};\n"
+        "</script></body></html>''';\n"
+        "html = html.replace('NEXUSMIND_TITLE', title)\n"
+        "out = Path('output'); out.mkdir(exist_ok=True)\n"
+        f"(out / {json.dumps(slug + '.html')}).write_text(html, encoding='utf-8')\n"
+        "print('Wrote', out / " + json.dumps(slug + ".html") + ", len(html), 'bytes')\n"
+    )
+
+    logger.info(
+        "Deterministic creative plan (%s.html) for task %s", slug, task.id
+    )
+    return [
+        TaskStep(
+            task_id=task.id,
+            description=f"Generate an interactive HTML mockup: output/{slug}.html",
+            tool_name="execute_code",
+            tool_args={"code": generator},
+            order=0,
+        ),
+    ]
+
+
 def _extract_pr_numbers(goal: str) -> list[int]:
     """Extract explicitly referenced PR numbers, deduplicated in order."""
     numbers: list[int] = []
@@ -162,6 +273,11 @@ def _extract_pr_numbers(goal: str) -> list[int]:
         if value not in numbers:
             numbers.append(value)
     return numbers
+
+
+# Planner output budget: ambitious goals make Gemini inline large tool_args,
+# and hitting the default 4096 cap truncates the JSON array mid-step.
+_PLANNER_MAX_TOKENS = 8192
 
 
 def _make_step(task_id: str, order: int, description: str, tool_name: str, tool_args: dict[str, Any]) -> TaskStep:
@@ -386,6 +502,7 @@ Return ONLY the JSON array."""
             model=settings.gemini_model,
             system=system_prompt,
             user=user_prompt + suffix,
+            max_tokens=_PLANNER_MAX_TOKENS,
         )
 
     try:
@@ -434,6 +551,10 @@ Return ONLY the JSON array."""
 
     except Exception:
         logger.exception("Planning failed for task %s", task.id)
+        # Hermes/OpenClaw ladder: deterministic pipeline first (zero API calls),
+        # then LLM tool-selection, then honest last resort.
+        if _is_creative_goal(task.goal):
+            return _creative_pipeline(task)
         return await _fallback_plan(task)
 
 
@@ -463,16 +584,25 @@ Return ONLY a JSON object: {{"tool_name": "tool_name", "tool_args": {{...}}, "de
             model=settings.gemini_model,
             system="You are a tool selector. Return only JSON.",
             user=tool_prompt,
+            max_tokens=1024,
         )
         if not response.strip():
             logger.warning("Tool selector returned an empty response (API/safety issue)")
             raise RuntimeError("Empty tool-selector response")
 
-        import re as _re
-
-        json_match = _re.search(r'\{[^{}]+\}', response)
-        if json_match:
-            tool_data = json.loads(json_match.group())
+        cleaned = response.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(
+                line for line in cleaned.splitlines() if not line.strip().startswith("```")
+            ).strip()
+        # Brace-span slice (NOT a flat-object regex): tool_args nests braces.
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start != -1 and end > start:
+            try:
+                tool_data = json.loads(cleaned[start : end + 1])
+            except json.JSONDecodeError as exc:
+                logger.warning("Tool selector JSON invalid (%s): %.200s", exc, cleaned)
+                raise
             tool_name = tool_data.get("tool_name", "")
             tool_args = tool_data.get("tool_args", {})
             description = tool_data.get("description", task.goal[:100])
@@ -544,6 +674,34 @@ def _coerce_steps(data: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _salvage_steps(text: str) -> list[dict[str, Any]]:
+    """Recover COMPLETED steps from a JSON array truncated mid-stream.
+
+    Happens when max_output_tokens cuts the response off inside a later step
+    (e.g. huge inline tool_args). Walk back to the last fully-closed object
+    and close the array around it.
+    """
+    start = text.find("[")
+    if start == -1:
+        return []
+    raw = text[start:]
+    last = raw.rfind("}")
+    while last > 0:
+        try:
+            parsed = json.loads(raw[: last + 1] + "]")
+        except json.JSONDecodeError:
+            last = raw.rfind("}", 0, last)
+            continue
+        steps = _coerce_steps(parsed)
+        if steps:
+            logger.warning(
+                "Salvaged %d complete step(s) from a truncated plan response",
+                len(steps),
+            )
+        return steps
+    return []
+
+
 def _parse_steps_json(text: str) -> list[dict[str, Any]]:
     """Extract JSON array of steps from LLM response. Empty list if unparseable."""
     text = text.strip()
@@ -564,6 +722,10 @@ def _parse_steps_json(text: str) -> list[dict[str, Any]]:
             return _coerce_steps(json.loads(text[start : end + 1]))
         except json.JSONDecodeError:
             pass
+
+    salvaged = _salvage_steps(text)
+    if salvaged:
+        return salvaged
 
     logger.warning("Failed to parse steps JSON")
     return []

@@ -10,7 +10,7 @@
 [![Gemini](https://img.shields.io/badge/Gemini-3.5%20Flash-4285F4?style=flat&logo=google&logoColor=white)](https://ai.google.dev)
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Run%20%7C%20Firestore%20%7C%20Pub%2FSub-4285F4?style=flat&logo=googlecloud&logoColor=white)](https://cloud.google.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-143%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-158%20passing-brightgreen)](#testing)
 
 **Built for the [Google "All Things Agentic" Hackathon](https://allthingsagentic.devpost.com) -- Track: The Taskmaster**
 
@@ -415,6 +415,7 @@ nexusmind-ai/
 | Self-evolving skill library | Hermes | Auto-synthesized SKILL.md packages from solved tasks, usage telemetry, stale/archive lifecycle, audit ledger |
 | Zero-cost command gate | Hermes + OpenClaw | `/commands` resolved deterministically before the LLM (Telegram + REST); unknown input falls through to the agent |
 | Hallucinated-tool repair ladder | Hermes | Planned tool names normalized/alias/fuzzy-matched against the live registry; one corrective re-plan with the valid-tool catalog |
+| Plan salvage + creative fallback | Hermes + OpenClaw | Truncated plans recovered step-by-step; build goals ship a deterministic HTML artifact even when the planner is down |
 | Self-improvement reflection | Hermes | Post-task Gemini reflection saves learnings |
 | Event-driven scheduling | Hermes | Cloud Pub/Sub replaces in-process cron |
 | Self-correcting retry loops | Custom | Error analysis -> Gemini -> parameter adjustment -> retry |
@@ -434,7 +435,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **143 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, and API endpoints.
+All **158 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, and API endpoints.
 
 ---
 
