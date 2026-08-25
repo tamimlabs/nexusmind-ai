@@ -203,7 +203,7 @@ class TestCreativePipeline:
         )
         code = steps[0].tool_args["code"]
         assert planner_mod._is_fullstack_goal("build a full stack ecommerce site")
-        assert "server_py" in code and "http.server" in code
+        assert '"server.py"' in code and "http.server" in code
 
     @pytest.mark.asyncio
     async def test_simple_mockup_has_no_server(self, gemini):
@@ -211,7 +211,48 @@ class TestCreativePipeline:
         steps = await planner_mod.plan_task(
             Task(goal="make a landing page mockup for our product launch")
         )
-        assert "server_py" not in steps[0].tool_args["code"]
+        assert '"server.py"' not in steps[0].tool_args["code"]
+
+
+class TestScaffoldTemplates:
+    def test_artifact_kind_detection(self):
+        assert planner_mod._artifact_kind("make a product landing page") == "landing"
+        assert planner_mod._artifact_kind("build an analytics dashboard") == "dashboard"
+        assert planner_mod._artifact_kind("video gallery like netflix") == "feed"
+        assert planner_mod._artifact_kind("redesign the youtube homepage") == "feed"
+        # unknown artifact -> landing default
+        assert planner_mod._artifact_kind("craft a widget configurator") == "landing"
+
+    def test_templates_are_actually_different(self):
+        landing = planner_mod._SCAFFOLD_LANDING
+        dash = planner_mod._SCAFFOLD_DASHBOARD
+        feed = planner_mod._SCAFFOLD_FEED
+        assert "class=hero" in landing["body"]
+        assert "chipbar" not in landing["body"]
+        assert "<aside>" in dash["body"] and "kpis" in dash["body"]
+        assert "chipbar" in feed["body"]
+
+    def test_headline_derived_from_goal(self):
+        headline, sub = planner_mod._headline_from_goal(
+            "make a product landing page for nike shoes", "landing"
+        )
+        assert "nike" in headline.lower()
+        assert "shoes" in headline.lower()
+        assert sub  # subtitle present
+
+    @pytest.mark.asyncio
+    async def test_landing_goal_produces_hero_not_grid(self, gemini):
+        _, responses = gemini
+        responses[:] = [""]  # force deterministic fallback path
+        steps = await planner_mod.plan_task(
+            Task(goal="make a product landing page for our startup")
+        )
+        assert len(steps) == 1
+        desc = steps[0].description
+        assert "landing project" in desc
+        code = steps[0].tool_args["code"]
+        assert "class=hero" in code
+        assert "chipbar" not in code
 
 
 class TestWriteFileRoots:
