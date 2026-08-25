@@ -68,11 +68,18 @@ RULES:
 1. EVERY step MUST have "tool_name" and "tool_args"
 2. Use {{step_N_result}} to reference previous step outputs
 3. NEVER search the web when you can just DO the action
-4. Keep plans SHORT — 3-5 steps maximum
+4. Keep plans SHORT — 3-6 steps maximum
 5. NEVER inline large content (HTML pages, long code bodies, full documents)
    inside tool_args — instead use execute_code with Python that WRITES the
    file programmatically, or keep embedded content under ~30 lines
-6. Return ONLY valid JSON array
+6. MULTI-FILE PROJECTS: for websites / apps / full-stack builds create ONE
+   project folder per task — projects/<short-name>/ — and write EVERY file
+   into it via separate steps: index.html, css/styles.css, js/app.js,
+   backend file (e.g. server.py) when relevant, and README.md.
+   Files must link each other with RELATIVE paths (e.g. css/styles.css).
+   NEVER cram a whole multi-file project into a single HTML file.
+   Small one-artifact mockups may still go to output/.
+7. Return ONLY valid JSON array
 
 OUTPUT FORMAT (JSON array):
 [
@@ -183,81 +190,157 @@ def _is_creative_goal(goal: str) -> bool:
     )
 
 
+def _is_fullstack_goal(goal: str) -> bool:
+    """True when the goal implies backend work (server, DB, auth, APIs)."""
+    return bool(_FULLSTACK_HINT_PATTERN.search(goal))
+
+
+_FULLSTACK_HINT_PATTERN = re.compile(
+    r"\b(full[\s\-]?stack|backend|back[\s\-]?end|server|api\b|database|"
+    r"db\b|auth|login|logout|signup|sign[\s\-]?up|node\.?js|express|flask|"
+    r"django|fastapi|mongodb|postgres|mysql|supabase|firebase)\b",
+    re.IGNORECASE,
+)
+
+# Emitted into the generated script only for full-stack goals: a dependency-free
+# stdlib dev server (static files + JSON API stub) as projects/<slug>/server.py.
+_SERVER_PY_SNIPPET = (
+    "\n"
+    "server_py = '''"
+    "\"\"\"Tiny stdlib dev server: static files + JSON API stub.\"\"\"\\n"
+    "import http.server\\n"
+    "import json\\n"
+    "import pathlib\\n"
+    "import socketserver\\n\\n"
+    "ROOT = pathlib.Path(__file__).parent\\n\\n\\n"
+    "class Handler(http.server.SimpleHTTPRequestHandler):\\n"
+    "    def __init__(self, *args, **kwargs):\\n"
+    "        super().__init__(*args, directory=str(ROOT), **kwargs)\\n\\n"
+    "    def do_GET(self):\\n"
+    "        if self.path.startswith('/api/'):\\n"
+    "            body = json.dumps({'ok': True, 'endpoint': self.path}).encode()\\n"
+    "            self.send_response(200)\\n"
+    "            self.send_header('Content-Type', 'application/json')\\n"
+    "            self.send_header('Content-Length', str(len(body)))\\n"
+    "            self.end_headers()\\n"
+    "            self.wfile.write(body)\\n"
+    "        else:\\n"
+    "            super().do_GET()\\n\\n\\n"
+    "if __name__ == '__main__':\\n"
+    "    with socketserver.TCPServer(('', 8000), Handler) as httpd:\\n"
+    "        print('Serving on http://localhost:8000')\\n"
+    "        httpd.serve_forever()\\n"
+    "'''\\n"
+    "(root / 'server.py').write_text(server_py, encoding='utf-8')\\n"
+)
+
+
 def _creative_pipeline(task: Task) -> list[TaskStep]:
     """Deterministic build plan for creative goals — no LLM dependency.
 
-    Generates a self-contained interactive HTML mockup via execute_code, so a
-    failed/rate-limited planner still ships a real artifact instead of the
-    "No reliable tool could be chosen" dead end.
+    Generates a complete project FOLDER under ``projects/<slug>/`` (HTML +
+    CSS + JS + README, plus a stdlib ``server.py`` for full-stack goals), so
+    a failed/rate-limited planner still ships a real multi-file artifact
+    instead of the "No reliable tool could be chosen" dead end.
     """
     words = re.findall(r"[a-z0-9]+", task.goal.lower())
-    slug = "-".join(w for w in words if w not in {"the", "a", "an", "that", "can"})[:40] or "artifact"
+    slug = (
+        "-".join(w for w in words if w not in {"the", "a", "an", "that", "can", "for", "with"})[:40]
+        or "artifact"
+    )
     title = (task.goal.strip()[:80] or "NexusMind Artifact").replace('"', "'")
+    fullstack = _is_fullstack_goal(task.goal)
+
+    files_block = (
+        "(root / 'index.html').write_text(html.replace('NEXUSMIND_TITLE', title), encoding='utf-8')\n"
+        "(root / 'css' / 'styles.css').write_text(css, encoding='utf-8')\n"
+        "(root / 'js' / 'app.js').write_text(js, encoding='utf-8')\n"
+        "(root / 'README.md').write_text(readme, encoding='utf-8')\n"
+    )
 
     generator = (
         "from pathlib import Path\n"
         "import json\n\n"
-        f"title = json.loads({json.dumps(json.dumps(title))})\n"
+        f"root = Path('projects') / json.loads({json.dumps(json.dumps(slug))})\n"
+        "(root / 'css').mkdir(parents=True, exist_ok=True)\n"
+        "(root / 'js').mkdir(parents=True, exist_ok=True)\n"
+        f"title = json.loads({json.dumps(json.dumps(title))})\n\n"
         "html = '''<!DOCTYPE html>\n"
         "<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         "<title>NEXUSMIND_TITLE</title>\n"
-        "<style>\n"
-        "  :root{--bg:#0f0f17;--card:#181827;--accent:#ff3d5a;--text:#e8e8f0;--muted:#9a9ab0}\n"
-        "  *{box-sizing:border-box;margin:0;padding:0}\n"
-        "  body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;min-height:100vh}\n"
-        "  header{display:flex;align-items:center;gap:16px;padding:16px 28px;"
-        "position:sticky;top:0;background:rgba(15,15,23,.92);backdrop-filter:blur(8px);z-index:10}\n"
-        "  .logo{width:38px;height:26px;border-radius:7px;background:var(--accent);"
-        "display:grid;place-items:center;font-size:13px;color:#fff}\n"
-        "  input{flex:1;max-width:520px;padding:10px 18px;border-radius:999px;border:1px solid #2c2c40;"
-        "background:var(--card);color:var(--text);outline:none}\n"
-        "  .chipbar{display:flex;gap:10px;padding:14px 28px;overflow-x:auto}\n"
-        "  .chip{padding:7px 15px;border-radius:999px;background:var(--card);font-size:13px;"
-        "cursor:pointer;white-space:nowrap;border:1px solid transparent}\n"
-        "  .chip:hover,.chip.active{background:var(--accent);color:#fff}\n"
-        "  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;padding:6px 28px 40px}\n"
-        "  .thumb{aspect-ratio:16/9;border-radius:14px;position:relative;overflow:hidden;"
-        "background:linear-gradient(135deg,#23233a,#151524)}\n"
-        "  .thumb::after{content:'';position:absolute;inset:0;background:"
-        "radial-gradient(circle at 70% 30%,rgba(255,61,90,.35),transparent 55%)}\n"
-        "  .badge{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,.8);"
-        "font-size:11px;padding:2px 7px;border-radius:5px;z-index:1}\n"
-        "  .meta{display:flex;gap:12px;margin-top:11px}\n"
-        "  .avatar{width:36px;height:36px;border-radius:50%;background:#26263c;flex-shrink:0}\n"
-        "  .t{font-size:14.5px;font-weight:600;line-height:1.35;margin-bottom:4px}\n"
-        "  .s{font-size:12.5px;color:var(--muted)}\n"
-        "</style></head><body>\n"
-        "<header><div class=logo>▶</div><input placeholder='Search'>"
-        "<div style=margin-left:auto class=s>AI Copilot ✦</div></header>\n"
+        "<link rel=\"stylesheet\" href=\"css/styles.css\">\n"
+        "</head><body>\n"
+        "<header><div class=logo>&#9654;</div><input placeholder='Search'>"
+        "<div style=margin-left:auto class=s>NexusMind &#10022;</div></header>\n"
         "<div class=chipbar id=chips></div>\n"
         "<div class=grid id=grid></div>\n"
-        "<script>\n"
-        "const chips=['All','Ambient Mode','AI Picks','Immersive','Music','Live'];\n"
+        "<script src=\"js/app.js\"></script>\n"
+        "</body></html>''';\n\n"
+        "css = '''\n"
+        ":root{--bg:#0f0f17;--card:#181827;--accent:#ff3d5a;--text:#e8e8f0;--muted:#9a9ab0}\n"
+        "*{box-sizing:border-box;margin:0;padding:0}\n"
+        "body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;min-height:100vh}\n"
+        "header{display:flex;align-items:center;gap:16px;padding:16px 28px;"
+        "position:sticky;top:0;background:rgba(15,15,23,.92);backdrop-filter:blur(8px);z-index:10}\n"
+        ".logo{width:38px;height:26px;border-radius:7px;background:var(--accent);"
+        "display:grid;place-items:center;font-size:13px;color:#fff}\n"
+        "input{flex:1;max-width:520px;padding:10px 18px;border-radius:999px;border:1px solid #2c2c40;"
+        "background:var(--card);color:var(--text);outline:none}\n"
+        ".chipbar{display:flex;gap:10px;padding:14px 28px;overflow-x:auto}\n"
+        ".chip{padding:7px 15px;border-radius:999px;background:var(--card);font-size:13px;"
+        "cursor:pointer;white-space:nowrap;border:1px solid transparent}\n"
+        ".chip:hover,.chip.active{background:var(--accent);color:#fff}\n"
+        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;padding:6px 28px 40px}\n"
+        ".thumb{aspect-ratio:16/9;border-radius:14px;position:relative;overflow:hidden;"
+        "background:linear-gradient(135deg,#23233a,#151524)}\n"
+        ".thumb::after{content:'';position:absolute;inset:0;background:"
+        "radial-gradient(circle at 70% 30%,rgba(255,61,90,.35),transparent 55%)}\n"
+        ".badge{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,.8);"
+        "font-size:11px;padding:2px 7px;border-radius:5px;z-index:1}\n"
+        ".meta{display:flex;gap:12px;margin-top:11px}\n"
+        ".avatar{width:36px;height:36px;border-radius:50%;background:#26263c;flex-shrink:0}\n"
+        ".t{font-size:14.5px;font-weight:600;line-height:1.35;margin-bottom:4px}\n"
+        ".s{font-size:12.5px;color:var(--muted)}\n"
+        "''';\n\n"
+        "js = '''\n"
+        "const chips=['All','Featured','New','Trending','Collections','Live'];\n"
         "chips.forEach((c,i)=>{const d=document.createElement('div');d.className='chip'+(i?'':' active');\n"
         "d.textContent=c;d.onclick=()=>document.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'))||d.classList.add('active');\n"
         "document.getElementById('chips').appendChild(d)});\n"
-        "const titles=['Immersive canvas view demo','AI co-pilot edits your feed live',\n"
-        "'Distraction-free ambient mode','Focus-first homepage concepts','Gesture navigation prototype'];\n"
+        "const titles=['Concept one — hero section','Concept two — immersive grid',\n"
+        "'Concept three — ambient mode','Concept four — focus feed','Concept five — gesture nav'];\n"
         "for(let i=0;i<12;i++){const t=titles[i%titles.length];\n"
         "document.getElementById('grid').insertAdjacentHTML('beforeend',\n"
         "`<div><div class=thumb><span class=badge>${(i+3)*2}:${i%6}0</span></div>\n"
         "<div class=meta><div class=avatar></div><div><div class=t>${i+1}. ${t}</div>\n"
-        "<div class=s>NexusMind Labs • ${(i+1)*11}K views</div></div></div></div>`)};\n"
-        "</script></body></html>''';\n"
-        "html = html.replace('NEXUSMIND_TITLE', title)\n"
-        "out = Path('output'); out.mkdir(exist_ok=True)\n"
-        f"(out / {json.dumps(slug + '.html')}).write_text(html, encoding='utf-8')\n"
-        "print('Wrote', out / " + json.dumps(slug + ".html") + ", len(html), 'bytes')\n"
+        "<div class=s>NexusMind Labs &#8226; ${(i+1)*11}K views</div></div></div></div>`)};\n"
+        "''';\n\n"
+        "readme = '''# NEXUSMIND_TITLE\n\nGenerated by NexusMind AI.\n\n"
+        "## Structure\\n"
+        "- index.html - entry page\\n"
+        "- css/styles.css - design system\\n"
+        "- js/app.js - interactions\\n"
+        + ("- server.py - stdlib dev server (python server.py)\\n" if fullstack else "")
+        + "''';\n"
+        "readme = readme.replace('NEXUSMIND_TITLE', title)\n"
+        + (_SERVER_PY_SNIPPET if fullstack else "")
+        + "\n" + files_block +
+        "print('Project scaffold written to', root.resolve())\n"
     )
 
     logger.info(
-        "Deterministic creative plan (%s.html) for task %s", slug, task.id
+        "Deterministic creative plan (projects/%s/%s) for task %s",
+        slug, "+server.py" if fullstack else "", task.id,
     )
+    extra = ", server.py" if fullstack else ""
     return [
         TaskStep(
             task_id=task.id,
-            description=f"Generate an interactive HTML mockup: output/{slug}.html",
+            description=(
+                f"Scaffold multi-file project: projects/{slug}/ "
+                f"(index.html, css/styles.css, js/app.js, README.md{extra})"
+            ),
             tool_name="execute_code",
             tool_args={"code": generator},
             order=0,

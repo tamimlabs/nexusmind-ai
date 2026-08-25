@@ -23,6 +23,11 @@ def _sandbox_path(path: str) -> Path:
     raise PermissionError(f"Access denied: {path} is outside project directory")
 
 
+# Sandbox roots: loose paths land in output/; multi-file projects go to
+# projects/<name>/ so each build gets its own folder.
+_ALLOWED_ROOTS = ("output", "projects")
+
+
 @register_tool("read_file")
 async def read_file(path: str, encoding: str = "utf-8", **_) -> ToolResult:
     """Read a file and return its contents (sandboxed to project directory)."""
@@ -47,10 +52,14 @@ async def read_file(path: str, encoding: str = "utf-8", **_) -> ToolResult:
 
 @register_tool("write_file")
 async def write_file(path: str, content: str, encoding: str = "utf-8", **_) -> ToolResult:
-    """Write content to a file in the output/ directory (creates parent dirs)."""
+    """Write a file (creates parent dirs).
+
+    Paths starting with ``projects/`` keep their location so multi-file
+    projects get one folder per build; anything else defaults to ``output/``.
+    """
     try:
         p = Path(path)
-        if not str(p).startswith("output"):
+        if not (p.parts and p.parts[0] in _ALLOWED_ROOTS):
             p = Path("output") / p
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding=encoding)

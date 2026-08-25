@@ -12,6 +12,7 @@ import pytest
 
 import agent.core.executor as ex
 import agent.core.planner as planner_mod
+import agent.skills.file_management.skill as fm_mod
 from agent.models import Task
 
 
@@ -177,8 +178,8 @@ class TestCreativePipeline:
         assert not planner_mod._is_creative_goal("merge pr 5 into main")
 
     @pytest.mark.asyncio
-    async def test_dead_api_still_ships_artifact_zero_llm_calls(self, gemini):
-        """Planner totally down + rate limits -> deterministic HTML artifact."""
+    async def test_dead_api_still_ships_project_zero_llm_calls(self, gemini):
+        """Planner totally down + rate limits -> deterministic project folder."""
         calls, _ = gemini  # every call raises IndexError
         steps = await planner_mod.plan_task(
             Task(goal="redesign the youtube homepage that can shock the youtube")
@@ -187,5 +188,46 @@ class TestCreativePipeline:
         assert len(steps) == 1
         assert steps[0].tool_name == "execute_code"
         code = steps[0].tool_args["code"]
+        # Multi-file scaffold, not a single dumped HTML file
+        assert "'projects'" in code
+        assert "css/styles.css" in code or "(root / 'css'" in code
+        for filename in ("index.html", "styles.css", "app.js", "README.md"):
+            assert filename in code
         assert "<!DOCTYPE html>" in code
-        assert ".html" in steps[0].description
+
+    @pytest.mark.asyncio
+    async def test_fullstack_goal_adds_server_file(self, gemini):
+        _, _ = gemini
+        steps = await planner_mod.plan_task(
+            Task(goal="build a full stack ecommerce site with login and database")
+        )
+        code = steps[0].tool_args["code"]
+        assert planner_mod._is_fullstack_goal("build a full stack ecommerce site")
+        assert "server_py" in code and "http.server" in code
+
+    @pytest.mark.asyncio
+    async def test_simple_mockup_has_no_server(self, gemini):
+        _, _ = gemini
+        steps = await planner_mod.plan_task(
+            Task(goal="make a landing page mockup for our product launch")
+        )
+        assert "server_py" not in steps[0].tool_args["code"]
+
+
+class TestWriteFileRoots:
+    @pytest.mark.asyncio
+    async def test_projects_path_kept_with_nested_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await fm_mod.write_file(
+            "projects/my-app/css/styles.css", "body{}"
+        )
+        assert result.success is True
+        assert (tmp_path / "projects" / "my-app" / "css" / "styles.css").exists()
+
+    @pytest.mark.asyncio
+    async def test_loose_path_defaults_to_output(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = await fm_mod.write_file("notes.txt", "hello")
+        assert result.success is True
+        assert (tmp_path / "output" / "notes.txt").exists()
+        assert not (tmp_path / "notes.txt").exists()
