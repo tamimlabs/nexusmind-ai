@@ -475,8 +475,11 @@ async def plan_task(
 
     lessons_context = ""
     if lessons:
-        lessons_context = "\n\nLESSONS FROM PAST TASKS:\n" + "\n".join(
-            f"- {lesson}" for lesson in lessons[:5]
+        lessons_context = (
+            "\n\nLESSONS FROM PAST TASKS (guidance only — the CURRENT GOAL "
+            "above decides what to build; never reuse a past goal's subject, "
+            "branding, or output files):\n"
+            + "\n".join(f"- {lesson}" for lesson in lessons[:5])
         )
 
     user_prompt = f"""Goal: {task.goal}

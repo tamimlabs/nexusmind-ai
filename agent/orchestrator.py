@@ -63,6 +63,47 @@ def _is_trivial(task: Task) -> bool:
     return False
 
 
+def _clean_lessons(raw: str) -> list[str]:
+    """Sanitize reflection output into clean, self-contained lesson lines.
+
+    Guards against the two failure modes seen in production:
+    - prompt echoes ("You just completed a task... Goal:") being saved whole
+    - max-token truncations storing half a sentence as a "lesson"
+    """
+    if not raw:
+        return []
+    echo_markers = (
+        "you just completed",
+        "goal:",
+        "output 0-2 lessons",
+        "rules:",
+        "examples of good",
+        "examples of bad",
+        "result:",
+        "steps taken:",
+    )
+    lessons: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip().lstrip("-•* ").strip()
+        if not line or "nothing_to_save" in line.lower():
+            continue
+        low = line.lower()
+        if any(marker in low for marker in echo_markers):
+            continue
+        words = line.split()
+        # Template asks for single sentences under 20 words; allow slack but
+        # reject fragments (too short) and run-ons/truncations (too long).
+        if not 4 <= len(words) <= 30:
+            continue
+        # A sentence must END like one — mid-thought truncations don't.
+        if line[-1] not in ".!?":
+            continue
+        lessons.append(line)
+        if len(lessons) == 2:
+            break
+    return lessons
+
+
 def _is_novel_reflection(reflection: str, existing: list[str]) -> bool:
     """Check if a reflection contains genuinely new information."""
     if not reflection or len(reflection.strip()) < 20:
@@ -360,7 +401,6 @@ execute_code, read_file, write_file, github_*>
             return
 
         from agent.core.gemini_client import generate_content
-
         success = task.status == TaskStatus.COMPLETED
         reflection_prompt = f"""You just completed a task. Extract ONLY genuinely new, actionable lessons.
 
@@ -396,15 +436,18 @@ Output 0-2 lessons, or NOTHING_TO_SAVE."""
                 max_tokens=200,
             )
 
-            # Don't save if the model says nothing is worth saving
-            if not reflection or "NOTHING_TO_SAVE" in reflection.upper():
-                logger.debug("No new lessons from task %s", task.id)
+            # Sanitize: prompt echoes and mid-sentence truncations previously
+            # leaked into LESSONS context and contaminated future planning.
+            cleaned = _clean_lessons(reflection)
+            if not cleaned:
+                logger.debug("No usable lessons from task %s", task.id)
                 return
 
             # Check for novelty against existing reflections
             existing = [e.content for e in self.memory.get_by_category("reflection")]
-            if _is_novel_reflection(reflection, existing):
-                self.memory.save_reflection(reflection.strip())
+            joined = "\n".join(cleaned)
+            if _is_novel_reflection(joined, existing):
+                self.memory.save_reflection(joined)
                 logger.info("New lesson saved from task %s", task.id)
             else:
                 logger.debug("Reflection not novel, skipping for task %s", task.id)

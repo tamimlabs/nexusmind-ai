@@ -46,6 +46,9 @@ _MAX_ENTRIES = 500
 
 # Trust floor for prefetch injection (search() itself stays unfiltered).
 _PREFETCH_MIN_TRUST = 0.15
+# Categories never injected into planning prompts: raw transcripts of past
+# tasks are for self-improvement stats, not templates (see prefetch()).
+_PREFETCH_EXCLUDE = frozenset({"task_outcome"})
 
 
 # ---------------------------------------------------------------------------
@@ -366,12 +369,21 @@ class MemoryStore:
 
         Skips trivial prompts entirely (no wasted retrieval, no stale context
         derailing one-word replies).
+
+        Raw ``task_outcome`` transcripts are EXCLUDED (Hermes lesson: planning
+        receives distilled context, not past-task dumps — otherwise a new
+        "make a product landing page" goal recalls an old landing-page build
+        and copies it wholesale).
         """
         if is_trivial_prompt(query):
             return ""
+        # Over-fetch so category filtering below still fills top_k slots.
         results = self._retriever.search(
-            query, min_trust=_PREFETCH_MIN_TRUST, limit=top_k
+            query, min_trust=_PREFETCH_MIN_TRUST, limit=top_k * 3
         )
+        results = [
+            r for r in results if r.get("category") not in _PREFETCH_EXCLUDE
+        ][:top_k]
         if not results:
             return ""
         lines = []
@@ -379,7 +391,10 @@ class MemoryStore:
             trust = float(r.get("trust_score", 0.5))
             lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
         return build_memory_context_block(
-            "## Recalled memory\n" + "\n".join(lines)
+            "## Recalled memory — BACKGROUND ONLY\n"
+            "These notes may come from DIFFERENT goals. Use them as context; "
+            "never copy a past task's subject, branding, filenames, or code "
+            "into the current goal.\n" + "\n".join(lines)
         )
 
     def system_prompt_block(self) -> str:

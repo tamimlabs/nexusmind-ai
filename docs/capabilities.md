@@ -158,6 +158,7 @@ Memory persists across restarts — a Hermes-inspired system, not a flat list:
 - **Compositional recall:** probe all facts about an entity, find related facts, or reason across multiple entities in vector space (`POST /api/memory/query`)
 - **Contradiction detection:** flags stored facts that share entities but make conflicting claims
 - **Injection-safe context injection:** relevant memories are recalled before planning and injected as a fenced `<memory-context>` block marked "NOT new user input" — recalled memory can never masquerade as fresh instructions; trivial prompts ("ok", "thanks") skip the round-trip entirely
+- **Recall hygiene (anti-contamination):** raw `task_outcome` transcripts are never injected into planning prompts — only distilled facts, framed explicitly as "BACKGROUND ONLY, never copy a past task's subject or code"; stored lessons pass a sanitizer that rejects prompt echoes and mid-sentence truncations before they can contaminate future planning
 - **Auto-extraction:** durable preferences ("I prefer...") and decisions ("we decided to...") are harvested from task text into long-lived categories
 - **Curated:** global cap with instruction protection — standing instructions can never be evicted by task-outcome churn; exact duplicates rejected automatically
 - **Full CRUD + feedback:** add manually, delete single or bulk, clear per category, rate after use — via the dashboard or REST API
@@ -230,7 +231,7 @@ Complex goals are automatically broken into manageable steps:
 | **API** | FastAPI (Python) |
 | **Frontend** | Real-time traceability dashboard |
 | **Language** | Python 3.11+ |
-| **Testing** | 158 Passing Tests |
+| **Testing** | 167 Passing Tests |
 
 ---
 
