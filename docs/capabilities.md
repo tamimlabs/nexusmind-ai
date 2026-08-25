@@ -231,7 +231,7 @@ Complex goals are automatically broken into manageable steps:
 | **API** | FastAPI (Python) |
 | **Frontend** | Real-time traceability dashboard |
 | **Language** | Python 3.11+ |
-| **Testing** | 175 Passing Tests |
+| **Testing** | 180 Passing Tests |
 
 ---
 
