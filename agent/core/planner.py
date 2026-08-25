@@ -839,16 +839,22 @@ Return ONLY a JSON object: {{"tool_name": "tool_name", "tool_args": {{...}}, "de
             tool_args = tool_data.get("tool_args", {})
             description = tool_data.get("description", task.goal[:100])
 
+            # Merge defaults — never REPLACE the dict, or LLM-provided
+            # content/code would be silently discarded.
             if tool_name == "run_command" and "command" not in tool_args:
-                tool_args = {"command": task.goal}
+                tool_args = {**tool_args, "command": task.goal}
             elif tool_name == "execute_code" and "code" not in tool_args:
-                tool_args = {"code": f"# {task.goal}\nprint('Ready to execute')"}
+                tool_args = {**tool_args, "code": f"# {task.goal}\nprint('Ready to execute')"}
             elif tool_name == "web_search" and "query" not in tool_args:
-                tool_args = {"query": task.goal, "num_results": 5}
+                tool_args = {**tool_args, "query": task.goal, "num_results": 5}
             elif tool_name == "write_file" and "path" not in tool_args:
-                tool_args = {"path": "output/result.md", "content": "{{step_0_result}}"}
+                tool_args = {
+                    **tool_args,
+                    "path": "output/result.md",
+                    **({"content": "{{step_0_result}}"} if "content" not in tool_args else {}),
+                }
             elif tool_name in ("read_file", "list_directory") and "path" not in tool_args:
-                tool_args = {"path": "output/"}
+                tool_args = {**tool_args, "path": "output/"}
 
             if tool_name:
                 return [

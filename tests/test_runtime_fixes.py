@@ -13,7 +13,7 @@ import pytest
 import agent.core.executor as ex
 import agent.core.planner as planner_mod
 import agent.skills.file_management.skill as fm_mod
-from agent.models import Task
+from agent.models import Task, TaskStep
 
 
 @pytest.fixture()
@@ -272,3 +272,63 @@ class TestWriteFileRoots:
         assert result.success is True
         assert (tmp_path / "output" / "notes.txt").exists()
         assert not (tmp_path / "notes.txt").exists()
+
+
+class TestArgNormalization:
+    """LLM arg keys drift ("file_path", missing path) — steps must survive."""
+
+    def test_alias_keys_map_to_canonical(self):
+        args: dict[str, Any] = {"file_path": "a.txt", "text": "hi"}
+        ex._apply_arg_aliases(args)
+        assert args["path"] == "a.txt"
+        assert args["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_step_with_wrong_key_still_writes(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        step = TaskStep(
+            task_id="t",
+            description="Write HTML markup",
+            tool_name="write_file",
+            tool_args={"content": "<h1>hi</h1>", "filename": "x.html"},
+            order=0,
+        )
+        result = await ex.execute_step(step, {})
+        assert result.success is True
+        # loose filename -> write_file parks it under output/
+        assert (
+            tmp_path / "output" / "x.html"
+        ).read_text(encoding="utf-8") == "<h1>hi</h1>"
+
+    @pytest.mark.asyncio
+    async def test_missing_path_derived_from_description(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        step = TaskStep(
+            task_id="t",
+            description="Write CSS styles implementing the digital dark theme",
+            tool_name="write_file",
+            tool_args={"content": "body{}"},
+            order=0,
+        )
+        context = {"task_goal": "make a product landing page"}
+        result = await ex.execute_step(step, context)
+        assert result.success is True
+        expected = (
+            tmp_path / "projects" / "make-product-landing-page" / "styles.css"
+        )
+        assert expected.exists()
+
+    @pytest.mark.asyncio
+    async def test_fallback_selector_merge_preserves_content(self, gemini):
+        """Old behavior REPLACED args on default-fill, dropping LLM content."""
+        _, responses = gemini
+        responses[:] = [
+            "",  # main plan empty
+            '{"tool_name": "write_file", "description": "save it",'
+            ' "tool_args": {"content": "PRECIOUS"}}',
+        ]
+        steps = await planner_mod.plan_task(Task(goal="research solar flares"))
+        assert len(steps) == 1
+        args = steps[0].tool_args
+        assert args["path"] == "output/result.md"  # default merged in
+        assert args["content"] == "PRECIOUS"       # LLM content preserved

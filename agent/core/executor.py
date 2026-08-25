@@ -413,6 +413,12 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                     if fallback_key in (context or {}):
                         v = v.replace(match.group(0), str(context[fallback_key]))
         resolved_args[k] = v
+    # Schema-drift tolerance (Hermes): LLMs vary arg keys ("file_path",
+    # "filename"...). Normalize aliases, then derive required args that are
+    # still missing instead of crashing the step with a TypeError.
+    _apply_arg_aliases(resolved_args)
+    if step.tool_name == "write_file" and not resolved_args.get("path"):
+        resolved_args["path"] = _derive_write_path(step.description or "", context)
     current_args = dict(resolved_args)
     last_error = ""
     original_tool = step.tool_name
@@ -459,6 +465,54 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
     step.status = StepStatus.FAILED
     step.error = last_error
     return ToolResult(success=False, output="", error=last_error)
+
+
+# ── Argument normalization (schema-drift tolerance) ───────────────
+
+# Canonical arg key -> common LLM spellings of the same thing.
+_ARG_ALIASES: dict[str, tuple[str, ...]] = {
+    "path": ("file_path", "filepath", "filename", "file", "target", "dest", "destination"),
+    "content": ("text", "body", "data", "contents"),
+    "code": ("script", "source", "program"),
+    "query": ("search_query", "q", "question"),
+    "command": ("cmd", "shell_command"),
+    "url": ("link", "href"),
+}
+
+
+def _apply_arg_aliases(args: dict[str, Any]) -> None:
+    """Rename alias keys to canonical ones, in place (first alias wins)."""
+    for canonical, alts in _ARG_ALIASES.items():
+        if canonical in args:
+            continue
+        for alt in alts:
+            if alt in args:
+                args[canonical] = args[alt]
+                break
+
+
+def _derive_write_path(description: str, context: dict[str, Any] | None) -> str:
+    """Guess a sensible target path when a write_file step lacks one.
+
+    Uses the description to pick a conventional filename (HTML/CSS/JS/README)
+    and parks it inside the task's project folder when a goal slug exists.
+    """
+    d = (description or "").lower()
+    goal = str((context or {}).get("task_goal") or "")
+    goal_slug = "-".join(
+        w for w in re.findall(r"[a-z0-9]+", goal.lower())
+        if w not in {"the", "a", "an", "that", "can", "for", "with"}
+    )[:40]
+    base = f"projects/{goal_slug}" if goal_slug else "output"
+    for pattern, name in (
+        (r"\bhtml\b|markup|structure", "index.html"),
+        (r"\bcss\b|\bstyles?\b|theme", "styles.css"),
+        (r"\bjava\s?script\b|\bjs\b|interactiv", "app.js"),
+        (r"readme|documentation", "README.md"),
+    ):
+        if re.search(pattern, d):
+            return f"{base}/{name}"
+    return f"output/generated_{uuid.uuid4().hex[:8]}.txt"
 
 
 # ── Built-in Tools ────────────────────────────────────────────────
