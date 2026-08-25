@@ -10,6 +10,7 @@ Gemini producing valid JSON to work.
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import re
@@ -99,6 +100,38 @@ _ACTION_INTENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Common hallucinated tool names → canonical registry names (Hermes pattern:
+# repair deterministically before bothering the model again).
+_TOOL_ALIASES = {
+    "search": "web_search",
+    "search_web": "web_search",
+    "websearch": "web_search",
+    "google": "web_search",
+    "google_search": "web_search",
+    "shell": "run_command",
+    "bash": "run_command",
+    "terminal": "run_command",
+    "run": "run_command",
+    "command": "run_command",
+    "execute": "execute_code",
+    "python": "execute_code",
+    "code": "execute_code",
+    "run_python": "execute_code",
+    "read": "read_file",
+    "cat": "read_file",
+    "open_file": "read_file",
+    "write": "write_file",
+    "save_file": "write_file",
+    "create_file": "write_file",
+    "ls": "list_directory",
+    "dir": "list_directory",
+    "list_files": "list_directory",
+    "summarize": "summarize_text",
+    "summary": "summarize_text",
+    "extract": "extract_data",
+    "parse": "parse_json",
+}
+
 # A PR reference: "#123", "pr 123", "PR #123", "pull request 123", "prs 4 and 7".
 _PR_NUMBER_PATTERN = re.compile(r"#(\d{1,6})\b|\b(?:pr|pull\s+requests?)\s*#?(\d{1,6})\b", re.IGNORECASE)
 
@@ -133,6 +166,97 @@ def _extract_pr_numbers(goal: str) -> list[int]:
 
 def _make_step(task_id: str, order: int, description: str, tool_name: str, tool_args: dict[str, Any]) -> TaskStep:
     return TaskStep(task_id=task_id, description=description, tool_name=tool_name, tool_args=tool_args, order=order)
+
+
+def repair_tool_name(name: str, valid: list[str] | None = None) -> str | None:
+    """Deterministic repair ladder for hallucinated tool names.
+
+    Hermes pattern (agent_runtime_helpers.repair_tool_call): fix cheap and
+    locally — normalize separators → strip ``_tool`` suffix → alias map →
+    fuzzy match against the live registry. Returns None if unrepairable.
+    """
+    raw = (name or "").strip().lower()
+    if not raw:
+        return None
+    valid_list = valid if valid is not None else canonical_tool_names()
+    valid_set = set(valid_list)
+    if raw in valid_set:
+        return raw
+    normalized = re.sub(r"[\s\-]+", "_", raw)
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    candidates = [normalized]
+    if normalized.endswith("_tool"):
+        candidates.append(normalized[: -len("_tool")])
+    for candidate in candidates:
+        if candidate in valid_set:
+            return candidate
+        aliased = _TOOL_ALIASES.get(candidate)
+        if aliased and aliased in valid_set:
+            return aliased
+    close = difflib.get_close_matches(normalized, sorted(valid_set), n=1, cutoff=0.7)
+    return close[0] if close else None
+
+
+def canonical_tool_names() -> list[str]:
+    """Live registry names (loads skills first). Single source of truth."""
+    from agent.core.executor import list_tools
+    from agent.skills.loader import load_all_skills
+
+    load_all_skills()
+    return sorted(list_tools())
+
+
+def _tool_catalog_section() -> str:
+    """Canonical names + first docstring line, generated from the registry.
+
+    OpenClaw lesson (system-prompt.ts:132): the prompt must list EXACTLY the
+    tools that exist — hand-maintained lists drift and teach the model to
+    hallucinate tools that are not there.
+    """
+    from agent.core.executor import get_tool
+
+    lines = []
+    for name in canonical_tool_names():
+        fn = get_tool(name)
+        doc = ""
+        if fn is not None and fn.__doc__:
+            doc = fn.__doc__.strip().splitlines()[0][:100]
+        lines.append(f"- {name}: {doc}" if doc else f"- {name}")
+    return "\n".join(lines)
+
+
+def _build_steps(
+    task: Task,
+    steps_data: list[dict[str, Any]],
+    valid_tools: list[str],
+) -> tuple[list[TaskStep], list[str]]:
+    """Parse step dicts into TaskSteps, repairing tool names in place.
+
+    Returns (valid_steps, unrepairable_original_names).
+    """
+    steps: list[TaskStep] = []
+    unknown: list[str] = []
+    order = 0
+    for step_data in steps_data:
+        raw = str(step_data.get("tool_name") or "").strip()
+        if not raw:
+            logger.warning("Dropping nameless plan step: %s", step_data.get("description", "")[:60])
+            continue
+        repaired = repair_tool_name(raw, valid_tools)
+        if repaired is None:
+            unknown.append(raw)
+            continue
+        steps.append(
+            TaskStep(
+                task_id=task.id,
+                description=step_data.get("description", f"Step {order + 1}"),
+                tool_name=repaired,
+                tool_args=step_data.get("tool_args", {}),
+                order=order,
+            )
+        )
+        order += 1
+    return steps, unknown
 
 
 def _github_pipeline(task: Task) -> list[TaskStep]:
@@ -249,31 +373,48 @@ Context: {json.dumps(task.context) if task.context else 'None'}{lessons_context}
 Create a RESILIENT plan that will produce useful output even if some steps fail.
 Return ONLY the JSON array."""
 
-    try:
-        response = await generate_content(
+    valid_tools = canonical_tool_names()
+    system_prompt = (
+        f"{PLANNER_SYSTEM_PROMPT}\n\n"
+        "CANONICAL TOOL NAMES (use EXACTLY these — anything else will be rejected):\n"
+        f"{_tool_catalog_section()}"
+    )
+
+    async def _generate(feedback: str = "") -> str:
+        suffix = f"\n\n{feedback}" if feedback else ""
+        return await generate_content(
             model=settings.gemini_model,
-            system=PLANNER_SYSTEM_PROMPT,
-            user=user_prompt,
+            system=system_prompt,
+            user=user_prompt + suffix,
         )
 
-        steps_data = _parse_steps_json(response)
+    try:
+        steps_data = _parse_steps_json(await _generate())
         if not steps_data:
             raise ValueError("Planner returned no parseable steps")
 
-        steps: list[TaskStep] = []
-        for i, step_data in enumerate(steps_data):
-            tool_name = step_data.get("tool_name") or ""
-            if not tool_name:
-                raise ValueError("Plan contained a step without tool_name")
-
-            step = TaskStep(
-                task_id=task.id,
-                description=step_data.get("description", f"Step {i + 1}"),
-                tool_name=tool_name,
-                tool_args=step_data.get("tool_args", {}),
-                order=i,
+        steps, unknown = _build_steps(task, steps_data, valid_tools)
+        if unknown:
+            # Hermes pattern: return the tool catalog to the model and let it
+            # correct itself — ONE corrective round, then deterministic drop.
+            logger.warning("Plan for %s used invalid tools %s; correcting", task.id, unknown)
+            feedback = (
+                "CORRECTION: your previous plan referenced tools that DO NOT exist: "
+                + ", ".join(unknown)
+                + ". The ONLY valid tools are: "
+                + ", ".join(valid_tools)
+                + ". Return a corrected JSON array using ONLY valid tools."
             )
-            steps.append(step)
+            retry_data = _parse_steps_json(await _generate(feedback))
+            repaired, still_unknown = _build_steps(task, retry_data, valid_tools)
+            if still_unknown:
+                logger.warning("Dropping still-invalid tools after correction: %s", still_unknown)
+            if repaired:
+                return repaired
+            steps = [s for s in steps if s.tool_name in set(valid_tools)]
+
+        if not steps:
+            raise ValueError("Plan contained no steps with valid tools")
 
         logger.info("Planned %d steps for task %s", len(steps), task.id)
         return steps

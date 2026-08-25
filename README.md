@@ -10,7 +10,7 @@
 [![Gemini](https://img.shields.io/badge/Gemini-3.5%20Flash-4285F4?style=flat&logo=google&logoColor=white)](https://ai.google.dev)
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Run%20%7C%20Firestore%20%7C%20Pub%2FSub-4285F4?style=flat&logo=googlecloud&logoColor=white)](https://cloud.google.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-113%20passing-brightgreen)](#testing)
+[![Tests](https://img.shields.io/badge/tests-143%20passing-brightgreen)](#testing)
 
 **Built for the [Google "All Things Agentic" Hackathon](https://allthingsagentic.devpost.com) -- Track: The Taskmaster**
 
@@ -282,6 +282,7 @@ Credentials are stored in `.env` (gitignored) and never exposed to the frontend 
 | `DELETE` | `/api/skills/{name}` | Archive a skill (recoverable); `?purge=true` hard-deletes |
 | `POST` | `/api/skills/{name}/restore` | Restore the newest archived copy |
 | `GET` | `/api/skills/ledger` | Audit trail of every skill mutation (sha256-chained) |
+| `POST` | `/api/command` | Zero-cost deterministic commands (`/status`, `/tasks`, `/skills`, `/memory`...) — no LLM call |
 | `GET` | `/api/watchers` | List active event watchers |
 | `POST` | `/api/watchers` | Create a new watcher |
 | `POST` | `/api/watchers/{id}/start` | Start a stopped watcher |
@@ -362,6 +363,7 @@ nexusmind-ai/
 │   │       ├── store.py            # SQLite facts + FTS5 + entity resolution + trust
 │   │       └── retrieval.py        # Hybrid BM25/Jaccard/HRR retriever
 │   │   ├── skill_library.py        # Self-evolving SKILL.md packages (Hermes adaptation)
+│   │   ├── command_gate.py         # Zero-cost /command dispatch before the LLM
 │   ├── skills/
 │   │   ├── web_research/           # Web search + URL fetch
 │   │   ├── file_management/        # File read/write/list
@@ -411,6 +413,8 @@ nexusmind-ai/
 | Tool registry + sandboxed execution | OpenClaw | `@register_tool` decorator + subprocess isolation |
 | Persistent cross-session memory | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | SQLite + FTS5 store, hybrid BM25/Jaccard/HRR retrieval, trust scoring |
 | Self-evolving skill library | Hermes | Auto-synthesized SKILL.md packages from solved tasks, usage telemetry, stale/archive lifecycle, audit ledger |
+| Zero-cost command gate | Hermes + OpenClaw | `/commands` resolved deterministically before the LLM (Telegram + REST); unknown input falls through to the agent |
+| Hallucinated-tool repair ladder | Hermes | Planned tool names normalized/alias/fuzzy-matched against the live registry; one corrective re-plan with the valid-tool catalog |
 | Self-improvement reflection | Hermes | Post-task Gemini reflection saves learnings |
 | Event-driven scheduling | Hermes | Cloud Pub/Sub replaces in-process cron |
 | Self-correcting retry loops | Custom | Error analysis -> Gemini -> parameter adjustment -> retry |
@@ -430,7 +434,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **113 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), executor, orchestrator, and API endpoints.
+All **143 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, and API endpoints.
 
 ---
 

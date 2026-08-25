@@ -173,13 +173,21 @@ The agent doesn't just solve tasks — it **remembers how** it solved them:
 - **Hard validation gates:** name slug rules, description budgets (60 chars for agent-created, trigger-first), content caps — the same gates for manual and auto-created skills
 - **Full REST API:** list, create, inspect, archive, restore, purge, and audit (`/api/skills*`)
 
-### 13. Unified Credentials Management
+### 13. Deterministic Routing (Command Gate + Plan Validation)
+Adapted from Hermes and OpenClaw — the right action happens without wasting model calls:
+- **Zero-cost command gate:** `/status`, `/tasks`, `/tools`, `/skills`, `/memory <query>`, `/pending`, `/help` are resolved deterministically (Telegram + `POST /api/command`) with **zero LLM calls**; unknown or natural-language input falls through to the agent loop
+- **Path-safe detection:** `/Users/x/file.md fix this` is correctly treated as a task, not a command (first-token slash heuristic)
+- **Dynamic tool catalog:** the planner prompt is generated from the live tool registry (name + docstring), so prompts can never drift from what actually exists
+- **Hallucinated-tool repair ladder:** if Gemini plans a step with a nonexistent tool, it's repaired locally — normalize separators → strip `_tool` suffix → alias map (`"search"` → `web_search`) → fuzzy match ≥ 0.7
+- **Corrective re-plan with catalog feedback:** unrepairable tools trigger exactly ONE corrective round where the planner receives the valid-tool list; still-invalid steps are dropped deterministically instead of failing at runtime
+
+### 14. Unified Credentials Management
 All API keys and secrets managed in one place:
 - **10 categories** on a single credentials page
 - **Secure:** Secret values masked in UI, stored in `.env` (gitignored)
 - **Auto-fill:** Watchers use saved credentials automatically
 
-### 14. Traceability Dashboard
+### 15. Traceability Dashboard
 Every step is logged and visible in real-time:
 - **Tool calls** (blue) — what the agent did
 - **Reasoning steps** (purple) — what the agent was thinking
@@ -187,7 +195,7 @@ Every step is logged and visible in real-time:
 - **Errors** (red) — what went wrong and how it recovered
 - **Live Thinking tab** polls while a task runs, in a minimize-able side panel
 
-### 15. Multi-Step Task Decomposition
+### 16. Multi-Step Task Decomposition
 Complex goals are automatically broken into manageable steps:
 - Dependencies are resolved (step A before step B)
 - Each step maps to a specific tool
@@ -220,7 +228,7 @@ Complex goals are automatically broken into manageable steps:
 | **API** | FastAPI (Python) |
 | **Frontend** | Real-time traceability dashboard |
 | **Language** | Python 3.11+ |
-| **Testing** | 113 passing tests |
+| **Testing** | 143 passing tests |
 
 ---
 

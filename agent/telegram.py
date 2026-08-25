@@ -231,37 +231,17 @@ async def process_update(update: dict[str, Any]) -> None:
         await handle_callback_query(callback)
         return
 
-    # Handle text commands
+    # Handle text via the deterministic command gate first (Hermes/OpenClaw
+    # pattern: explicit commands never touch the LLM). Non-commands and
+    # unknown slash-commands fall through (ignored, matching prior behavior).
     message = update.get("message", {})
     text = message.get("text", "")
+    if isinstance(text, str) and text.startswith("/"):
+        from agent.core.command_gate import handle_command
 
-    if text == "/start" or text == "/help":
-        await send_message(
-            "🤖 <b>NexusMind AI Bot</b>\n\n"
-            "I'll send you approval requests when the agent needs permission.\n\n"
-            "<b>Commands:</b>\n"
-            "/status — Check agent status\n"
-            "/pending — Show pending approvals"
-        )
-    elif text == "/status":
-        from agent.core.executor import list_tools
-        tools = list_tools()
-        await send_message(
-            f"🟢 <b>Agent Online</b>\n"
-            f"Model: <code>{settings.gemini_model}</code>\n"
-            f"Tools: {len(tools)}\n"
-            f"Approval mode: <code>{settings.approval_mode}</code>"
-        )
-    elif text == "/pending":
-        from agent.core.executor import get_pending_approvals
-        pending = get_pending_approvals()
-        if not pending:
-            await send_message("✅ No pending approvals")
-        else:
-            lines = ["📋 <b>Pending Approvals:</b>", ""]
-            for p in pending:
-                lines.append(f"• <code>{p['tool_name']}</code> — {p['description'][:80]}")
-            await send_message("\n".join(lines))
+        response = await handle_command(text)
+        if response:
+            await send_message(response)
 
 
 # ── Status Notifications ──────────────────────────────────────────

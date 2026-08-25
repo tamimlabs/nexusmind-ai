@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import agent.config as _cfg
+from agent.core import command_gate
 from agent.core.executor import get_pending_approvals, list_tools, resolve_approval
 from agent.core.memory import memory_store
 from agent.core.skill_library import SkillError
@@ -121,6 +122,9 @@ _live_events: dict[str, list[dict[str, Any]]] = {}
 _live_tasks: dict[str, dict[str, Any]] = {}
 _live_tasks_created: dict[str, float] = {}  # task_id -> creation timestamp
 _LIVE_TTL = 3600  # Evict completed tasks after 1 hour
+
+# Command gate provider (dependency inversion — gate never imports api)
+command_gate.register_provider("recent_tasks", lambda: list(_live_tasks.values()))
 
 
 def _cleanup_stale_tasks() -> None:
@@ -833,6 +837,25 @@ async def restore_skill(name: str):
     if not restored:
         raise HTTPException(status_code=404, detail=f"No archived copy of: {name}")
     return {"restored": name}
+
+
+# ── Command Gate ───────────────────────────────────────────────────
+
+
+class CommandRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/command")
+async def run_command(req: CommandRequest):
+    """Zero-cost deterministic commands — handled WITHOUT any LLM call.
+
+    Hermes/OpenClaw pattern: explicit ``/command`` syntax is intercepted
+    before the agent loop. Unknown or non-command text returns
+    ``handled: false`` so the caller can fall through to normal task flow.
+    """
+    response = await command_gate.handle_command(req.text)
+    return {"handled": response is not None, "response": response}
 
 
 # ── Watchers ──────────────────────────────────────────────────────
