@@ -26,6 +26,17 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
 
 > **New to coding?** Check out our [Non-Coder User Guide](docs/user_guide.md) -- use NexusMind AI without writing any code.
 
+### What It Can Do
+
+- **Autonomous multi-step execution** -- decomposes a goal into steps, runs tools, retries with self-correction
+- **Human-in-the-loop safety** -- dangerous actions pause for approval via Telegram or dashboard
+- **Learns like Hermes** -- persistent SQLite memory (FTS5 + vector search + trust scoring) recalled across sessions
+- **Self-evolving skills** -- solved tasks become reusable SKILL.md packages with usage telemetry and an audit ledger
+- **Always-awake watchers** -- reacts to GitHub, Slack, email, RSS and 7 more event sources automatically
+- **Builds real artifacts** -- generates complete multi-file projects (`projects/<name>/`: HTML/CSS/JS + backend server)
+- **Zero-cost commands** -- `/status`, `/tasks`, `/skills` answered deterministically without an LLM call
+- **Full observability** -- live reasoning chain, step-by-step traces, and audit trails in the dashboard
+
 ---
 
 ## Architecture
@@ -397,7 +408,9 @@ nexusmind-ai/
 │   ├── dashboard.html              # Live traceability dashboard
 │   ├── watcher_routes.py           # Watcher CRUD API endpoints
 │   └── credentials_routes.py       # Credentials management API
-├── tests/                          # 113 passing tests
+├── tests/                          # 180 passing tests
+├── projects/                       # Agent-generated multi-file builds (websites, apps)
+├── data/                           # SQLite memory store (gitignored)
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
 ├── pyproject.toml                  # Dependencies + tool config
 └── README.md
@@ -464,6 +477,18 @@ All **180 tests** covering models, memory (hybrid retrieval, HRR, trust scoring)
 | `EMAIL_PASSWORD` | No | App password for email |
 | `API_PORT` | No | API port (default: `8080`) |
 | `ENVIRONMENT` | No | `development` or `production` |
+
+---
+
+## Demo
+
+| Resource | Link |
+|----------|------|
+| Demo video (4 min) | _Coming with final submission_ |
+| Live dashboard (Cloud Run) | _Coming with final submission_ |
+| Architecture walkthrough | [docs/capabilities.md](docs/capabilities.md) |
+
+**What the demo shows:** a goal submitted via API -> Gemini plans the steps -> tools execute with live traces -> a risky command triggers a Telegram approval -> the agent finishes and reflects the lesson into memory.
 
 ---
 
