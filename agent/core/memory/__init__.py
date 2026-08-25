@@ -133,23 +133,34 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _migrate_legacy_json(self) -> None:
-        """One-time import of the old data/memory.json store."""
-        if not _LEGACY_JSON_PATH.exists() or self._store.count() > 0:
+        """One-time import of the old data/memory.json store.
+
+        The legacy file is RENAMED after handling, so an intentionally
+        emptied database can never be silently repopulated from stale
+        JSON on a later start (user-reported resurrection bug).
+        """
+        if not _LEGACY_JSON_PATH.exists():
             return
+        imported_path = _LEGACY_JSON_PATH.with_suffix(".json.imported")
         try:
-            data = json.loads(_LEGACY_JSON_PATH.read_text(encoding="utf-8"))
-            migrated = 0
-            for item in data:
-                entry = MemoryEntry(**item)
-                _, created = self._store.add_fact(
-                    entry_uid=entry.id,
-                    content=entry.content.strip(),
-                    category=entry.category,
-                    tags="",
-                )
-                if created:
-                    migrated += 1
-            logger.info("Migrated %d memory entries from %s", migrated, _LEGACY_JSON_PATH)
+            if self._store.count() == 0:
+                data = json.loads(_LEGACY_JSON_PATH.read_text(encoding="utf-8"))
+                migrated = 0
+                for item in data:
+                    entry = MemoryEntry(**item)
+                    _, created = self._store.add_fact(
+                        entry_uid=entry.id,
+                        content=entry.content.strip(),
+                        category=entry.category,
+                        tags="",
+                    )
+                    if created:
+                        migrated += 1
+                logger.info("Migrated %d memory entries from %s", migrated, _LEGACY_JSON_PATH)
+            # Retire the file whether or not we just imported: if the DB is
+            # already populated the migration clearly ran before.
+            _LEGACY_JSON_PATH.rename(imported_path)
+            logger.info("Retired legacy memory file -> %s", imported_path.name)
         except Exception:
             logger.exception("Legacy memory migration failed (%s)", _LEGACY_JSON_PATH)
 

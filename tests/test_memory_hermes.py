@@ -264,3 +264,42 @@ class TestLegacyMigration:
         # Second store on the same DB must NOT re-import (dedup by uid/content)
         store2 = mem_mod.MemoryStore(db_path=db)
         assert store2.size == 2
+        # Legacy file retired (renamed) so it can never re-seed later
+        assert not legacy.exists()
+        assert (tmp_path / "legacy.json.imported").exists()
+
+    def test_emptied_db_not_repopulated_on_restart(self, tmp_path, monkeypatch):
+        """Regression: user deletes all memories -> restart must NOT resurrect.
+
+        Old guard was `count() > 0`, so an emptied DB triggered a full
+        re-import from the stale legacy JSON on every start.
+        """
+        import json as json_lib
+
+        legacy = tmp_path / "legacy.json"
+        legacy.write_text(
+            json_lib.dumps(
+                [
+                    {"content": "Ghost entry A", "category": "general"},
+                    {"content": "Ghost entry B", "category": "reflection"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mem_mod, "_LEGACY_JSON_PATH", legacy)
+        db = tmp_path / "wipe.db"
+
+        first = mem_mod.MemoryStore(db_path=db)
+        assert first.size == 2
+
+        # User deletes everything via the dashboard/API path
+        for entry in list(first.get_by_category("general")) + list(
+            first.get_by_category("reflection")
+        ):
+            assert first.delete(entry.id)
+        assert first.size == 0
+
+        # "Restart": fresh MemorySystem over the same DB. Old code saw
+        # count()==0 and resurrected every deleted entry.
+        restarted = mem_mod.MemoryStore(db_path=db)
+        assert restarted.size == 0
