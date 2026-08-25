@@ -1,0 +1,53 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install project + dev dependencies
+        run: pip install .[dev]
+
+      - name: Run tests
+        id: pytest
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m pytest tests/ -q --no-header -p no:cacheprovider 2>&1 | tee pytest_output.txt
+
+      - name: Update tests badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          PASSED=$(grep -oE '[0-9]+ passed' pytest_output.txt | tail -1 | grep -oE '[0-9]+')
+          FAILED=$(grep -oE '[0-9]+ failed' pytest_output.txt | tail -1 | grep -oE '[0-9]+' || echo 0)
+          if [ "${{ steps.pytest.outcome }}" = "success" ]; then
+            printf '{"schemaVersion": 1, "label": "tests", "message": "%s passing", "color": "brightgreen"}\n' "$PASSED" > .github/badges/tests.json
+          else
+            printf '{"schemaVersion": 1, "label": "tests", "message": "%s passing, %s failing", "color": "red"}\n' "${PASSED:-0}" "$FAILED" > .github/badges/tests.json
+          fi
+          cat .github/badges/tests.json
+
+      - name: Commit badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/tests.json
+          git diff --cached --quiet || git commit -m "ci: update tests badge [skip ci]"
+          git push
