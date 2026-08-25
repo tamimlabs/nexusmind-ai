@@ -131,3 +131,6 @@ docs/logo/
 docs/devpost_submission.md
 docs/architecture_diagram.png
 docs/gallery/
+
+# Agent-generated project scaffolds (runtime output)
+projects/
