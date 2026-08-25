@@ -29,7 +29,7 @@ def main() -> int:
         errors = int(suite.get("errors", "0"))
         skipped = int(suite.get("skipped", "0"))
         passed = max(total - failed - errors - skipped, 0)
-    except Exception as exc:  # noqa: BLE001 - badge must render even on garbage input
+    except Exception as exc:  # badge must render even on garbage input
         parse_error = str(exc)
 
     if outcome == "success":
