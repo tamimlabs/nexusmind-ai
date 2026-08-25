@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -463,40 +464,79 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
 # ── Built-in Tools ────────────────────────────────────────────────
 
 
+def _scratch_dir() -> Path:
+    """Scratch dir for child-process scripts.
+
+    Machine rule (AGENTS.md): heavy temp I/O belongs on D: when available;
+    override with NEXUSMIND_TEMP. Falls back to the system temp dir.
+    """
+    override = os.environ.get("NEXUSMIND_TEMP")
+    if override:
+        base = Path(override)
+    elif Path("D:/").exists():
+        base = Path("D:/Temp")
+    else:
+        base = Path(tempfile.gettempdir())
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+_EXEC_TIMEOUT = 60  # seconds; patched low in tests
+
+
 @register_tool("execute_code", high_risk=True)
 async def execute_code(code: str, language: str = "python", **_: Any) -> ToolResult:
     """Execute code in a sandboxed subprocess."""
-    if language == "python":
-        # Load .env vars into subprocess environment
-        env = os.environ.copy()
-        env_file = Path(".env")
-        if env_file.exists():
-            for line in env_file.read_text().splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.partition("=")
-                    env[key.strip()] = value.strip().strip("'\"")
+    if language != "python":
+        return ToolResult(success=False, output="", error=f"Unsupported language: {language}")
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(code)
-            f.flush()
+    # Load .env vars into subprocess environment
+    env = os.environ.copy()
+    env_file = Path(".env")
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                env[key.strip()] = value.strip().strip("'\"")
+
+    # WinError 32 fix: fully CLOSE our handle BEFORE spawning the child
+    # (NamedTemporaryFile held it open for the whole run), and delete
+    # best-effort afterwards — cleanup must never mask the step result.
+    script = _scratch_dir() / f"nexusmind_{uuid.uuid4().hex}.py"
+    script.write_text(code, encoding="utf-8")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(script),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_TIMEOUT)
+        except TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Execution timed out after {_EXEC_TIMEOUT}s",
+            )
+        success = proc.returncode == 0
+        return ToolResult(
+            success=success,
+            output=stdout.decode(errors="replace"),
+            error=stderr.decode(errors="replace") if not success else None,
+        )
+    finally:
+        for _ in range(3):
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, f.name,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-                success = proc.returncode == 0
-                return ToolResult(
-                    success=success,
-                    output=stdout.decode(errors="replace"),
-                    error=stderr.decode(errors="replace") if not success else None,
-                )
-            finally:
-                Path(f.name).unlink(missing_ok=True)
-    return ToolResult(success=False, output="", error=f"Unsupported language: {language}")
+                script.unlink()
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                await asyncio.sleep(0.1)  # AV/child still releasing the file
 
 
 @register_tool("run_command", high_risk=True)

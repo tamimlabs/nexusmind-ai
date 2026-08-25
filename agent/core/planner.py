@@ -389,8 +389,21 @@ Return ONLY the JSON array."""
         )
 
     try:
-        steps_data = _parse_steps_json(await _generate())
+        response = await _generate()
+        if not response.strip():
+            # response.text is None/empty on safety blocks and some quota
+            # failures — give the operator something actionable, not JSON noise.
+            raise RuntimeError(
+                "Gemini returned an EMPTY response (likely safety block, quota "
+                "exhaustion, or invalid model). Check GEMINI_API_KEY / GEMINI_MODEL."
+            )
+        steps_data = _parse_steps_json(response)
         if not steps_data:
+            logger.warning(
+                "Unparseable planner response for %s (first 300 chars): %.300s",
+                task.id,
+                response.replace("\n", " "),
+            )
             raise ValueError("Planner returned no parseable steps")
 
         steps, unknown = _build_steps(task, steps_data, valid_tools)
@@ -451,6 +464,9 @@ Return ONLY a JSON object: {{"tool_name": "tool_name", "tool_args": {{...}}, "de
             system="You are a tool selector. Return only JSON.",
             user=tool_prompt,
         )
+        if not response.strip():
+            logger.warning("Tool selector returned an empty response (API/safety issue)")
+            raise RuntimeError("Empty tool-selector response")
 
         import re as _re
 
