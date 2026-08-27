@@ -273,9 +273,13 @@ class Orchestrator:
                 task.result = context.get("step_0_result", "Task completed")
             task.updated_at = datetime.now(UTC)
 
-            # Only store outcome if the task was non-trivial and had multiple steps
+            # Only store outcome if task was substantial (Hermes pattern: >=2 steps with >=2 distinct tools)
+            # Prevents noisy single-tool web_search loops from polluting task_outcome
             if not _is_trivial(task) and len(task.steps) > 1:
-                self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
+                successful = [s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name]
+                distinct = {s.tool_name for s in successful}
+                if len(successful) >= 2 and len(distinct) >= 2:
+                    self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
 
             # Auto-extract durable preferences/decisions from this interaction
             # (Hermes session-harvest pattern, applied per-task instead).
