@@ -105,8 +105,8 @@ Store task outcome + reflect into memory
                         └──────────────┬───────────────┘
                                        │
 ┌──────────────┐     ┌─────────────────▼─────────────────┐     ┌──────────────┐
-│   GitHub      │────>│       REST API (FastAPI)          │<────│   Stripe      │
-│   Webhooks    │     │    POST /api/webhooks             │     │   Webhooks    │
+│   GitHub      │────>│       REST API (FastAPI)          │<────│  External     │
+│   Webhooks    │     │    POST /api/webhooks             │     │   Events    │
 └──────────────┘     └─────────────────┬─────────────────┘     └──────────────┘
                                        │
                         ┌──────────────▼──────────────┐
@@ -481,7 +481,7 @@ nexusmind-ai/
 │   ├── dashboard.html              # Live traceability dashboard
 │   ├── watcher_routes.py           # Watcher CRUD API endpoints
 │   └── credentials_routes.py       # Credentials management API
-├── tests/                          # 100+ passing tests
+├── tests/                          # 200 passing tests
 ├── projects/                       # Agent-generated multi-file builds (websites, apps)
 ├── data/                           # SQLite memory store (gitignored)
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
@@ -531,6 +531,8 @@ All **200 tests** covering models, memory (hybrid retrieval, HRR, trust scoring)
 |----------|----------|-------------|
 | `GEMINI_API_KEY` | Yes | Gemini API key(s), comma-separated for rotation |
 | `GEMINI_MODEL` | Yes | Model name (default: `gemini-3.5-flash`) |
+| `DATABASE_BACKEND` | No | `sqlite` (local) or `firestore` (Cloud Run) |
+| `GITHUB_DEFAULT_REPO` | No | Default `owner/repo` when goal says "my repository" |
 | `GOOGLE_CLOUD_PROJECT` | For cloud | GCP project ID |
 | `GOOGLE_CLOUD_REGION` | For cloud | GCP region (default: `us-central1`) |
 | `GOOGLE_SEARCH_API_KEY` | No | Google Custom Search API key |
