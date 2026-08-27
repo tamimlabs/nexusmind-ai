@@ -70,6 +70,27 @@ async def restore_watchers_on_startup():
 
 
 @app.on_event("startup")
+async def check_storage_backend():
+    """Log which storage backend is active and verify Firestore connectivity."""
+    from agent.config import settings
+    backend = settings.database_backend.lower()
+    if backend == "firestore":
+        try:
+            from cloud.firestore.client import _is_available
+            if _is_available():
+                logger.info("Storage backend: Firestore (project=%s)", settings.google_cloud_project)
+            else:
+                logger.warning(
+                    "DATABASE_BACKEND=firestore but Firestore not configured. "
+                    "Falling back to SQLite."
+                )
+        except Exception:
+            logger.exception("Firestore connectivity check failed")
+    else:
+        logger.info("Storage backend: SQLite")
+
+
+@app.on_event("startup")
 async def start_telegram_polling():
     """Start Telegram long-polling in background for approval buttons."""
     import httpx
@@ -248,7 +269,8 @@ async def agent_status():
 
 async def _run_task_background(task_id: str, task: Task) -> None:
     """Run task in background and emit live events."""
-    from agent.orchestrator import orchestrator
+    from agent.config import settings
+    use_adk = settings.database_backend.lower() == "firestore"
 
     try:
         _emit(task_id, "thinking", "Analyzing your goal...")
@@ -257,7 +279,18 @@ async def _run_task_background(task_id: str, task: Task) -> None:
         _emit(task_id, "thinking", "Breaking down into steps using Gemini Flash...")
         await asyncio.sleep(0.3)
 
-        task = await orchestrator.handle_task(task)
+        if use_adk:
+            # ADK Runner is the primary execution path on Cloud Run
+            from cloud.vertex_ai.agent import run_task_via_adk
+            result_text = await run_task_via_adk(task.goal, task_id)
+            task.status = TaskStatus.COMPLETED
+            task.result = result_text
+            task.steps = []  # ADK handles steps internally
+            _emit(task_id, "done", "Task completed via ADK Runner")
+        else:
+            # Orchestrator fallback for local development
+            from agent.orchestrator import orchestrator
+            task = await orchestrator.handle_task(task)
 
         # Emit per-step events so thinking panel shows progress
         if task.steps:
@@ -306,6 +339,36 @@ async def _run_task_background(task_id: str, task: Task) -> None:
             _emit(task_id, "done", "Task completed successfully")
         else:
             _emit(task_id, "error", f"Task failed: {task.error or 'Unknown error'}")
+
+        # Persist completed/failed tasks to Firestore for crash recovery
+        try:
+            from agent.config import settings
+            if settings.database_backend.lower() == "firestore":
+                from cloud.firestore.client import firestore_tasks
+                firestore_tasks.save_task({
+                    "id": task_id,
+                    "goal": task.goal,
+                    "status": task.status.value,
+                    "result": task.result,
+                    "error": task.error,
+                    "steps_count": len(task.steps),
+                    "steps": [
+                        {
+                            "id": s.id,
+                            "description": s.description,
+                            "tool_name": s.tool_name,
+                            "status": s.status.value,
+                            "result": s.result,
+                            "error": s.error,
+                            "order": s.order,
+                        }
+                        for s in task.steps
+                    ],
+                    "created_at": _live_tasks_created.get(task_id, time.time()),
+                })
+                logger.debug("Persisted task %s to Firestore", task_id)
+        except Exception:
+            logger.debug("Firestore task write skipped (not configured)")
 
     except Exception as exc:
         logger.exception("Background task %s failed", task_id)
@@ -384,13 +447,21 @@ async def list_tasks():
         ))
 
     try:
-        from cloud.firestore.client import firestore_tasks
-        fs_tasks = firestore_tasks.list_tasks(limit=20)
-        for t in fs_tasks:
-            if t.get("id") not in {lt.id for lt in live}:
-                live.append(TaskResponse(**t))
-    except Exception:
+        from agent.config import settings
+        if settings.database_backend.lower() == "firestore":
+            from cloud.firestore.client import firestore_tasks
+            fs_tasks = firestore_tasks.list_tasks(limit=20)
+            live_ids = {lt.id for lt in live}
+            for t in fs_tasks:
+                if t.get("id") not in live_ids:
+                    try:
+                        live.append(TaskResponse(**t))
+                    except Exception:
+                        logger.debug("Skipping malformed Firestore task: %s", t.get("id"))
+    except ImportError:
         pass
+    except Exception:
+        logger.debug("Firestore task list unavailable")
 
     return live
 
@@ -415,15 +486,19 @@ async def get_task(task_id: str):
 
     trace = get_trace(task_id)
     try:
-        from cloud.firestore.client import firestore_tasks
-        task_data = firestore_tasks.get_task(task_id)
-        if task_data:
-            return TaskResponse(
-                **task_data,
-                trace=trace.get_chain() if trace else [],
-            )
-    except Exception:
+        from agent.config import settings
+        if settings.database_backend.lower() == "firestore":
+            from cloud.firestore.client import firestore_tasks
+            task_data = firestore_tasks.get_task(task_id)
+            if task_data:
+                return TaskResponse(
+                    **task_data,
+                    trace=trace.get_chain() if trace else [],
+                )
+    except ImportError:
         pass
+    except Exception:
+        logger.debug("Firestore task read unavailable for %s", task_id)
 
     if trace:
         return TaskResponse(

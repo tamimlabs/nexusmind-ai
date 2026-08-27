@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     google_cloud_project: str = ""
     google_cloud_region: str = "us-central1"
 
+    # --- Storage Backend ---
+    # "sqlite"   = local SQLite (default, zero-config, full features)
+    # "firestore" = Google Cloud Firestore (for Cloud Run deployments)
+    database_backend: str = "sqlite"
+
     # --- Gemini / Vertex AI ---
     gemini_model: str = "gemini-3.5-flash"
     gemini_api_key: str = ""

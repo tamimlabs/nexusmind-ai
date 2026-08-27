@@ -26,8 +26,13 @@ gcloud run deploy $ServiceName `
     --cpu 1 `
     --min-instances 0 `
     --max-instances 5 `
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region"
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,DATABASE_BACKEND=firestore" `
+    --set-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest" `
+    --service-account nexusmind-sa@$ProjectId.iam.gserviceaccount.com
 
 Write-Host "`nDeployed! Getting URL..." -ForegroundColor Green
 $Url = gcloud run services describe $ServiceName --region $Region --format="value(status.url)"
 Write-Host "URL: $Url" -ForegroundColor Cyan
+Write-Host "`nNote: If the service account doesn't exist yet, run:" -ForegroundColor Yellow
+Write-Host "  gcloud iam service-accounts create nexusmind-sa --display-name='NexusMind AI'" -ForegroundColor Yellow
+Write-Host "  gcloud secrets create GEMINI_API_KEY --data-file=-" -ForegroundColor Yellow

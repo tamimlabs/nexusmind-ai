@@ -17,11 +17,39 @@
 
 ---
 
+## The Problem
+
+**Context switching is killing developer productivity.**
+
+On any given day, a developer or team lead bounces between 5+ tools just to stay informed:
+
+| Task | Time spent | Tool |
+|------|-----------|------|
+| Check GitHub for PR reviews | ~20 min | GitHub |
+| Scan Slack for mentions / decisions | ~30 min | Slack |
+| Review Jira for blockers | ~15 min | Jira |
+| Monitor Reddit / Hacker News for relevant news | ~10 min | Reddit / HN |
+| Triage email | ~20 min | Email |
+
+That's **~1.5 hours per developer per day** -- not building, not thinking, just **reading and reacting**. Multiply by a 10-person team and you're burning **15 hours/week** on context switching alone.
+
+Most of this work is repetitive, low-judgment, and high-volume. It doesn't require a human -- it requires **attention**.
+
+## The Solution
+
+**One AI agent that watches everything and acts automatically.**
+
+NexusMind AI monitors your GitHub, Slack, Jira, Reddit, Hacker News, email, and RSS feeds simultaneously. When something needs attention, it handles it -- reviews the PR, summarizes the thread, triages the issue -- and only escalates to you when it genuinely matters.
+
+> **Run it once, walk away -- it continuously monitors events and executes workflows without repeated prompting.**
+
+It's not a chatbot waiting for instructions. It's an always-on teammate that knows your tools, learns your preferences, and takes action on your behalf.
+
 ## Overview
 
 Most AI today waits for you to ask. **NexusMind AI doesn't.**
 
-It's an autonomous agent that receives goals -- via API, webhooks, or a live dashboard -- and handles multi-step workflows end-to-end without hand-holding. It plans, executes, self-corrects on failure, asks permission for risky actions, and learns from every task. **Run it once, walk away -- it works autonomously for days/weeks.**
+It's an autonomous agent that receives goals -- via API, webhooks, or a live dashboard -- and handles multi-step workflows end-to-end without hand-holding. It plans, executes, self-corrects on failure, asks permission for risky actions, and learns from every task. **Run it once, walk away -- it continuously monitors events and executes workflows without repeated prompting.**
 
 > **New to coding?** Check out our [Non-Coder User Guide](docs/user_guide.md) -- use NexusMind AI without writing any code.
 
@@ -29,12 +57,42 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
 
 - **Autonomous multi-step execution** -- decomposes a goal into steps, runs tools, retries with self-correction
 - **Human-in-the-loop safety** -- dangerous actions pause for approval via Telegram or dashboard
-- **Learns like Hermes** -- persistent SQLite memory (FTS5 + vector search + trust scoring) recalled across sessions
+- **Persistent cross-session memory** -- SQLite locally; Firestore on Cloud Run, with hybrid retrieval (BM25 + HRR) and trust scoring
 - **Self-evolving skills** -- solved tasks become reusable SKILL.md packages with usage telemetry and an audit ledger
-- **Always-awake watchers** -- reacts to GitHub, Slack, email, RSS and 7 more event sources automatically
+- **11 automated watchers** -- continuously monitors GitHub, GitLab, Slack, Discord, Jira, Reddit, Hacker News, Email, RSS, Cron, and Webhooks, triggering workflows when new events are detected
 - **Builds real artifacts** -- generates complete multi-file projects (`projects/<name>/`: HTML/CSS/JS + backend server)
 - **Zero-cost commands** -- `/status`, `/tasks`, `/skills` answered deterministically without an LLM call
 - **Full observability** -- live reasoning chain, step-by-step traces, and audit trails in the dashboard
+
+### Example: Autonomous GitHub PR Operations
+
+The strongest demonstrated workflow -- a GitHub PR watcher detects a new pull request and handles the full review cycle without human intervention:
+
+```
+New PR detected (watcher)
+      |
+Resolve repository
+      |
+Find open PRs
+      |
+Analyze PR with Gemini (code review, risk assessment)
+      |
+Generate review decisions (merge / reject / skip)
+      |
+Risky action?
+   /          \
+ No            Yes
+ |              |
+Execute       Request approval (Telegram / Dashboard)
+ |              |
+Apply decision  Approve / Deny
+ |              |
+Store task outcome + reflect into memory
+```
+
+**What happens:** the agent reviews code quality, checks for conflicts, assesses merge risk, and generates a verdict with confidence score. Merges and closes require human approval. Every review is logged with full reasoning traces in the dashboard.
+
+**Setup:** one API call to create a watcher on your repo. The agent runs continuously, reviewing every new PR as it arrives.
 
 ---
 
@@ -72,7 +130,7 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
               ┌────────────────────────┼────────────────────────┐
               │                        │                        │
      ┌────────▼────────┐     ┌────────▼────────┐     ┌────────▼────────┐
-     │    Firestore     │     │    Vertex AI     │     │    Cloud Run    │
+     │    Firestore     │     │   Gemini API     │     │    Cloud Run    │
      │  (State/Memory)  │     │  (Gemini LLM)   │     │  (Deployment)   │
      └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
@@ -206,7 +264,7 @@ Command: ./deploy.sh --prod
 
 ---
 
-## Always-Awake Event-Driven Watchers
+## Automated Event-Driven Watchers
 
 NexusMind can monitor external platforms and react to events automatically -- no manual polling needed.
 
@@ -327,6 +385,8 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 
 ## Available Tools
 
+### Core Tools (10)
+
 | Tool | Description | Risk Level |
 |------|-------------|------------|
 | `web_search` | Search the web via Google/DuckDuckGo | Safe |
@@ -340,6 +400,19 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 | `execute_code` | Run Python code in sandbox | **Approval Required** |
 | `run_command` | Run shell command | **Approval Required** |
 
+### GitHub Skill (8)
+
+| Tool | Description | Risk Level |
+|------|-------------|------------|
+| `github_resolve_repo` | Resolve owner/name from partial repo references | Safe |
+| `github_get_repo` | Fetch repository details | Safe |
+| `github_list_prs` | List open pull requests | Safe |
+| `github_get_pr` | Get details of a specific PR | Safe |
+| `github_review_pr` | Gemini-powered review: merge/reject/skip with confidence | Safe |
+| `github_merge_pr` | Merge a pull request | **Approval Required** |
+| `github_close_pr` | Close a pull request | **Approval Required** |
+| `github_apply_decisions` | Apply review verdicts across PRs | **Approval Required** |
+
 ---
 
 ## Tech Stack
@@ -349,7 +422,7 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 | **LLM** | Gemini 3.5 Flash (4-key rotation) |
 | **Agent Framework** | Google ADK 2.x |
 | **Cloud Run** | Serverless deployment (scales to zero) |
-| **Firestore** | Persistent task state + agent memory |
+| **Firestore** | Persistent task state + agent memory on Cloud Run; SQLite used locally |
 | **Pub/Sub** | Event-driven task routing |
 | **API** | FastAPI + Uvicorn |
 | **Language** | Python 3.11+ |
@@ -377,7 +450,8 @@ nexusmind-ai/
 │   ├── skills/
 │   │   ├── web_research/           # Web search + URL fetch
 │   │   ├── file_management/        # File read/write/list
-│   │   └── data_processing/        # JSON, summarization, extraction
+│   │   ├── data_processing/        # JSON, summarization, extraction
+│   │   └── github/                 # GitHub PR/issue/review tools
 │   ├── watchers/                   # Always-awake event monitors
 │   │   ├── base.py                 # Abstract watcher with poll loop
 │   │   ├── github.py               # GitHub PR/issue watcher
@@ -407,7 +481,7 @@ nexusmind-ai/
 │   ├── dashboard.html              # Live traceability dashboard
 │   ├── watcher_routes.py           # Watcher CRUD API endpoints
 │   └── credentials_routes.py       # Credentials management API
-├── tests/                          # 180 passing tests
+├── tests/                          # 100+ passing tests
 ├── projects/                       # Agent-generated multi-file builds (websites, apps)
 ├── data/                           # SQLite memory store (gitignored)
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
@@ -447,7 +521,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **180 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, and API endpoints.
+All **200 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, API endpoints, and the ADK integration (agent creation, callbacks, Runner path, API routing).
 
 ---
 
@@ -483,9 +557,15 @@ All **180 tests** covering models, memory (hybrid retrieval, HRR, trust scoring)
 
 | Resource | Link |
 |----------|------|
-| Demo video (4 min) | _Coming with final submission_ |
+| Demo video (4 min) | [Watch on YouTube](https://youtu.be/woSOCuzfabg) |
 | Live dashboard (Cloud Run) | _Coming with final submission_ |
 | Architecture walkthrough | [docs/capabilities.md](docs/capabilities.md) |
+
+<div align="center">
+
+[![Demo Video](docs/architecture_diagram.png)](https://youtu.be/woSOCuzfabg)
+
+</div>
 
 **What the demo shows:** a goal submitted via API -> Gemini plans the steps -> tools execute with live traces -> a risky command triggers a Telegram approval -> the agent finishes and reflects the lesson into memory.
 

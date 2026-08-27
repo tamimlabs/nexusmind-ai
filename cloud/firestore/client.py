@@ -1,12 +1,13 @@
 """Firestore persistence layer for tasks, memory, and skills.
 
 Provides crash-recoverable state so the agent survives restarts
-and can resume long-running tasks.
+and can resume long-running tasks. Used when DATABASE_BACKEND=firestore.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +30,17 @@ def _get_db():
     return _db
 
 
+def _is_available() -> bool:
+    """Check if Firestore is configured and importable."""
+    if not settings.google_cloud_project:
+        return False
+    try:
+        from google.cloud import firestore  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 class FirestoreTaskStore:
     """Persist tasks to Firestore for crash recovery."""
 
@@ -42,6 +54,8 @@ class FirestoreTaskStore:
         """Save or update a task document."""
         doc_id = task_data.get("id", "unknown")
         task_data["updated_at"] = datetime.now(UTC).isoformat()
+        if "created_at" not in task_data:
+            task_data["created_at"] = datetime.now(UTC).isoformat()
         self._col().document(doc_id).set(task_data, merge=True)
         logger.debug("Saved task %s to Firestore", doc_id)
 
@@ -72,7 +86,13 @@ class FirestoreTaskStore:
 
 
 class FirestoreMemoryStore:
-    """Persist agent memory to Firestore."""
+    """Persist agent memory to Firestore.
+
+    Implements the MemoryStore API surface used by the API layer,
+    orchestrator, and watchers. Advanced features (HRR vectors, hybrid
+    retrieval, trust scoring) are SQLite-only; Firestore provides
+    durable category-filtered storage sufficient for Cloud Run deployments.
+    """
 
     def __init__(self) -> None:
         self._collection = settings.firestore_collection_memory
@@ -80,28 +100,239 @@ class FirestoreMemoryStore:
     def _col(self):
         return _get_db().collection(self._collection)
 
-    def save_memory(self, entry: dict[str, Any]) -> None:
-        """Save a memory entry."""
-        doc_id = entry.get("id", "auto")
-        entry["created_at"] = datetime.now(UTC).isoformat()
-        self._col().document(doc_id).set(entry, merge=True)
+    def _entry_to_doc(self, entry) -> dict[str, Any]:
+        """Convert a MemoryEntry-like object to a Firestore document."""
+        return {
+            "id": entry.id,
+            "content": entry.content,
+            "category": entry.category,
+            "metadata": entry.metadata if hasattr(entry, "metadata") else {},
+            "created_at": (
+                entry.created_at.isoformat()
+                if hasattr(entry, "created_at") and entry.created_at
+                else datetime.now(UTC).isoformat()
+            ),
+        }
 
-    def search_memories(self, category: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        """Query memories, optionally filtered by category."""
-        query = self._col()
+    def add(self, entry) -> bool:
+        """Add a memory entry. Returns False on duplicate."""
+        doc = self._entry_to_doc(entry)
+        doc_id = doc["id"]
+        existing = self._col().document(doc_id).get()
+        if existing.exists:
+            return False
+        self._col().document(doc_id).set(doc)
+        return True
+
+    def search(self, query: str, top_k: int = 5, category: str | None = None) -> list:
+        """Query memories — Firestore doesn't support full-text, so filter by category."""
+        from agent.models import MemoryEntry
+
+        q = self._col()
         if category:
-            query = query.where("category", "==", category)
+            q = q.where("category", "==", category)
+        q = q.order_by("created_at", direction="DESCENDING").limit(top_k * 3)
         results = []
-        for doc in query.order_by("created_at", direction="DESCENDING").limit(limit).stream():
-            results.append(doc.to_dict())
+        query_lower = query.lower()
+        for doc in q.stream():
+            data = doc.to_dict()
+            if query_lower and query_lower not in data.get("content", "").lower():
+                continue
+            results.append(self._doc_to_entry(data))
+            if len(results) >= top_k:
+                break
         return results
 
-    def get_recent(self, n: int = 20) -> list[dict[str, Any]]:
-        """Get most recent memories."""
+    def get_recent(self, n: int = 10) -> list:
+        """Most recently created entries."""
+        from agent.models import MemoryEntry
+
         results = []
         for doc in self._col().order_by("created_at", direction="DESCENDING").limit(n).stream():
-            results.append(doc.to_dict())
+            results.append(self._doc_to_entry(doc.to_dict()))
+        return list(reversed(results))
+
+    def get_by_category(self, category: str) -> list:
+        """All entries in a category."""
+        from agent.models import MemoryEntry
+
+        results = []
+        for doc in (
+            self._col()
+            .where("category", "==", category)
+            .order_by("created_at", direction="ASCENDING")
+            .stream()
+        ):
+            results.append(self._doc_to_entry(doc.to_dict()))
         return results
+
+    def save_task_outcome(self, task_goal: str, result: str, success: bool) -> bool:
+        """Store a task outcome."""
+        from agent.models import MemoryEntry
+
+        result_short = result[:200] if result else ""
+        content = f"Task: {task_goal}\nResult: {result_short}\nSuccess: {success}"
+        entry = MemoryEntry(
+            content=content,
+            category="task_outcome",
+            metadata={"success": success},
+        )
+        return self.add(entry)
+
+    def save_reflection(self, reflection: str) -> bool:
+        """Store a post-task reflection."""
+        from agent.models import MemoryEntry
+
+        entry = MemoryEntry(content=reflection[:500], category="reflection")
+        return self.add(entry)
+
+    def save_instruction(self, instruction: str) -> bool:
+        """Store a standing instruction."""
+        from agent.models import MemoryEntry
+
+        entry = MemoryEntry(
+            content=f"User instruction: {instruction[:500]}",
+            category="instruction",
+            metadata={"type": "user_instruction"},
+        )
+        return self.add(entry)
+
+    def save_skill(self, skill_name: str, instructions: str) -> bool:
+        """Store a skill entry."""
+        from agent.models import MemoryEntry
+
+        entry = MemoryEntry(
+            content=f"Skill: {skill_name}\n{instructions[:300]}",
+            category="skill",
+            metadata={"skill_name": skill_name},
+        )
+        return self.add(entry)
+
+    def extract_and_store(self, text: str) -> int:
+        """Auto-extract preferences/decisions from text."""
+        import re
+        from agent.models import MemoryEntry
+
+        if not text or len(text.strip()) < 10:
+            return 0
+        stored = 0
+        pref_patterns = [
+            re.compile(r"\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)", re.IGNORECASE),
+        ]
+        decision_patterns = [
+            re.compile(r"\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)", re.IGNORECASE),
+        ]
+        for pattern in pref_patterns:
+            if pattern.search(text):
+                entry = MemoryEntry(content=text[:400], category="user_pref")
+                if self.add(entry):
+                    stored += 1
+                break
+        for pattern in decision_patterns:
+            if pattern.search(text):
+                entry = MemoryEntry(content=text[:400], category="project")
+                if self.add(entry):
+                    stored += 1
+                break
+        return stored
+
+    def record_feedback(self, entry_id: str, helpful: bool) -> dict[str, float | int]:
+        """Rate a memory. Firestore doesn't have trust scoring; return static values."""
+        doc = self._col().document(entry_id).get()
+        if not doc.exists:
+            raise KeyError(f"Memory entry not found: {entry_id}")
+        return {"old_trust": 0.5, "new_trust": 0.5, "entry_id": entry_id}
+
+    def prefetch(self, query: str, top_k: int = 5) -> str:
+        """Fenced recall context for planning (simplified for Firestore)."""
+        from agent.core.memory import build_memory_context_block, is_trivial_prompt
+
+        if is_trivial_prompt(query):
+            return ""
+        results = self.search(query, top_k=top_k)
+        if not results:
+            return ""
+        lines = []
+        for e in results:
+            trust = float(e.metadata.get("trust_score", 0.5)) if hasattr(e, "metadata") else 0.5
+            lines.append(f"- [{trust:.1f}] {e.content}")
+        return build_memory_context_block(
+            "## Recalled memory — BACKGROUND ONLY\n"
+            "These notes may come from DIFFERENT goals. Use them as context; "
+            "never copy a past task's subject, branding, filenames, or code "
+            "into the current goal.\n" + "\n".join(lines)
+        )
+
+    def system_prompt_block(self) -> str:
+        """Static memory capability summary for the agent's system prompt."""
+        return (
+            "# Persistent Memory\n"
+            "Active (Firestore backend). Memory persists across Cloud Run restarts.\n"
+            "Hybrid retrieval and trust scoring are available with the SQLite backend."
+        )
+
+    def delete(self, entry_id: str) -> bool:
+        """Delete a memory entry."""
+        doc = self._col().document(entry_id).get()
+        if doc.exists:
+            self._col().document(entry_id).delete()
+            return True
+        return False
+
+    def clear_category(self, category: str) -> int:
+        """Delete ALL entries in a category."""
+        docs = list(
+            self._col().where("category", "==", category).stream()
+        )
+        for doc in docs:
+            doc.reference.delete()
+        return len(docs)
+
+    def clear(self) -> None:
+        """Delete all memory entries."""
+        docs = list(self._col().stream())
+        for doc in docs:
+            doc.reference.delete()
+
+    @property
+    def size(self) -> int:
+        """Count all memory entries (Firestore aggregation query)."""
+        return len(list(self._col().limit(1000).stream()))
+
+    def categories(self) -> dict[str, int]:
+        """Count entries per category."""
+        cats: dict[str, int] = {}
+        for doc in self._col().limit(1000).stream():
+            data = doc.to_dict()
+            cat = data.get("category", "general")
+            cats[cat] = cats.get(cat, 0) + 1
+        return cats
+
+    def close(self) -> None:
+        """No-op for Firestore (stateless client)."""
+        pass
+
+    @staticmethod
+    def new_entry_id() -> str:
+        return str(uuid.uuid4())
+
+    def _doc_to_entry(self, data: dict[str, Any]):
+        """Convert a Firestore document to a MemoryEntry."""
+        from agent.models import MemoryEntry
+
+        created_at = None
+        if data.get("created_at"):
+            try:
+                created_at = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                created_at = None
+        return MemoryEntry(
+            id=data.get("id", ""),
+            content=data.get("content", ""),
+            category=data.get("category", "general"),
+            metadata=data.get("metadata", {}),
+            created_at=created_at or datetime.now(UTC),
+        )
 
 
 class FirestoreSkillStore:
@@ -130,7 +361,7 @@ class FirestoreSkillStore:
         return results
 
 
-# Singleton instances
+# Singleton instances (created lazily on first access)
 firestore_tasks = FirestoreTaskStore()
 firestore_memory = FirestoreMemoryStore()
 firestore_skills = FirestoreSkillStore()

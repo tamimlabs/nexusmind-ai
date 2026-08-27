@@ -231,7 +231,7 @@ Complex goals are automatically broken into manageable steps:
 | **API** | FastAPI (Python) |
 | **Frontend** | Real-time traceability dashboard |
 | **Language** | Python 3.11+ |
-| **Testing** | 180 Passing Tests |
+| **Testing** | 100+ Passing Tests |
 
 ---
 
@@ -255,7 +255,7 @@ User submits goal
        ▼
 ┌───────────────────────┐  ┌──────────────┐  ┌─────────────┐
 │        Memory         │◀─│  Reflection  │─▶│  Next Task   │
-│ (local JSON + optional│  │   (learn)    │  │  (improved)  │
+│ (local SQLite + optional│  │   (learn)    │  │  (improved)  │
 │       Firestore)      │  └──────────────┘  └─────────────┘
 └───────────────────────┘
 ```

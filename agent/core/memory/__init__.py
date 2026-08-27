@@ -476,7 +476,31 @@ def datetime_from_sqlite(value: str) -> datetime:
     return dt
 
 
-memory_store = MemoryStore()
+def _create_memory_store():
+    """Factory: pick SQLite or Firestore based on DATABASE_BACKEND config."""
+    from agent.config import settings
+
+    backend = settings.database_backend.lower()
+    if backend == "firestore":
+        try:
+            from cloud.firestore.client import FirestoreMemoryStore, _is_available
+            if _is_available():
+                logger.info("Using Firestore memory backend")
+                return FirestoreMemoryStore()
+            else:
+                logger.warning(
+                    "DATABASE_BACKEND=firestore but Firestore not configured "
+                    "(missing GOOGLE_CLOUD_PROJECT). Falling back to SQLite."
+                )
+        except ImportError:
+            logger.warning(
+                "DATABASE_BACKEND=firestore but google-cloud-firestore not installed. "
+                "Falling back to SQLite."
+            )
+    return MemoryStore()
+
+
+memory_store = _create_memory_store()
 
 
 __all__ = [
