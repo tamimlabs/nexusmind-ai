@@ -242,6 +242,33 @@ class Orchestrator:
                         if best_result is None:
                             best_result = s
                 task.result = (best_result.result if best_result else task.steps[-1].result) or "Task completed"
+                # Always append saved file locations so user knows where output went
+                saved = []
+                for s in task.steps:
+                    if s.status == StepStatus.SUCCESS and s.result and s.tool_name in ("write_file", "execute_code", "run_command"):
+                        # write_file: "Written X chars to output/..." , execute_code scaffold: "Project scaffold written to ..."
+                        m = s.result.strip()
+                        if "Written" in m and " to " in m:
+                            # extract path after " to "
+                            try:
+                                path = m.split(" to ", 1)[1].splitlines()[0].strip().strip("'\"")
+                                saved.append(path)
+                            except Exception:
+                                pass
+                        elif "Project scaffold written to" in m:
+                            try:
+                                path = m.split("Project scaffold written to", 1)[1].splitlines()[0].strip().strip("'\"")
+                                saved.append(path)
+                            except Exception:
+                                pass
+                        elif "written to" in m.lower() and ("output/" in m or "projects/" in m):
+                            saved.append(m.splitlines()[0][:120].strip())
+                if saved:
+                    uniq = []
+                    for p in saved:
+                        if p not in uniq:
+                            uniq.append(p)
+                    task.result = task.result.rstrip() + "\n\n📁 Saved to:\n" + "\n".join(f"- {p}" for p in uniq)
             else:
                 task.result = context.get("step_0_result", "Task completed")
             task.updated_at = datetime.now(UTC)
