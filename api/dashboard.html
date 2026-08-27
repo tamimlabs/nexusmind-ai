@@ -274,12 +274,29 @@ function renderTasksPage(c){
   html+='<div class="task-list" id="taskListEl">';
   if(S.selected){html+=renderDetail(S.selected)}
   else if(S.tasks.length===0){html+='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}
-  else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;
-    html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}
+  else{S.tasks.forEach(t=>{
+    const a=S.selected&&S.selected.id===t.id;
+    const isNeeds=t.status==='needs_instruction';
+    const isHigh=t.goal&&t.goal.includes('PR #');
+    html+='<div class="task-card'+(a?' sel':'')+(isNeeds?' style="border-left:3px solid var(--yellow)"':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+(isNeeds?'⚠️ ':'')+(isHigh?'🔴 ': '')+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span>'+(isNeeds?'<span style="color:var(--yellow)">needs instruction</span>':'')+'</div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions">'+(isNeeds?'<button class="btn btn-p btn-sm" onclick="event.stopPropagation();quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+'<button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}
   html+='</div>';c.innerHTML=html;const inp=document.getElementById('goalInput');if(inp){inp.value=prevVal;inp.addEventListener('keypress',e=>{if(e.key==='Enter')submitTask()});inp.focus()}}
 
+function quickFixInstruction(taskId){
+  const t=S.tasks.find(x=>x.id===taskId);
+  if(!t) return;
+  const watcherType=t.watcher_type||'github';
+  const suggestion=watcherType==='github' ? 'when a pr arrives, test every PR separately, if tests fail decline with comment, if clean and relevant merge it, otherwise reject with reason' : 'when a '+watcherType+' event arrives, handle it helpfully';
+  switchPage('memory');
+  setTimeout(()=>{
+    const ta=document.getElementById('memNewText');
+    if(ta){ta.value=suggestion; ta.focus(); ta.scrollIntoView({behavior:'smooth'});}
+  },200);
+}
+
 function renderDetail(t){
-  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span><button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
+  const isNeeds=t.status==='needs_instruction';
+  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span>'+(isNeeds?'<button class="btn btn-p btn-sm" onclick="quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+'<button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
+  if(isNeeds){h+='<div class="detail-section" style="background:var(--ybg);border:1px solid var(--yad);border-radius:8px;padding:12px"><div style="font-size:13px;font-weight:600;color:var(--yellow);margin-bottom:6px">⚠️ Needs your instruction — nothing was executed</div><div style="font-size:12px;color:var(--t3);line-height:1.6">This watcher detected an event but you have no matching standing instruction. Add one in <b>Memory → instruction</b> to auto-handle future events. Telegram was notified (once per 6h). Click <b>Create Instruction</b> for a suggestion.</div></div>';}
   if(S.liveEvents.length>0&&S.liveTaskId===t.id){h+='<div class="detail-section"><div class="detail-label">Live Activity</div><div class="think-list">';S.liveEvents.forEach((e,i)=>{h+='<div class="think-item '+esc(e.type)+'"><div class="think-msg">'+thinkIcon(e,i===S.liveEvents.length-1,!['completed','failed'].includes(S.liveStatus))+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail">'+esc(e.detail)+'</div>':'')+'</div>'});h+='</div></div>'}
   if(t.result){const isFileResult=t.result.includes('Saved to:');h+='<div class="detail-section"><div class="detail-label">Result</div><div class="detail-code" style="'+(isFileResult?'border-left:3px solid var(--accent);background:var(--abg)':'')+'">'+esc(t.result)+'</div>'+(isFileResult?'<div style="margin-top:8px;font-size:11px;color:var(--accent)">📁 Check <code>output/</code> or <code>projects/</code> folder for saved files</code></div>':'')+'</div>';}
   if(t.error)h+='<div class="detail-section"><div class="detail-label">Error</div><div class="tc-error">'+esc(t.error)+'</div></div>';
