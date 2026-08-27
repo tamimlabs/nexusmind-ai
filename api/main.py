@@ -181,6 +181,62 @@ def _update_task_status(task_id: str, status: str, **extra) -> None:
         _cleanup_stale_tasks()
 
 
+async def _register_watcher_unhandled(watcher_id: str, watcher_type: str, summary: str, event: dict[str, Any] | None = None) -> str:
+    """Create a visible Task Panel entry for a watcher event with no matching instruction.
+
+    Called from BaseWatcher.notify_unhandled_event — ensures nothing is silent.
+    Returns task_id. Deduplicates by watcher_id + external_id.
+    """
+    import hashlib
+    event = event or {}
+    external_id = event.get("external_id", "") or hashlib.md5(summary.encode()).hexdigest()[:8]
+    task_id = f"watcher-{watcher_id}-{external_id}"
+    # Deduplicate: don't spam panel with same external_id
+    if task_id in _live_tasks:
+        return task_id
+    payload = event.get("payload", {}) if isinstance(event, dict) else {}
+    # Detect wrong-type instruction hint
+    from agent.core.memory import memory_store
+    all_instructions = [e.content[:120] for e in memory_store.get_by_category("instruction")]
+    hint = ""
+    if all_instructions:
+        hint = f"\n\nYou have {len(all_instructions)} instruction(s) but none matched this watcher type ({watcher_type}). Example: {all_instructions[-1][:100]}"
+        hint += f"\nTip: Add instruction containing keywords {watcher_type} / event_type to handle these automatically."
+    else:
+        hint = "\n\nNo standing instruction found. Go to Memory -> add e.g.: 'when a pr arrives, review and merge or decline with comment'"
+
+    goal = f"⚠️ Unhandled {watcher_type} event: {summary[:200]}"
+    detail = f"Watcher: {watcher_id} ({watcher_type})\nEvent: {event.get('event_type','unknown')}\nExternal ID: {external_id}\nPayload: {str(payload)[:400]}{hint}"
+
+    _live_tasks[task_id] = {
+        "id": task_id,
+        "goal": goal,
+        "status": "needs_instruction",
+        "result": detail,
+        "error": None,
+        "steps_count": 0,
+        "steps": [],
+        "watcher_id": watcher_id,
+        "watcher_type": watcher_type,
+        "external_id": external_id,
+        "created_at": time.time(),
+        "updated_at": time.time(),
+    }
+    _live_tasks_created[task_id] = time.time()
+    _live_events[task_id] = [
+        {"type": "received", "message": f"Watcher {watcher_id} detected: {summary[:120]}", "detail": detail[:500], "time": time.time()},
+        {"type": "error", "message": "No matching instruction — add one in Memory to auto-handle", "detail": hint[:500], "time": time.time()},
+    ]
+    # Also send lightweight trace so right panel shows something
+    from agent.observability import create_trace
+    trace = create_trace(task_id)
+    trace.start_span("watcher_unhandled", kind="reasoning")
+    trace.end_span("needs_instruction")
+
+    logger.info("Registered unhandled watcher task %s for panel: %s", task_id, summary[:80])
+    return task_id
+
+
 # ── Request/Response Models ───────────────────────────────────────
 
 

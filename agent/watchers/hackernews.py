@@ -20,7 +20,7 @@ HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
 class HackerNewsWatcher(BaseWatcher):
     """Watch Hacker News for new front-page stories and comments."""
 
-    INSTRUCTION_KEYWORDS = ("hacker news", "hn", "story", "news")
+    INSTRUCTION_KEYWORDS = ("hacker news", "hackernews", "hn story")
 
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
@@ -107,7 +107,8 @@ class HackerNewsWatcher(BaseWatcher):
         instruction = self.standing_instruction()
         if instruction is None:
             await self.notify_unhandled_event(
-                f"New HN activity: '{payload['title'] if 'title' in payload else payload.get('story_title', '')}'"
+                f"New HN activity: '{payload['title'] if 'title' in payload else payload.get('story_title', '')}'",
+                event,
             )
             return None
 
@@ -124,6 +125,4 @@ class HackerNewsWatcher(BaseWatcher):
                 f"'{payload['story_title']}': '{payload['text']}'. "
                 f"Analyze the discussion and provide insights.",
             )
-        return None
-
         return None

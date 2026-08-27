@@ -17,6 +17,7 @@ class TaskStatus(StrEnum):
     PLANNING = "planning"
     EXECUTING = "executing"
     PAUSED = "paused"
+    NEEDS_INSTRUCTION = "needs_instruction"
     COMPLETED = "completed"
     FAILED = "failed"
 

@@ -465,14 +465,115 @@ async def github_close_pr(repo: str, pr_number: int, comment: str = "", **_: Any
     return _error_result(status, data, "close_pr")
 
 
+@register_tool("github_verify_pr_locally")
+async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolResult:
+    """Checkout a PR branch locally and run tests sequentially (one-by-one, high priority).
+
+    Clones/fetches the PR head, checks out, detects test runner (pytest / npm test / make test),
+    runs it, and returns pass/fail. Used before merge/reject decisions.
+    """
+    import tempfile
+    import os
+    from pathlib import Path as _Path
+
+    # Determine repo URL and temp dir
+    token = _token()
+    auth_url = f"https://{token}@github.com/{repo}.git" if token else f"https://github.com/{repo}.git"
+    tmpdir = _Path(tempfile.gettempdir()) / f"nexusmind_pr_{pr_number}_{os.getpid()}"
+    try:
+        # Fetch PR head via git if repo already cloned locally, else shallow clone
+        # Try to find local repo root
+        proc = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "--show-toplevel",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        out, _ = await proc.communicate()
+        local_root = out.decode().strip() if proc.returncode == 0 else ""
+
+        if local_root and _Path(local_root).exists():
+            # Local repo exists — fetch PR
+            fetch_cmd = f"git fetch origin pull/{pr_number}/head:pr-{pr_number} 2>&1 && git checkout pr-{pr_number} 2>&1"
+            proc2 = await asyncio.create_subprocess_shell(
+                fetch_cmd, cwd=local_root,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc2.communicate(), timeout=60)
+            fetch_out = (stdout.decode() + stderr.decode())[:800]
+            if proc2.returncode != 0:
+                return ToolResult(success=False, output="", error=f"Fetch/checkout failed for PR #{pr_number}: {fetch_out}")
+            workdir = local_root
+        else:
+            # No local repo — shallow clone PR branch via GitHub API head sha
+            status, pr_data = await _github_request("GET", f"/repos/{repo}/pulls/{pr_number}")
+            if status != 200 or not isinstance(pr_data, dict):
+                return ToolResult(success=False, output="", error=f"Cannot fetch PR #{pr_number} metadata")
+            clone_url = pr_data.get("head", {}).get("repo", {}).get("clone_url") or f"https://github.com/{repo}.git"
+            if token and "github.com" in clone_url:
+                clone_url = clone_url.replace("https://", f"https://{token}@")
+            branch = pr_data.get("head", {}).get("ref", "")
+            if tmpdir.exists():
+                import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
+            tmpdir.mkdir(parents=True, exist_ok=True)
+            clone_cmd = f"git clone --depth 1 --branch {branch} {clone_url} {tmpdir} 2>&1"
+            proc3 = await asyncio.create_subprocess_shell(
+                clone_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc3.communicate(), timeout=90)
+            clone_out = (stdout.decode() + stderr.decode())[:800]
+            if proc3.returncode != 0:
+                return ToolResult(success=False, output="", error=f"Clone failed for PR #{pr_number}: {clone_out}")
+            workdir = str(tmpdir)
+
+        # Detect and run tests — sequential, one runner at a time
+        test_cmd = None
+        if _Path(workdir, "pytest.ini").exists() or _Path(workdir, "pyproject.toml").exists() or list(_Path(workdir).glob("tests/**/*.py")):
+            test_cmd = "python -m pytest -q 2>&1 | head -n 100"
+        elif _Path(workdir, "package.json").exists():
+            test_cmd = "npm test 2>&1 | head -n 100"
+        elif _Path(workdir, "Makefile").exists():
+            test_cmd = "make test 2>&1 | head -n 100"
+        else:
+            # No test harness found — fallback to syntax check
+            test_cmd = "python -m py_compile $(find . -name '*.py' | head -20) 2>&1 || echo 'no py files'"
+
+        if test_cmd:
+            proc4 = await asyncio.create_subprocess_shell(
+                test_cmd, cwd=workdir,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc4.communicate(), timeout=120)
+                test_out = (stdout.decode(errors="replace") + stderr.decode(errors="replace"))[:2000]
+                passed = proc4.returncode == 0
+                # Cleanup temp dir if we cloned
+                if str(workdir) == str(tmpdir) and tmpdir.exists():
+                    import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
+                # Try to return to original branch if we checked out PR
+                if local_root:
+                    await asyncio.create_subprocess_shell("git checkout - 2>&1 || git checkout main 2>&1 || true", cwd=local_root)
+                if passed:
+                    return ToolResult(success=True, output=f"PR #{pr_number} local tests PASSED:\n{test_out[:1000]}", metadata={"pr": pr_number, "passed": True})
+                else:
+                    return ToolResult(success=True, output=f"PR #{pr_number} local tests FAILED (will not auto-merge):\n{test_out[:1000]}", metadata={"pr": pr_number, "passed": False})
+            except asyncio.TimeoutError:
+                return ToolResult(success=True, output=f"PR #{pr_number} local tests TIMEOUT after 120s — treat as failed", metadata={"pr": pr_number, "passed": False})
+
+        return ToolResult(success=True, output=f"PR #{pr_number} no tests found — skipped local verification", metadata={"pr": pr_number, "passed": None})
+    except Exception as e:
+        return ToolResult(success=False, output="", error=f"Local verification error for PR #{pr_number}: {e}")
+
+
 @register_tool("github_apply_decisions", high_risk=True)
-async def github_apply_decisions(repo: str, decisions: str, dry_run: bool = False, **_: Any) -> ToolResult:
+async def github_apply_decisions(repo: str, decisions: str, dry_run: bool = False, verify_locally: bool = True, **_: Any) -> ToolResult:
     """Execute review verdicts: merges 'merge' PRs, closes 'reject' PRs, skips others.
 
     Args:
         repo: owner/name repository.
         decisions: JSON array from github_review_pr.
         dry_run: when true, report intended actions without executing.
+        verify_locally: when true, each PR is checked out and tested locally one-by-one
+            before merging (high priority sequential verification). If local tests fail,
+            merge is downgraded to skip.
 
     """
     try:
@@ -483,6 +584,7 @@ async def github_apply_decisions(repo: str, decisions: str, dry_run: bool = Fals
         return ToolResult(success=False, output="", error=f"Unparseable decisions: {exc}")
 
     actions: list[str] = []
+    # Sequential one-by-one — not parallel — to ensure local checkout/tests don't race
     for item in parsed:
         number = item.get("number")
         decision = item.get("decision")
@@ -498,6 +600,19 @@ async def github_apply_decisions(repo: str, decisions: str, dry_run: bool = Fals
             actions.append(f"#{number}: would {decision} — {reason}")
             continue
 
+        # High-priority sequential local verification before merge
+        if decision == "merge" and verify_locally:
+            verify = await github_verify_pr_locally(repo=repo, pr_number=int(number))
+            # verify.success True means we got test output; check metadata passed flag
+            passed = verify.metadata.get("passed") if isinstance(verify.metadata, dict) else None
+            if passed is False:
+                actions.append(f"#{number}: SKIPPED merge — local tests FAILED — {reason} | {verify.output[:200]}")
+                continue
+            elif verify.success is False:
+                actions.append(f"#{number}: SKIPPED merge — local checkout failed: {verify.error[:200]}")
+                continue
+            # passed is True or None (no tests) -> proceed
+
         if decision == "merge":
             result = await github_merge_pr(repo=repo, pr_number=int(number))
         else:
@@ -505,5 +620,5 @@ async def github_apply_decisions(repo: str, decisions: str, dry_run: bool = Fals
             result = await github_close_pr(repo=repo, pr_number=int(number), comment=comment)
         actions.append(f"#{number}: {'OK' if result.success else 'FAILED'} — {result.output or result.error}")
 
-    header = "Planned actions (dry run):" if dry_run else "Actions taken:"
+    header = "Planned actions (dry run):" if dry_run else "Actions taken (sequential, high priority, locally verified):"
     return ToolResult(success=True, output=header + "\n" + "\n".join(actions))

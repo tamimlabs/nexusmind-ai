@@ -80,11 +80,17 @@ class BaseWatcher(abc.ABC):
         _last_no_instruction_notify[self.watcher_id] = now
         return True
 
-    async def notify_unhandled_event(self, summary: str) -> None:
-        """Quietly inform the owner an event arrived but no standing orders exist.
+    async def notify_unhandled_event(self, summary: str, event: dict[str, Any] | None = None) -> None:
+        """Inform owner an event arrived but no standing orders exist.
 
-        Rate-limited to one message per window per watcher — never spam.
+        Always creates a visible Task Panel entry (even when Telegram is muted
+        by rate-limit), so nothing is silent. Telegram is still rate-limited.
         """
+        # 1) Always create visible task for dashboard — never silent
+        with contextlib.suppress(Exception):
+            await self._register_unhandled_task(summary, event)
+
+        # 2) Telegram notification (rate-limited)
         try:
             from agent.telegram import is_configured, send_message
 
@@ -99,11 +105,28 @@ class BaseWatcher(abc.ABC):
             else:
                 logger.info(
                     "Watcher %s: unhandled event suppressed by rate limit "
-                    "or Telegram not configured",
+                    "or Telegram not configured — task panel entry still created",
                     self.watcher_id,
                 )
         except Exception:
             logger.debug("No-instruction notification skipped")
+
+    async def _register_unhandled_task(self, summary: str, event: dict[str, Any] | None = None) -> None:
+        """Create a visible Task Panel entry for an unhandled watcher event."""
+        # Try API live store first (dashboard polling), fallback to doing nothing
+        try:
+            from api.main import _register_watcher_unhandled as _reg
+            await _reg(
+                watcher_id=self.watcher_id,
+                watcher_type=self.config.get("type", "unknown"),
+                summary=summary,
+                event=event,
+            )
+        except Exception:
+            # api.main may not be loaded in tests / CLI — keep quiet
+            logger.debug("Could not register unhandled task in live store", exc_info=True)
+            # Fallback: at least log so it's searchable
+            logger.warning("Unhandled event [%s]: %s", self.watcher_id, summary[:300])
 
     @abc.abstractmethod
     async def check_for_events(self) -> list[dict[str, Any]]:
@@ -165,9 +188,18 @@ class BaseWatcher(abc.ABC):
                         processed_ids.add(ext_id)
                         self._events_processed += 1
 
-                # Keep only last 1000 processed IDs
+                # Keep only last 1000 processed IDs - deterministic ordered truncation
                 if len(processed_ids) > 1000:
-                    processed_ids = set(list(processed_ids)[-500:])
+                    ordered = self._state.get("processed_ids", [])
+                    if ordered:
+                        # ordered is insertion-ordered from previous iterations
+                        # supplement with any new ids not yet in ordered (sorted for determinism)
+                        new_ids = sorted(processed_ids - set(ordered))
+                        combined = list(ordered) + new_ids
+                        trimmed = combined[-500:]
+                        processed_ids = set(trimmed)
+                    else:
+                        processed_ids = set(sorted(processed_ids)[-500:])
 
                 self._state["processed_ids"] = list(processed_ids)
                 self._state["last_check"] = self._last_check.isoformat()
@@ -192,6 +224,18 @@ class BaseWatcher(abc.ABC):
         from agent.models import Task, TaskPriority
         from agent.orchestrator import orchestrator
 
+        # Priority mapping: github PR merge/reject must be HIGH/CRITICAL and sequential
+        raw_priority = event.get("priority", "")
+        if event.get("event_type", "").startswith("github.pr.") or event.get("event_type", "").startswith("gitlab.mr."):
+            # PR/MR events are always HIGH — they need local verification one-by-one
+            priority = TaskPriority.CRITICAL if raw_priority == "high" else TaskPriority.HIGH
+        elif raw_priority == "high":
+            priority = TaskPriority.HIGH
+        elif raw_priority == "critical":
+            priority = TaskPriority.CRITICAL
+        else:
+            priority = TaskPriority.MEDIUM
+
         task = Task(
             goal=goal,
             context={
@@ -199,7 +243,7 @@ class BaseWatcher(abc.ABC):
                 "event_type": event.get("event_type", "unknown"),
                 "external_id": event.get("external_id", ""),
             },
-            priority=TaskPriority.HIGH if event.get("priority") == "high" else TaskPriority.MEDIUM,
+            priority=priority,
         )
 
         logger.info("Watcher %s triggering task: %s", self.watcher_id, goal[:100])

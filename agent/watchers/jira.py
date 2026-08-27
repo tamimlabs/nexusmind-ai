@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -29,7 +30,7 @@ class JiraWatcher(BaseWatcher):
         self.watch_new = config.get("watch_new", True)
         self.watch_updates = config.get("watch_updates", True)
         # Track issue update timestamps: issue key -> last seen "updated" value
-        self._updated_seen: dict[str, str] = {}
+        self._updated_seen: dict[str, str] = dict(self._state.get("jira_updated_seen", {}))
 
     def _get_headers(self) -> dict[str, str]:
         credentials = base64.b64encode(f"{self.email}:{self.token}".encode()).decode()
@@ -42,7 +43,21 @@ class JiraWatcher(BaseWatcher):
         return f"https://{self.domain}/browse/{issue_key}"
 
     async def check_for_events(self) -> list[dict[str, Any]]:
-        """Check Jira REST API v2 for new and updated issues."""
+        """Check Jira REST API v3 (migrated from deprecated v2)."""
+        # Early validation — don't poll unauthenticated
+        if not self.domain or not self.email or not self.token:
+            logger.debug("Jira watcher %s skipped: not configured (domain/email/token missing)", self.watcher_id)
+            return []
+        if not self.project_key:
+            logger.debug("Jira watcher %s skipped: missing project_key", self.watcher_id)
+            return []
+        # Sync cursor from persisted state (handles restore after __init__)
+        if self._state.get("jira_updated_seen"):
+            self._updated_seen = dict(self._state["jira_updated_seen"])
+        # Validate project_key to prevent JQL injection
+        if self.project_key and not re.match(r"^[A-Z0-9_-]+$", self.project_key, re.I):
+            raise ValueError(f"Invalid Jira project key: {self.project_key!r}")
+        safe_project_key = re.sub(r"[^A-Za-z0-9_-]", "", self.project_key)
         events = []
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -50,9 +65,9 @@ class JiraWatcher(BaseWatcher):
             if self.watch_new:
                 try:
                     resp = await client.get(
-                        f"https://{self.domain}/rest/api/2/search",
+                        f"https://{self.domain}/rest/api/3/search/jql",
                         params={
-                            "jql": f"project = {self.project_key} ORDER BY created DESC",
+                            "jql": f"project = {safe_project_key} ORDER BY created DESC",
                             "maxResults": 5,
                             "fields": "summary,status,description,reporter,created,updated",
                         },
@@ -88,9 +103,9 @@ class JiraWatcher(BaseWatcher):
             if self.watch_updates:
                 try:
                     resp = await client.get(
-                        f"https://{self.domain}/rest/api/2/search",
+                        f"https://{self.domain}/rest/api/3/search/jql",
                         params={
-                            "jql": f"project = {self.project_key} ORDER BY updated DESC",
+                            "jql": f"project = {safe_project_key} ORDER BY updated DESC",
                             "maxResults": 5,
                             "fields": "summary,status,comment,updated",
                         },
@@ -105,6 +120,7 @@ class JiraWatcher(BaseWatcher):
                             if last_seen is not None and updated <= last_seen:
                                 continue  # no change since last check
                             self._updated_seen[key] = updated
+                            self._state["jira_updated_seen"] = dict(self._updated_seen)
                             events.append({
                                 "event_type": "jira.issue.updated",
                                 "external_id": f"jira_issue_{key}_{updated}",
@@ -140,7 +156,8 @@ class JiraWatcher(BaseWatcher):
         instruction = self.standing_instruction()
         if instruction is None:
             await self.notify_unhandled_event(
-                f"Jira {payload['key']} ({payload.get('status', 'new')}): '{payload['title']}'"
+                f"Jira {payload['key']} ({payload.get('status', 'new')}): '{payload['title']}'",
+                event,
             )
             return None
 

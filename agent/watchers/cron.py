@@ -9,6 +9,7 @@ Supports simple cron expressions for the minute field:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -55,8 +56,9 @@ class CronWatcher(BaseWatcher):
         return [
             {
                 "event_type": "cron.trigger",
-                # Unique per-interval ID so the base dedup doesn't suppress repeats
-                "external_id": f"cron_{self.watcher_id}_{now.strftime('%Y%m%dT%H%M%S')}",
+                # Unique per-interval ID so the base dedup doesn't suppress repeats;
+                # microsecond + short uuid avoids collision when interval <60s
+                "external_id": f"cron_{self.watcher_id}_{now.strftime('%Y%m%dT%H%M%S_%f')}_{uuid.uuid4().hex[:4]}",
                 "payload": {
                     "expression": self.cron_expression,
                     "triggered_at": now.isoformat(),

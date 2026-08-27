@@ -87,7 +87,8 @@ class RedditWatcher(BaseWatcher):
             instruction = self.standing_instruction()
             if instruction is None:
                 await self.notify_unhandled_event(
-                    f"New Reddit post in r/{payload['subreddit']}: '{payload['title']}'"
+                    f"New Reddit post in r/{payload['subreddit']}: '{payload['title']}'",
+                    event,
                 )
                 return None
 

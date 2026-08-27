@@ -32,7 +32,7 @@ class EmailWatcher(BaseWatcher):
         self.password = config.get("password", "")  # App password (not account password)
         self.folder = config.get("folder", "INBOX")
         self.watch_unread = config.get("watch_unread", True)
-        self._seen_message_ids: set[str] = set()
+        self._seen_message_ids: set[str] = set(self._state.get("email_seen_ids", []))
 
     @staticmethod
     def _decode_subject(raw_subject: str | None) -> str:
@@ -105,6 +105,13 @@ class EmailWatcher(BaseWatcher):
 
     async def check_for_events(self) -> list[dict[str, Any]]:
         """Check the IMAP inbox for new emails."""
+        # Early validation — don't try IMAP login unauthenticated
+        if not self.email_address or not self.password:
+            logger.debug("Email watcher %s skipped: not configured (missing email/password)", self.watcher_id)
+            return []
+        # Sync dedup set from persisted state (handles restore after __init__)
+        if self._state.get("email_seen_ids"):
+            self._seen_message_ids = set(self._state["email_seen_ids"])
         try:
             fetched = await asyncio.to_thread(self._fetch_emails_sync)
         except Exception as e:
@@ -133,7 +140,10 @@ class EmailWatcher(BaseWatcher):
             })
 
         if len(self._seen_message_ids) > 1000:
-            self._seen_message_ids = set(list(self._seen_message_ids)[-500:])
+            self._seen_message_ids = set(sorted(self._seen_message_ids)[-500:])
+
+        # Persist seen IDs for dedup across restarts
+        self._state["email_seen_ids"] = sorted(self._seen_message_ids)[-500:]
 
         return events
 
@@ -145,7 +155,8 @@ class EmailWatcher(BaseWatcher):
             instruction = self.standing_instruction()
             if instruction is None:
                 await self.notify_unhandled_event(
-                    f"New email from '{payload['sender']}': '{payload['subject']}'"
+                    f"New email from '{payload['sender']}': '{payload['subject']}'",
+                    event,
                 )
                 return None
 

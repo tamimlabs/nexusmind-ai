@@ -31,6 +31,13 @@ class GitLabWatcher(BaseWatcher):
         return headers
 
     async def check_for_events(self) -> list[dict[str, Any]]:
+        # Early validation — don't poll unauthenticated
+        if not self.token:
+            logger.debug("GitLab watcher %s skipped: not configured (missing token)", self.watcher_id)
+            return []
+        if not self.project_id:
+            logger.debug("GitLab watcher %s skipped: missing project_id", self.watcher_id)
+            return []
         events = []
         async with httpx.AsyncClient(timeout=30) as client:
             if self.watch_mrs:
@@ -44,7 +51,7 @@ class GitLabWatcher(BaseWatcher):
                         for mr in resp.json():
                             events.append({
                                 "event_type": "gitlab.mr.opened",
-                                "external_id": f"mr_{mr['iid']}",
+                                "external_id": f"gitlab_mr_{self.project_id}_{mr['iid']}",
                                 "payload": {
                                     "number": mr["iid"],
                                     "title": mr["title"],
@@ -68,7 +75,7 @@ class GitLabWatcher(BaseWatcher):
                         for issue in resp.json():
                             events.append({
                                 "event_type": "gitlab.issue.opened",
-                                "external_id": f"issue_{issue['iid']}",
+                                "external_id": f"gitlab_issue_{self.project_id}_{issue['iid']}",
                                 "payload": {
                                     "number": issue["iid"],
                                     "title": issue["title"],
@@ -93,7 +100,8 @@ class GitLabWatcher(BaseWatcher):
         instruction = self.standing_instruction()
         if instruction is None:
             await self.notify_unhandled_event(
-                f"GitLab {payload['number']} in project {self.project_id}: '{payload['title']}'"
+                f"GitLab {payload['number']} in project {self.project_id}: '{payload['title']}'",
+                event,
             )
             return None
 

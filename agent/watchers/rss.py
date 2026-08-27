@@ -20,9 +20,13 @@ class RSSWatcher(BaseWatcher):
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
         self.feed_url = config.get("feed_url", "")
-        self.max_items = config.get("max_items", 10)
+        self.max_items = min(max(1, int(config.get("max_items", 10))), 50)
 
     async def check_for_events(self) -> list[dict[str, Any]]:
+        # Early validation — no request if URL missing/invalid
+        if not self.feed_url or not self.feed_url.startswith(("http://", "https://")):
+            logger.debug("RSS watcher %s skipped: invalid feed_url %r", self.watcher_id, self.feed_url)
+            return []
         events = []
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -32,8 +36,20 @@ class RSSWatcher(BaseWatcher):
                 )
                 resp.raise_for_status()
                 content = resp.text
+                if len(content) > 500_000:
+                    raise ValueError("Feed too large")
+                # XXE / entity-expansion protection
+                if "<!ENTITY" in content or "<!DOCTYPE" in content:
+                    logger.warning("RSS feed contains entity declaration - possible XXE, skipping %s", self.feed_url)
+                    return []
 
-            root = ET.fromstring(content)
+            # Use defusedxml if available to prevent XXE / entity expansion
+            try:
+                import defusedxml.ElementTree as DET  # type: ignore
+
+                root = DET.fromstring(content)
+            except ImportError:
+                root = ET.fromstring(content)
 
             # Detect RSS vs Atom
             ns = {"atom": "http://www.w3.org/2005/Atom"}
@@ -90,7 +106,8 @@ class RSSWatcher(BaseWatcher):
         instruction = self.standing_instruction()
         if instruction is None:
             await self.notify_unhandled_event(
-                f"New RSS article: '{payload['title']}' ({payload['link']})"
+                f"New RSS article: '{payload['title']}' ({payload['link']})",
+                event,
             )
             return None
 

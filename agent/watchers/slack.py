@@ -26,7 +26,7 @@ class SlackWatcher(BaseWatcher):
         self.token = config.get("token", "")  # Bot token (xoxb-...)
         self.channels = config.get("channels", [])  # List of channel IDs
         self.watch_mentions = config.get("watch_mentions", True)
-        self._last_ts: dict[str, str] = {}  # channel -> last seen message ts
+        self._last_ts: dict[str, str] = dict(self._state.get("slack_last_ts", {}))  # channel -> last seen message ts
         self._channel_names: dict[str, str] = {}  # channel -> name cache
 
     def _get_headers(self) -> dict[str, str]:
@@ -52,6 +52,16 @@ class SlackWatcher(BaseWatcher):
 
     async def check_for_events(self) -> list[dict[str, Any]]:
         """Check Slack API for new messages in watched channels."""
+        # Early validation — don't poll unauthenticated (no bypass, no noisy exceptions)
+        if not self.token:
+            logger.debug("Slack watcher %s skipped: not configured (missing token)", self.watcher_id)
+            return []
+        if not self.channels:
+            logger.debug("Slack watcher %s skipped: no channels configured", self.watcher_id)
+            return []
+        # Sync cursor from persisted state (handles restore after __init__)
+        if self._state.get("slack_last_ts"):
+            self._last_ts = dict(self._state["slack_last_ts"])
         events = []
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -79,7 +89,10 @@ class SlackWatcher(BaseWatcher):
                         and msg.get("ts", "") > last_ts
                     ]
                     if new_messages:
-                        self._last_ts[channel_id] = new_messages[-1]["ts"]
+                        last_msg_ts = new_messages[-1].get("ts", "")
+                        if last_msg_ts:
+                            self._last_ts[channel_id] = last_msg_ts
+                            self._state["slack_last_ts"] = dict(self._last_ts)
 
                     channel_name = await self._get_channel_name(client, channel_id)
                     for msg in new_messages:
@@ -87,7 +100,7 @@ class SlackWatcher(BaseWatcher):
                         is_mention = "<@" in text
                         event: dict[str, Any] = {
                             "event_type": "slack.message.new",
-                            "external_id": f"{channel_id}_{msg['ts']}",
+                            "external_id": f"{channel_id}_{msg.get('ts','')}",
                             "payload": {
                                 "channel": channel_id,
                                 "channel_name": channel_name,
@@ -114,7 +127,8 @@ class SlackWatcher(BaseWatcher):
             if instruction is None:
                 await self.notify_unhandled_event(
                     f"Slack message in #{payload['channel_name']} "
-                    f"from {payload['user']}: '{payload['text']}'"
+                    f"from {payload['user']}: '{payload['text']}'",
+                    event,
                 )
                 return None
 

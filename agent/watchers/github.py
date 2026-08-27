@@ -65,9 +65,11 @@ class GitHubWatcher(BaseWatcher):
     """Watch a GitHub repo for new PRs and issues."""
 
     # Keywords that mark a stored instruction as relevant to GitHub events
+    # NOTE: "marge" and "deslind" are intentional fuzzy/typo variants kept for
+    # backward compatibility; "merge" is the correct keyword.
     INSTRUCTION_KEYWORDS = (
         "pr", "pull request", "pullrequest", "github", "repo", "repository",
-        "merge", "marge", "reject", "decline", "deslind", "review", "test",
+        "merge", "marge", "reject", "decline", "deslind", "review", "test", "approve",
     )
 
     def __init__(self, watcher_id: str, config: dict[str, Any]):
@@ -83,7 +85,7 @@ class GitHubWatcher(BaseWatcher):
     def _get_headers(self) -> dict[str, str]:
         headers = {"Accept": "application/vnd.github.v3+json"}
         if self.token:
-            headers["Authorization"] = f"token {self.token}"
+            headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
     async def check_for_events(self) -> list[dict[str, Any]]:
@@ -104,6 +106,7 @@ class GitHubWatcher(BaseWatcher):
                             events.append({
                                 "event_type": "github.pr.opened",
                                 "external_id": f"pr_{pr['number']}",
+                                "priority": "high",
                                 "payload": {
                                     "number": pr["number"],
                                     "title": pr["title"],
@@ -116,6 +119,8 @@ class GitHubWatcher(BaseWatcher):
                                     "action": "opened",
                                 },
                             })
+                    else:
+                        logger.warning("GitHub PR check failed: %s %s", resp.status_code, resp.text[:200])
                 except Exception as e:
                     logger.warning("GitHub PR check failed: %s", e)
 
@@ -144,6 +149,8 @@ class GitHubWatcher(BaseWatcher):
                                     "action": "opened",
                                 },
                             })
+                    else:
+                        logger.warning("GitHub issue check failed: %s %s", resp.status_code, resp.text[:200])
                 except Exception as e:
                     logger.warning("GitHub issue check failed: %s", e)
 
@@ -170,7 +177,7 @@ class GitHubWatcher(BaseWatcher):
                     "Watcher %s: PR #%d arrived but no standing instruction in memory — skipping",
                     self.watcher_id, number,
                 )
-                await self.notify_unhandled_event(f"New PR #{number} in {self.repo}: '{title}'")
+                await self.notify_unhandled_event(f"New PR #{number} in {self.repo}: '{title}'", event)
                 return None
 
             return self.gated_goal(
@@ -186,7 +193,7 @@ class GitHubWatcher(BaseWatcher):
             instruction = self.standing_instruction()
             if instruction is None:
                 await self.notify_unhandled_event(
-                    f"New issue #{number} in {self.repo}: '{title}'"
+                    f"New issue #{number} in {self.repo}: '{title}'", event
                 )
                 return None
 

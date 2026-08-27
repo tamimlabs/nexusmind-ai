@@ -26,7 +26,7 @@ class DiscordWatcher(BaseWatcher):
         self.token = config.get("token", "")  # Bot token
         self.guild_id = config.get("guild_id", "")
         self.channel_ids = config.get("channel_ids", [])  # List of channel IDs
-        self._last_message_id: dict[str, str] = {}  # channel -> last seen message snowflake
+        self._last_message_id: dict[str, str] = dict(self._state.get("discord_last_id", {}))  # channel -> last seen message snowflake
         self._channel_names: dict[str, str] = {}  # channel -> name cache
 
     def _get_headers(self) -> dict[str, str]:
@@ -48,6 +48,16 @@ class DiscordWatcher(BaseWatcher):
 
     async def check_for_events(self) -> list[dict[str, Any]]:
         """Check Discord API for new messages in watched channels."""
+        # Early validation — don't poll unauthenticated (no bypass, no Illegal header exceptions)
+        if not self.token:
+            logger.debug("Discord watcher %s skipped: not configured (missing token)", self.watcher_id)
+            return []
+        if not self.channel_ids:
+            logger.debug("Discord watcher %s skipped: no channels configured", self.watcher_id)
+            return []
+        # Sync cursor from persisted state (handles restore after __init__)
+        if self._state.get("discord_last_id"):
+            self._last_message_id = dict(self._state["discord_last_id"])
         events = []
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -68,28 +78,44 @@ class DiscordWatcher(BaseWatcher):
                         )
                         continue
 
-                    last_id = int(self._last_message_id.get(channel_id, "0"))
+                    try:
+                        last_id = int(self._last_message_id.get(channel_id, "0"))
+                    except (ValueError, TypeError):
+                        last_id = 0
+
+                    def _safe_int(val: Any) -> int:
+                        try:
+                            return int(str(val))
+                        except (ValueError, TypeError):
+                            return 0
+
                     new_messages = [
                         msg
                         for msg in reversed(resp.json())
                         if not msg.get("author", {}).get("bot")  # Skip bots to avoid loops
-                        and int(msg["id"]) > last_id  # Snowflake IDs sort chronologically
+                        and _safe_int(msg.get("id", "0")) > last_id  # Snowflake IDs sort chronologically
                     ]
                     if new_messages:
-                        self._last_message_id[channel_id] = new_messages[-1]["id"]
+                        last_msg_id = new_messages[-1].get("id")
+                        if last_msg_id is not None:
+                            self._last_message_id[channel_id] = str(last_msg_id)
+                            self._state["discord_last_id"] = dict(self._last_message_id)
 
                     channel_name = self._channel_names.get(channel_id, channel_id)
                     for msg in new_messages:
+                        msg_id = str(msg.get("id", ""))
+                        if not msg_id:
+                            continue
                         events.append({
                             "event_type": "discord.message.new",
-                            "external_id": f"{channel_id}_{msg['id']}",
+                            "external_id": f"{channel_id}_{msg_id}",
                             "payload": {
                                 "channel_id": channel_id,
                                 "channel_name": channel_name,
-                                "message_id": msg["id"],
+                                "message_id": msg_id,
                                 "author": msg.get("author", {}).get("username", "unknown"),
                                 "content": (msg.get("content") or "")[:500],
-                                "url": f"https://discord.com/channels/{self.guild_id}/{channel_id}/{msg['id']}",
+                                "url": f"https://discord.com/channels/{self.guild_id}/{channel_id}/{msg_id}",
                             },
                         })
                 except Exception as e:
@@ -106,7 +132,8 @@ class DiscordWatcher(BaseWatcher):
             if instruction is None:
                 await self.notify_unhandled_event(
                     f"Discord message in '{payload['channel_name']}' "
-                    f"from {payload['author']}: '{payload['content']}'"
+                    f"from {payload['author']}: '{payload['content']}'",
+                    event,
                 )
                 return None
 
