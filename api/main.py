@@ -555,11 +555,30 @@ class ApprovalModeRequest(BaseModel):
 
 @app.post("/api/approval-mode")
 async def set_approval_mode(req: ApprovalModeRequest):
-    """Set approval mode (always/smart/never)."""
+    """Set approval mode (always/smart/never) and persist to .env."""
     if req.mode not in ("always", "smart", "never"):
         raise HTTPException(status_code=400, detail="Mode must be 'always', 'smart', or 'never'")
     # Update runtime setting
     _cfg.settings.approval_mode = req.mode
+    # Persist to .env so refresh/restart keeps the choice
+    try:
+        env_file = pathlib.Path(".env")
+        lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+        found = False
+        new_lines: list[str] = []
+        for line in lines:
+            if line.strip().startswith("APPROVAL_MODE="):
+                new_lines.append(f"APPROVAL_MODE={req.mode}")
+                found = True
+            else:
+                new_lines.append(line)
+        if not found:
+            new_lines.append(f"APPROVAL_MODE={req.mode}")
+        env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        import os
+        os.environ["APPROVAL_MODE"] = req.mode
+    except Exception:
+        logger.debug("Failed to persist APPROVAL_MODE to .env", exc_info=True)
     return {"mode": req.mode, "message": f"Approval mode set to {req.mode}"}
 
 
