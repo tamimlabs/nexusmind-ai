@@ -50,8 +50,34 @@ _active_watchers: dict[str, BaseWatcher] = {}
 _state_file = Path("data/watcher_state.json")
 
 
+def _firestore_state_store():
+    """Firestore watcher-state store, or None when not configured/available.
+
+    Cloud Run's filesystem is ephemeral (wiped on scale-to-zero), so the
+    Firestore backend keeps watchers alive across restarts. Falls back to the
+    JSON file when Firestore isn't the configured backend.
+    """
+    try:
+        from agent.config import settings
+
+        if settings.database_backend.lower() != "firestore":
+            return None
+        from cloud.firestore.client import FirestoreWatcherStateStore
+
+        return FirestoreWatcherStateStore()
+    except Exception as exc:
+        logger.warning("Firestore watcher state unavailable, using file: %s", exc)
+        return None
+
+
 def _load_state() -> dict[str, Any]:
-    """Load persisted watcher state."""
+    """Load persisted watcher state (Firestore first, then JSON file)."""
+    store = _firestore_state_store()
+    if store is not None:
+        try:
+            return store.load_all()
+        except Exception:
+            logger.exception("Failed to load watcher state from Firestore")
     if _state_file.exists():
         try:
             data: dict[str, Any] = json.loads(_state_file.read_text())
@@ -62,8 +88,7 @@ def _load_state() -> dict[str, Any]:
 
 
 def _save_state() -> None:
-    """Persist watcher state."""
-    _state_file.parent.mkdir(parents=True, exist_ok=True)
+    """Persist watcher state (Firestore first, then JSON file)."""
     state = {}
     for wid, watcher in _active_watchers.items():
         state[wid] = {
@@ -71,6 +96,14 @@ def _save_state() -> None:
             "config": watcher.config,
             "status": watcher.get_status(),
         }
+    store = _firestore_state_store()
+    if store is not None:
+        try:
+            store.save_all(state)
+            return
+        except Exception:
+            logger.exception("Failed to save watcher state to Firestore")
+    _state_file.parent.mkdir(parents=True, exist_ok=True)
     _state_file.write_text(json.dumps(state, indent=2))
 
 
@@ -138,6 +171,11 @@ async def restore_watchers() -> None:
             config = data.get("config", {})
             config["id"] = wid
             watcher = create_watcher(watcher_type, config)
+            # Restore in-memory dedup state so already-handled events are not
+            # re-triggered after a restart.
+            status = data.get("status") or {}
+            if isinstance(status, dict):
+                watcher._state = dict(status.get("state", {}) or {})
             await watcher.start()
             logger.info("Restored watcher: %s", wid)
         except Exception as e:

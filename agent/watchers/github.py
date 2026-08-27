@@ -11,6 +11,7 @@ applies that instruction. Not found -> NO action, owner is notified.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -18,6 +19,46 @@ import httpx
 from agent.watchers.base import BaseWatcher
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_github_token() -> str:
+    """Resolve a GitHub token from global config when the watcher has none.
+
+    Precedence: Vault/Secret environment variable injected by the platform
+    (settings.github_token already merges .env + os.environ), then a direct
+    .env parse as a last resort. This lets one Cloud Run Secret (GITHUB_TOKEN)
+    power watchers created without an embedded token.
+    """
+    try:
+        from agent.config import settings
+
+        if getattr(settings, "github_token", ""):
+            return settings.github_token
+    except Exception:
+        pass
+
+    env_file = Path(".env")
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("GITHUB_TOKEN="):
+                return line.partition("=")[2].strip().strip("'\"")
+    return ""
+
+
+def _resolve_default_repo() -> str:
+    """Fallback repo from global config (GITHUB_DEFAULT_REPO), if any.
+
+    Keeps the watcher generic: no repository is hardcoded. Per-watcher
+    ``config["repo"]`` always wins; the configured default only fills in
+    when a watcher is created without one.
+    """
+    try:
+        from agent.config import settings
+
+        return getattr(settings, "github_default_repo", "") or ""
+    except Exception:
+        return ""
 
 
 class GitHubWatcher(BaseWatcher):
@@ -31,10 +72,10 @@ class GitHubWatcher(BaseWatcher):
 
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
-        self.repo = config.get("repo", "")  # "owner/repo"
+        self.repo = config.get("repo") or _resolve_default_repo()  # "owner/repo"
         self.watch_prs = config.get("watch_prs", True)
         self.watch_issues = config.get("watch_issues", True)
-        self.token = config.get("token", "")  # GitHub token (optional)
+        self.token = config.get("token") or _resolve_github_token()
         # Kept for backward compatibility; memory instructions now gate actions.
         self.auto_merge = config.get("auto_merge", False)
         self.auto_comment = config.get("auto_comment", False)
@@ -55,7 +96,7 @@ class GitHubWatcher(BaseWatcher):
                 try:
                     resp = await client.get(
                         f"https://api.github.com/repos/{self.repo}/pulls",
-                        params={"state": "open", "sort": "created", "direction": "desc", "per_page": 5},
+                        params={"state": "open", "sort": "created", "direction": "desc", "per_page": 100},
                         headers=self._get_headers(),
                     )
                     if resp.status_code == 200:
@@ -83,7 +124,7 @@ class GitHubWatcher(BaseWatcher):
                 try:
                     resp = await client.get(
                         f"https://api.github.com/repos/{self.repo}/issues",
-                        params={"state": "open", "sort": "created", "direction": "desc", "per_page": 5},
+                        params={"state": "open", "sort": "created", "direction": "desc", "per_page": 100},
                         headers=self._get_headers(),
                     )
                     if resp.status_code == 200:

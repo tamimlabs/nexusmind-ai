@@ -173,6 +173,13 @@ class BaseWatcher(abc.ABC):
                 self._state["last_check"] = self._last_check.isoformat()
                 self._state["events_processed"] = self._events_processed
 
+                # Persist live state so dedup survives a restart (works with
+                # both the Firestore and file backends). Lazy import avoids a
+                # circular module dependency.
+                with contextlib.suppress(Exception):
+                    from agent.watchers import manager as _wm
+                    _wm._save_state()
+
             except asyncio.CancelledError:
                 break
             except Exception as e:

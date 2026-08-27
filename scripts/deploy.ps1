@@ -27,7 +27,7 @@ gcloud run deploy $ServiceName `
     --min-instances 0 `
     --max-instances 5 `
     --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,DATABASE_BACKEND=firestore" `
-    --set-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest" `
+    --set-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest,GITHUB_TOKEN=GITHUB_TOKEN:latest" `
     --service-account nexusmind-sa@$ProjectId.iam.gserviceaccount.com
 
 Write-Host "`nDeployed! Getting URL..." -ForegroundColor Green

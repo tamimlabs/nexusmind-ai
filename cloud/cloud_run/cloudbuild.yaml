@@ -24,5 +24,7 @@ steps:
       - '5'
       - '--set-env-vars'
       - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
+      - '--set-secrets'
+      - 'GITHUB_TOKEN=projects/$PROJECT_ID/secrets/GITHUB_TOKEN:latest'
 images:
   - 'gcr.io/$PROJECT_ID/nexusmind-ai'

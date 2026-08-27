@@ -361,7 +361,44 @@ class FirestoreSkillStore:
         return results
 
 
+class FirestoreWatcherStateStore:
+    """Persist watcher state to Firestore so watchers survive scale-to-zero.
+
+    Cloud Run's container filesystem is ephemeral — `data/watcher_state.json`
+    disappears on every scale-down/cold start, silently stopping watchers.
+    This store keeps the same {watcher_id: {type, config, status}} shape in a
+    durable Firestore collection instead.
+    """
+
+    def __init__(self) -> None:
+        self._collection = "watcher_state"
+
+    def _col(self):
+        return _get_db().collection(self._collection)
+
+    def load_all(self) -> dict[str, Any]:
+        """Load every persisted watcher keyed by watcher_id."""
+        results: dict[str, Any] = {}
+        for doc in self._col().stream():
+            data = doc.to_dict()
+            if data:
+                results[doc.id] = data
+        return results
+
+    def save_all(self, state: dict[str, Any]) -> None:
+        """Upsert all active watchers and delete docs no longer active."""
+        col = self._col()
+        for wid, data in state.items():
+            col.document(wid).set(data)
+        live = set(state.keys())
+        for doc in col.stream():
+            if doc.id not in live:
+                doc.reference.delete()
+                logger.debug("Cleaned up stale watcher doc: %s", doc.id)
+
+
 # Singleton instances (created lazily on first access)
 firestore_tasks = FirestoreTaskStore()
 firestore_memory = FirestoreMemoryStore()
 firestore_skills = FirestoreSkillStore()
+firestore_watcher_state = FirestoreWatcherStateStore()
