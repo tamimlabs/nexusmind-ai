@@ -11,8 +11,19 @@
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Run%20%7C%20Firestore%20%7C%20Pub%2FSub-4285F4?style=flat&logo=googlecloud&logoColor=white)](https://cloud.google.com)
 [![Google ADK](https://img.shields.io/badge/Google%20ADK-2.x-4285F4?style=flat&logo=google&logoColor=white)](https://cloud.google.com/vertex-ai/generative-ai/docs/agent-development-kit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Demo Video](https://img.shields.io/badge/🎬_Demo_Video-Watch_on_YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=woSOCuzfabg)
 
 **Built for the [Google "All Things Agentic" Hackathon](https://allthingsagentic.devpost.com) -- Track: The Taskmaster**
+
+</div>
+
+<div align="center">
+
+### 🎬 Demo Video — See NexusMind AI in Action (4 min)
+
+[![▶️ Watch Demo on YouTube](https://img.youtube.com/vi/woSOCuzfabg/maxresdefault.jpg)](https://www.youtube.com/watch?v=woSOCuzfabg)
+
+**[▶️ WATCH DEMO ON YOUTUBE — 4 MIN](https://www.youtube.com/watch?v=woSOCuzfabg)** &nbsp;|&nbsp; *Autonomous PR reviews, multi-step workflows, Telegram approvals & self-learning — all in one take*
 
 </div>
 
@@ -556,21 +567,25 @@ All **200 tests** covering models, memory (hybrid retrieval, HRR, trust scoring)
 
 ---
 
-## Demo
-
-| Resource | Link |
-|----------|------|
-| Demo video (4 min) | [Watch on YouTube](https://youtu.be/woSOCuzfabg) |
-| Live dashboard (Cloud Run) | _Coming with final submission_ |
-| Architecture walkthrough | [docs/capabilities.md](docs/capabilities.md) |
+## 🎬 Demo — Watch Before You Read
 
 <div align="center">
 
-[![Demo Video](docs/architecture_diagram.png)](https://youtu.be/woSOCuzfabg)
+### ▶️ 4-Minute Demo — Autonomous Agent End-to-End
+
+[![NexusMind AI — Full Demo (4 min)](https://img.youtube.com/vi/woSOCuzfabg/maxresdefault.jpg)](https://www.youtube.com/watch?v=woSOCuzfabg)
+
+**[▶️ CLICK TO WATCH ON YOUTUBE](https://www.youtube.com/watch?v=woSOCuzfabg)**
+
+*Goal → Gemini plans steps → Tools execute with live traces → Risky command triggers Telegram approval → Agent reflects & learns*
+
+| Resource | Link |
+|----------|------|
+| **🎬 Demo Video (4 min)** | **[▶️ Watch on YouTube](https://www.youtube.com/watch?v=woSOCuzfabg)** |
+| Live dashboard (Cloud Run) | _Coming with final submission_ |
+| Architecture walkthrough | [docs/capabilities.md](docs/capabilities.md) |
 
 </div>
-
-**What the demo shows:** a goal submitted via API -> Gemini plans the steps -> tools execute with live traces -> a risky command triggers a Telegram approval -> the agent finishes and reflects the lesson into memory.
 
 ---
 
