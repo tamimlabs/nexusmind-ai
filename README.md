@@ -37,13 +37,13 @@ On any given day, a developer or team lead bounces between 5+ tools just to stay
 
 | Task | Time spent | Tool |
 |------|-----------|------|
-| Check GitHub for PR reviews | ~20 min | GitHub |
+| GitHub PRs: review code, check CI/tests, comment, merge/reject | ~45-60 min | GitHub |
 | Scan Slack for mentions / decisions | ~30 min | Slack |
 | Review Jira for blockers | ~15 min | Jira |
 | Monitor Reddit / Hacker News for relevant news | ~10 min | Reddit / HN |
 | Triage email | ~20 min | Email |
 
-That's **~1.5 hours per developer per day** -- not building, not thinking, just **reading and reacting**. Multiply by a 10-person team and you're burning **15 hours/week** on context switching alone.
+That's **~2–2.5 hours per developer per day** -- not building, not thinking, just **reading and reacting**. A PR alone isn't "20 min" -- it's open diff, understand context, verify CI/tests pass, check for conflicts, write a review comment, then merge or request changes and follow up. Multiply by a 10-person team and you're burning **20+ hours/week** on context switching alone.
 
 Most of this work is repetitive, low-judgment, and high-volume. It doesn't require a human -- it requires **attention**.
 
