@@ -92,12 +92,12 @@ Examples:
 
 ## Testing
 
-The current suite has 180 Passing Tests covering models, memory (hybrid
-retrieval, HRR vectors, trust scoring), the self-evolving skill library
+The current suite has 250+ Passing Tests covering models, memory (hybrid
+retrieval, HRR vectors, trust scoring, hygiene), the self-evolving skill library
 (validation gates, lifecycle, matching, audit ledger), deterministic routing
-(command gate, tool-name repair ladder), executor, orchestrator, API, the
-planner/GitHub pipeline, and watcher gating. Async tests run with
-`pytest-asyncio` in auto mode.
+(command gate, tool-name repair ladder), the adaptive step-by-step loop,
+executor (smart approval), orchestrator, API, the planner/GitHub pipeline,
+and watcher gating. Async tests run with `pytest-asyncio` in auto mode.
 
 - Write tests for new features
 - Ensure all existing tests pass

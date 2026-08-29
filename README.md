@@ -69,11 +69,11 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
 
 - **Step-by-step adaptive execution** (opencode-style) -- Gemini decides ONE action at a time, the real result (or error) of each step drives the next decision: self-correct, verify, and keep working until the goal is actually met
 - **Human-in-the-loop safety** -- dangerous actions pause for approval via Telegram or dashboard
-- **Persistent cross-session memory** -- SQLite locally; Firestore on Cloud Run, with hybrid retrieval (BM25 + HRR) and trust scoring
+- **Persistent cross-session memory** -- SQLite locally; Firestore on Cloud Run, with hybrid retrieval (BM25 + Jaccard + HRR), trust scoring (`+0.05`/`-0.10`), fenced `<memory-context>`, contradiction detection, and compositional recall (`search`/`probe`/`related`/`reason`)
 - **Self-evolving skills** -- solved tasks become reusable SKILL.md packages with usage telemetry and an audit ledger
 - **11 automated watchers** -- continuously monitors GitHub, GitLab, Slack, Discord, Jira, Reddit, Hacker News, Email, RSS, Cron, and Webhooks, triggering workflows when new events are detected
 - **Builds real artifacts** -- generates complete multi-file projects (`projects/<name>/`: HTML/CSS/JS + backend server)
-- **Zero-cost commands** -- `/status`, `/tasks`, `/skills` answered deterministically without an LLM call
+- **Zero-cost commands** -- `/help`, `/start`, `/status`, `/tasks`, `/pending`, `/tools`, `/skills`, `/memory` answered deterministically without an LLM call (path-safe: `/Users/x/file.md` is a task, not a command)
 - **Full observability** -- live reasoning chain, audit trails, and **each step appearing in the dashboard as it runs** -- you watch the agent work in real time, not after the fact
 
 ### Example: Autonomous GitHub PR Operations
@@ -179,6 +179,8 @@ NexusMind does not run a goal like a one-shot script. It works **step by step, l
 
 **How this plays out in practice:** the agent creates a folder, writes `styles.css`, writes `main.js`, then writes `index.html` — resolving each step's success (or error) before the next one. If a step fails (a module is missing, an approval times out, a tool returns a bad result), the error lands in the transcript and the next decision fixes it: install the dependency, switch from `execute_code` to `write_file`, verify the files with `list_directory`/`read_file` — then declare the goal done. Steps appear **live in the dashboard** as they happen.
 
+> **Budgets & guardrails:** 40-step budget (`MAX_STEPS`), abort after 3 consecutive failures, 20k chars per `write_file`, bounded transcript (last 25 entries / 12k chars) + live TODO `todo_updates` (`add`/`complete`/`skip`, max 5/step, 30 cap). **Project collision guard:** `projects/<name>/` that existed before the task is blocked for `write_file` until you prove intent with `read_file`/`list_directory` — otherwise `BLOCKED: "…is an EXISTING project — read its files first or pick a new name (-2/v2)"`.
+
 ---
 
 ## Quick Start
@@ -277,11 +279,16 @@ Command: ./deploy.sh --prod
 [✅ Approve] [❌ Deny]
 ```
 
+### One-Approval-Per-Task Trust
+
+Once you approve one risky step in a task, the remaining risky steps in **that same task** auto-approve (reduces fatigue for multi-step goals). Trust is per-task and cleared on completion. Diagnostics & explicit control: `GET /api/approvals/trusted`, `GET /api/tasks/{id}/trust`, `POST /api/tasks/{id}/trust`.
+
 ### Dashboard Settings
 
 - **Settings page** — Select approval mode (Smart/Always/Never)
 - **Credentials page** — Add Telegram bot token + chat ID
 - **Approvals page** — View pending approvals (dashboard fallback)
+- Smart gate details: side-effect regex (`; | \` > && || $(`), 22 dangerous patterns + `is_dangerous_code` (`os.system`, `subprocess`, `shutil.rmtree`, `eval`/`exec`), `pathlib` scaffold to `projects/`/`output/` auto-approved when safe
 
 ---
 
@@ -309,9 +316,10 @@ NexusMind can monitor external platforms and react to events automatically -- no
 
 1. User creates a watcher via Dashboard or API
 2. Watcher polls the platform every N minutes (configurable)
-3. When new events are detected, agent is triggered automatically
-4. Agent processes the event (reviews PR, summarizes article, etc.)
-5. Token-efficient: only calls Gemini when there's actual work to do
+3. When new events are detected, watcher checks **memory-gated autonomy**: needs a matching standing instruction (`INSTRUCTION_KEYWORDS` per watcher, most-recent-wins substring match) — see `docs/capabilities.md` & `docs/user_guide.md`
+4. **No match?** Event is NOT silently dropped — it creates a `needs_instruction` task panel entry + hint, Telegram at most once per 6h per watcher. **Cron & Webhook** are pre-authorized (owner-authored goals skip the gate)
+5. With a matching instruction, agent processes the event (reviews PR, summarizes article, etc.)
+6. Token-efficient: only calls Gemini when there's actual work to do; deduped (`processed_ids` 1000→500) + dual persistence (`data/watcher_state.json` locally, Firestore on Cloud Run). Manual restore: `POST /api/watchers/restore` (also on startup)
 
 ### Example: Monitor GitHub PRs
 
@@ -357,27 +365,36 @@ Credentials are stored in `.env` (gitignored) and never exposed to the frontend 
 | `DELETE` | `/api/tasks/{id}` | Delete a task |
 | `GET` | `/api/approvals` | List pending approvals |
 | `POST` | `/api/approvals/{id}` | Approve or deny an action |
+| `GET` | `/api/approvals/trusted` | List trusted task IDs (one-approval-per-task diagnostics) |
+| `GET` | `/api/tasks/{id}/trust` | Check per-task trust flag |
+| `POST` | `/api/tasks/{id}/trust` | Trust/untrust a task (`{"trusted": bool}`) |
+| `GET` | `/api/traces` | List all execution traces |
+| `GET` | `/api/traces/{task_id}` | Detailed trace chain + summary |
 | `GET` | `/api/memory` | Search/list memory entries |
 | `POST` | `/api/memory` | Add a memory entry (auto-detects instruction phrasing) |
 | `DELETE` | `/api/memory/{id}` | Delete a memory entry |
 | `POST` | `/api/memory/delete` | Bulk delete memory entries |
 | `POST` | `/api/memory/clear/{category}` | Clear a memory category |
 | `POST` | `/api/memory/{id}/feedback` | Rate a memory helpful/unhelpful (trains trust score) |
-| `POST` | `/api/memory/query` | Compositional recall: search / probe / related / reason |
-| `GET` | `/api/memory/contradictions` | Facts making conflicting claims |
-| `GET` | `/api/skills` | Procedural skill index with usage telemetry + lifecycle states |
+| `POST` | `/api/memory/query` | Compositional recall: `search` / `probe` (entity-role) / `related` (structural) / `reason` (vector JOIN) — see `docs/capabilities.md` |
+| `GET` | `/api/memory/contradictions` | Facts sharing entities but conflicting (score=`overlap*(1-sim)`, ≥0.3) |
+| `GET` | `/api/skills` | Procedural skill index with usage telemetry + lifecycle states (stale 30d → archived 90d, pinned exempt, `.archive/`) |
 | `POST` | `/api/skills` | Create a skill (full SKILL.md or bare markdown) |
 | `GET` | `/api/skills/{name}` | Skill detail: frontmatter, markdown body, usage stats |
 | `DELETE` | `/api/skills/{name}` | Archive a skill (recoverable); `?purge=true` hard-deletes |
 | `POST` | `/api/skills/{name}/restore` | Restore the newest archived copy |
 | `GET` | `/api/skills/ledger` | Audit trail of every skill mutation (sha256-chained) |
-| `POST` | `/api/command` | Zero-cost deterministic commands (`/status`, `/tasks`, `/skills`, `/memory`...) — no LLM call |
+| `POST` | `/api/command` | Zero-cost deterministic commands (`/help`, `/start`, `/status`, `/tasks`, `/pending`, `/tools`, `/skills`, `/memory`...) — no LLM call |
 | `GET` | `/api/watchers` | List active event watchers |
+| `GET` | `/api/watchers/{id}` | Get single watcher status |
 | `POST` | `/api/watchers` | Create a new watcher |
 | `POST` | `/api/watchers/{id}/start` | Start a stopped watcher |
 | `POST` | `/api/watchers/{id}/stop` | Stop a running watcher |
 | `DELETE` | `/api/watchers/{id}` | Remove a watcher |
+| `POST` | `/api/watchers/restore` | Re-hydrate persisted watchers (also on startup) |
+| `POST` | `/api/webhooks` | Generic webhook ingress `{event_type, payload}` → task |
 | `GET` | `/api/credentials` | List all API keys and credentials |
+| `GET` | `/api/credentials/{key}` | Get single masked credential |
 | `POST` | `/api/credentials` | Save credentials to .env |
 | `DELETE` | `/api/credentials/{key}` | Remove a credential |
 | `GET` | `/api/approval-mode` | Get approval mode + Telegram status |
@@ -503,7 +520,7 @@ nexusmind-ai/
 │   ├── dashboard.html              # Live traceability dashboard
 │   ├── watcher_routes.py           # Watcher CRUD API endpoints
 │   └── credentials_routes.py       # Credentials management API
-├── tests/                          # 238 passing tests
+├── tests/                          # 250+ passing tests
 ├── projects/                       # Agent-generated multi-file builds (websites, apps)
 ├── data/                           # SQLite memory store (gitignored)
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
@@ -543,7 +560,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **238 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), the **adaptive step-by-step agent loop** (result feedback, self-correction, verification before done, failure guards, budget bounds), executor, orchestrator, API endpoints, and the ADK integration (agent creation, callbacks, Runner path, API routing).
+All **250+ tests** covering models, memory (hybrid retrieval, HRR, trust scoring, hygiene/contradictions), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), the **adaptive step-by-step agent loop** (result feedback, self-correction, verification before done, failure guards, budget bounds, project collision guard, live TODO checklist), executor (smart approval, one-approval-per-task trust), orchestrator, API endpoints, watchers, and the ADK integration (agent creation, callbacks, Runner path, API routing).
 
 ---
 
@@ -553,17 +570,20 @@ All **238 tests** covering models, memory (hybrid retrieval, HRR, trust scoring)
 |----------|----------|-------------|
 | `GEMINI_API_KEY` | Yes | Gemini API key(s), comma-separated for rotation |
 | `GEMINI_MODEL` | Yes | Model name (default: `gemini-3.5-flash`) |
+| `GEMINI_FULL_CONTROL` | No | `true` (default) — Gemini controls tool/file naming & memory policy; heuristics are fallback |
 | `DATABASE_BACKEND` | No | `sqlite` (local) or `firestore` (Cloud Run) |
 | `GITHUB_DEFAULT_REPO` | No | Default `owner/repo` when goal says "my repository" |
 | `GOOGLE_CLOUD_PROJECT` | For cloud | GCP project ID |
 | `GOOGLE_CLOUD_REGION` | For cloud | GCP region (default: `us-central1`) |
 | `GOOGLE_SEARCH_API_KEY` | No | Google Custom Search API key |
 | `GOOGLE_SEARCH_CX` | No | Google Custom Search engine ID |
-| `APPROVAL_MODE` | No | `smart` (default), `always`, or `never` |
+| `APPROVAL_MODE` | No | `smart` (default), `always`, or `never` (aliases: `ask_everytime`→`always`) |
 | `TELEGRAM_BOT_TOKEN` | No | Telegram bot token from @BotFather |
 | `TELEGRAM_CHAT_ID` | No | Your Telegram chat ID from @userinfobot |
+| `TELEGRAM_APPROVAL_TIMEOUT` | No | Approval timeout seconds (default: `300`) |
 | `GITHUB_TOKEN` | No | GitHub Personal Access Token |
 | `GITLAB_TOKEN` | No | GitLab Personal Access Token |
+| `GITLAB_BASE_URL` | No | GitLab self-hosted base URL (default: `https://gitlab.com`) |
 | `SLACK_BOT_TOKEN` | No | Slack Bot Token (`xoxb-...`) |
 | `DISCORD_BOT_TOKEN` | No | Discord Bot Token |
 | `JIRA_DOMAIN` | No | Jira domain (e.g., `company.atlassian.net`) |
@@ -572,6 +592,12 @@ All **238 tests** covering models, memory (hybrid retrieval, HRR, trust scoring)
 | `EMAIL_IMAP_SERVER` | No | IMAP server (e.g., `imap.gmail.com`) |
 | `EMAIL_ADDRESS` | No | Email address |
 | `EMAIL_PASSWORD` | No | App password for email |
+| `AGENT_MAX_STEPS` | No | Max steps per task (default: `20`, loop budget `40`) |
+| `AGENT_TIMEOUT_SECONDS` | No | Step timeout seconds (default: `300`) |
+| `AGENT_MEMORY_MAX_ITEMS` | No | Memory cap (default: `1000`) |
+| `WATCHER_DEFAULT_INTERVAL` | No | Watcher poll seconds (default: `300`) |
+| `WATCHER_MAX_CONCURRENT` | No | Max concurrent watchers (default: `10`) |
+| `API_HOST` | No | API host (default: `0.0.0.0`) |
 | `API_PORT` | No | API port (default: `8080`) |
 | `ENVIRONMENT` | No | `development` or `production` |
 
