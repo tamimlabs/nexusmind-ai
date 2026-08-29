@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | **What is it?** | An autonomous task-execution agent |
-| **How does it work?** | You give it a goal → it plans steps → executes tools → learns from results |
+| **How does it work?** | You give it a goal → it plans, then executes **step by step** (one action at a time, learning from each real result) → learns from results |
 | **What makes it different?** | It self-corrects on failure, asks for permission on risky actions, follows your standing instructions, and improves over time |
 | **Built for** | Google "All Things Agentic" Hackathon, Track: The Taskmaster |
 
@@ -65,18 +65,19 @@ When a goal mentions repos or pull requests, NexusMind doesn't gamble on free-fo
 
 Action goals never degrade into a generic web search — if you ask it to review your PRs, it reviews your PRs.
 
-### 4. Self-Correction on Failure
-When a tool fails, NexusMind doesn't give up. It:
-1. Sends the error to Gemini Flash
-2. Analyzes what went wrong
-3. Adjusts its arguments and approach
-4. Retries automatically (up to 2 times)
+### 4. Adaptive Step-by-Step Execution (opencode-style)
+NexusMind does **not** run a goal as a one-shot script. It works like a programmer in an IDE: it decides ONE action, executes it, and feeds the **real outcome — including errors — back into the very next decision**.
 
-And there's a guardrail: **a failed action tool can never quietly get switched to `web_search` during self-correction.** If the agent was supposed to act, it keeps trying to act.
+- **Decide → Execute → Observe** — one Gemini call per step picks the single next action; the true result (not the hoped-for one) becomes the transcript the next decision sees
+- **Self-corrects from errors** — a failed step (missing dependency, approval timeout, bad result) lands in the transcript and the next decision fixes it: install the module, switch tools, verify the files
+- **Verifies before done** — steps like `list_directory` / `read_file` confirm the artifacts actually exist before the agent declares success
+- **Keeps working until satisfied** — a generous 40-step budget lets ambitious builds (like a full multi-file website) run start-to-finish instead of being batched into one giant call that can truncate
+- **Live progress** — every step is appended to the task in real time, so the dashboard shows the agent working step by step, not after the fact
+- **Guardrail:** a failed action tool can never quietly get switched to `web_search` during self-correction. If the agent was supposed to act, it keeps trying to act
 
-> **Step 1 fails:** "File /data.csv not found"
-> **Agent thinks:** "The file path might be wrong. Let me list the directory first."
-> **Step 2 retries:** Lists files → finds correct path → continues successfully
+> **Step 3 fails:** "File /data.csv not found"
+> **Agent sees the error and thinks:** "The path might be wrong — let me list the directory first."
+> **Step 4:** Lists files → finds the correct path → **Step 5 continues and the goal completes**
 
 ### 5. Human-in-the-Loop Approval (Smart, Dashboard + Telegram)
 High-risk actions require human approval, but with **smart logic**:
@@ -181,7 +182,7 @@ Adapted from Hermes and OpenClaw — the right action happens without wasting mo
 - **Dynamic tool catalog:** the planner prompt is generated from the live tool registry (name + docstring), so prompts can never drift from what actually exists
 - **Hallucinated-tool repair ladder:** if Gemini plans a step with a nonexistent tool, it's repaired locally — normalize separators → strip `_tool` suffix → alias map (`"search"` → `web_search`) → fuzzy match ≥ 0.7
 - **Corrective re-plan with catalog feedback:** unrepairable tools trigger exactly ONE corrective round where the planner receives the valid-tool list; still-invalid steps are dropped deterministically instead of failing at runtime
-- **Truncate-tolerant plan salvage:** if Gemini's response is cut off by output-token limits (common for ambitious goals), completed steps are recovered from the partial JSON instead of discarding the whole plan; the planner budget was raised to 8,192 tokens and prompts forbid inlining large file content (generate it programmatically instead)
+- **Truncate-tolerant plan salvage:** if Gemini's response is cut off by output-token limits (common for ambitious goals), completed steps are recovered from the partial JSON instead of discarding the whole plan; the planner budget is 16,384 tokens and prompts forbid inlining large file content — the plan is a **best-effort roadmap**, and real execution is the adaptive step-by-step loop that reacts to actual results
 - **No-template builds:** every website, app, and landing page is authored by Gemini itself from the user's exact command plus recalled memory context. There are **no hardcoded scaffolds, no invented branding, and no stock images** — plans (or salvaged partial plans) are executed as the model wrote them, and when the planner genuinely cannot respond, the agent reports honestly instead of fabricating output
 
 ### 14. Unified Credentials Management
@@ -200,9 +201,9 @@ Every step is logged and visible in real-time:
 
 ### 16. Multi-Step Task Decomposition
 Complex goals are automatically broken into manageable steps:
-- Dependencies are resolved (step A before step B)
-- Each step maps to a specific tool
-- Results flow between steps (output of step 1 becomes input for step 2)
+- Gemini produces a **best-effort roadmap** up front (dependencies resolved, each step mapped to a tool, results flowing step-to-step)
+- Execution is **adaptive** — the roadmap is a starting point, not a script: unexpected errors just change the path, never kill the task
+- If planning fails or truncates, the agent still starts working — the step-by-step loop handles anything the roadmap didn't cover
 
 ---
 
@@ -231,7 +232,7 @@ Complex goals are automatically broken into manageable steps:
 | **API** | FastAPI (Python) |
 | **Frontend** | Real-time traceability dashboard |
 | **Language** | Python 3.11+ |
-| **Testing** | 100+ Passing Tests |
+| **Testing** | 238 Passing Tests |
 
 ---
 
@@ -264,16 +265,16 @@ User submits goal
 
 ## Why This Matters
 
-Most AI agents today are **reactive** — they wait for instructions and execute one step at a time.
+Most AI agents today are **reactive** — they wait for instructions.
 
 NexusMind is **autonomous, with guardrails**:
-- It plans without being told how
+- It plans without being told how — then works **step by step, one action at a time**, reading each real result before the next move
 - It recovers from failures without being asked — and never swaps action goals for lazy web searches
 - It asks permission before doing anything risky (via dashboard or Telegram)
 - It follows your standing instructions — and its watchers refuse to act without them
 - It learns from every task and improves over time
 
-Give it a goal or a standing instruction, and it keeps working — planning, self-correcting, and learning as it goes.
+Give it a goal or a standing instruction, and it keeps working — deciding, executing, self-correcting, and learning as it goes, visible in the dashboard every step of the way.
 
 This is what "agentic" means — an AI that takes initiative within boundaries you define.
 

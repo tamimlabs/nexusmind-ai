@@ -67,14 +67,14 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
 
 ### What It Can Do
 
-- **Autonomous multi-step execution** -- decomposes a goal into steps, runs tools, retries with self-correction
+- **Step-by-step adaptive execution** (opencode-style) -- Gemini decides ONE action at a time, the real result (or error) of each step drives the next decision: self-correct, verify, and keep working until the goal is actually met
 - **Human-in-the-loop safety** -- dangerous actions pause for approval via Telegram or dashboard
 - **Persistent cross-session memory** -- SQLite locally; Firestore on Cloud Run, with hybrid retrieval (BM25 + HRR) and trust scoring
 - **Self-evolving skills** -- solved tasks become reusable SKILL.md packages with usage telemetry and an audit ledger
 - **11 automated watchers** -- continuously monitors GitHub, GitLab, Slack, Discord, Jira, Reddit, Hacker News, Email, RSS, Cron, and Webhooks, triggering workflows when new events are detected
 - **Builds real artifacts** -- generates complete multi-file projects (`projects/<name>/`: HTML/CSS/JS + backend server)
 - **Zero-cost commands** -- `/status`, `/tasks`, `/skills` answered deterministically without an LLM call
-- **Full observability** -- live reasoning chain, step-by-step traces, and audit trails in the dashboard
+- **Full observability** -- live reasoning chain, audit trails, and **each step appearing in the dashboard as it runs** -- you watch the agent work in real time, not after the fact
 
 ### Example: Autonomous GitHub PR Operations
 
@@ -130,6 +130,7 @@ Store task outcome + reflect into memory
                         │        Orchestrator           │
                         │  ┌────────────────────────┐  │
                         │  │  Gemini 3.5 Planner    │──┼-- Step decomposition
+                        │  │  Adaptive Step Loop    │──┼-- Decide -> Execute -> Observe
                         │  │  Tool Executor         │──┼-- Sandboxed execution
                         │  │  Self-Correction       │──┼-- Error -> Gemini -> Retry
                         │  │  Approval Gate         │──┼-- Human-in-the-loop
@@ -151,24 +152,32 @@ Store task outcome + reflect into memory
 
 ## The Agent Loop
 
+NexusMind does not run a goal like a one-shot script. It works **step by step, like a programmer in an IDE**: it decides ONE action, executes it, and feeds the real outcome — including errors — back into the very next decision. It corrects what failed, verifies results before finishing, and keeps going for as long as a big project needs (bounded only by a generous step budget).
+
 ```
-   Goal --> Plan (Gemini) --> Execute Tool --> Success? --Yes--> Next Step
-               ^                                  |
-               |                                  No
-               |                                  v
-               +---- Self-Correct (Gemini) <-- Analyze Error
-                                                 |
-                                        Smart Approval Check
-                                        |                  |
-                                   Dangerous           Safe command
-                                        |                  |
-                                  Telegram Bot        Auto-approve
-                                  (or Dashboard)
-                                        |
-                                   Approve / Deny
-                                        |
-                                   Continue / Stop
+   Goal + recalled memory + workspace state
+          |
+          v
+   LOOK: transcript of everything done so far
+          |
+          v
+   DECIDE the single next action (Gemini) ----------------+
+          |                                              |
+    write_file / execute_code / web_search / ...         |
+          |                                              |
+    Execute THAT ONE action (smart approval applies)     |
+          |                                              |
+   Record the real RESULT (or ERROR) into transcript ----+
+          |
+          v
+   Goal satisfied & verified?  --> No --> back to DECIDE
+          |
+         Yes
+          v
+     DONE: written summary + saved file locations
 ```
+
+**How this plays out in practice:** the agent creates a folder, writes `styles.css`, writes `main.js`, then writes `index.html` — resolving each step's success (or error) before the next one. If a step fails (a module is missing, an approval times out, a tool returns a bad result), the error lands in the transcript and the next decision fixes it: install the dependency, switch from `execute_code` to `write_file`, verify the files with `list_directory`/`read_file` — then declare the goal done. Steps appear **live in the dashboard** as they happen.
 
 ---
 
@@ -451,6 +460,7 @@ nexusmind-ai/
 ├── agent/                          # Core agent logic
 │   ├── core/
 │   │   ├── planner.py              # Task decomposition via Gemini
+│   │   ├── agent_loop.py           # Adaptive step-by-step execution loop (opencode-style)
 │   │   ├── executor.py             # Tool execution + smart approval
 │   │   ├── gemini_client.py        # Multi-key Gemini client
 │   │   └── memory/                 # Hermes-inspired memory system
@@ -493,7 +503,7 @@ nexusmind-ai/
 │   ├── dashboard.html              # Live traceability dashboard
 │   ├── watcher_routes.py           # Watcher CRUD API endpoints
 │   └── credentials_routes.py       # Credentials management API
-├── tests/                          # 200 passing tests
+├── tests/                          # 238 passing tests
 ├── projects/                       # Agent-generated multi-file builds (websites, apps)
 ├── data/                           # SQLite memory store (gitignored)
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
@@ -516,7 +526,7 @@ nexusmind-ai/
 | Plan salvage + JSON repair | Hermes + OpenClaw | Truncated plans recovered step-by-step; **zero templates** — every site/app is authored by Gemini from the user's command + recalled memory, with no hardcoded scaffolds or stock imagery |
 | Self-improvement reflection | Hermes | Post-task Gemini reflection saves learnings |
 | Event-driven scheduling | Hermes | Cloud Pub/Sub replaces in-process cron |
-| Self-correcting retry loops | Custom | Error analysis -> Gemini -> parameter adjustment -> retry |
+| Adaptive step-by-step loop | Custom (opencode-style) | The agent decides one action at a time; each real result or error feeds the next decision — self-correcting, verifying files before done, kept working up to a generous budget |
 | Human-in-the-loop approval | Custom | Smart approval gate with Telegram bot for remote control |
 | Transparent traceability | Custom | In-memory trace collector -> live dashboard |
 | Multi-key rotation | Custom | Round-robin with rate-limit backoff |
@@ -533,7 +543,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **220 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, API endpoints, and the ADK integration (agent creation, callbacks, Runner path, API routing).
+All **238 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), the **adaptive step-by-step agent loop** (result feedback, self-correction, verification before done, failure guards, budget bounds), executor, orchestrator, API endpoints, and the ADK integration (agent creation, callbacks, Runner path, API routing).
 
 ---
 

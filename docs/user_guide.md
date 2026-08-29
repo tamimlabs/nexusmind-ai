@@ -35,7 +35,7 @@
 
 ## What NexusMind Does for You
 
-Give it a goal in plain English — *"summarize today's AI news"* or *"review open PRs in my repo"* — and it **plans the steps, runs the tools, handles errors, and asks you only when something risky needs permission.** 
+Give it a goal in plain English — *"summarize today's AI news"* or *"review open PRs in my repo"* — and it **works step by step: plans the path, runs one action at a time, reads each real result before the next move, handles errors, and asks you only when something risky needs permission.** 
 
 It can also **watch** GitHub, Slack, Jira, Reddit, Hacker News, Email and 6 more platforms 24/7 and act automatically when something new appears.
 
@@ -183,7 +183,8 @@ You should see the NexusMind dashboard with a green **● Agent is online** indi
 2. Type your goal in plain English — just like you'd tell a teammate
 3. Click the green **Run** button
 4. Watch the **Thinking** tab on the right — it streams the agent's reasoning live
-5. When finished, the result appears in the center panel with a full step breakdown
+5. The agent works **one step at a time**: each decision, tool call, and result (or error) lands in the **Trace** panel as it happens, so you see the agent self-correct and keep going in real time
+6. When finished, the result appears in the center panel with a full step breakdown
 
 ### Try These Examples (Copy-Paste)
 
