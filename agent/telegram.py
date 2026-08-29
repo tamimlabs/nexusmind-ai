@@ -6,6 +6,7 @@ User can approve from their phone — agent continues autonomously.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import time
@@ -16,6 +17,18 @@ import httpx
 from agent.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _esc(text: str) -> str:
+    """Escape HTML entities in DYNAMIC text.
+
+    Telegram messages use parse_mode=HTML, so any raw user/agent content
+    (goals, tool output, file snippets — e.g. a scaffold starting with
+    `<!DOCTYPE html>`) crashes the API with "can't parse entities". Only the
+    static <b>/<code> markup we author ourselves is safe; everything dynamic
+    must be escaped first.
+    """
+    return html.escape(text or "", quote=False)
 
 # Telegram Bot API base URL
 TELEGRAM_API = "https://api.telegram.org/bot{token}"
@@ -60,6 +73,15 @@ async def send_message(text: str, reply_markup: dict | None = None) -> dict[str,
             resp = await client.post(_get_api_url("sendMessage"), data=payload)
             data = resp.json()
             if not data.get("ok"):
+                desc = (data.get("description") or "").lower()
+                # Dynamic content (raw HTML, code, Slack/Discord mentions)
+                # breaks parse_mode=HTML — retry once as plain text so the
+                # message (and inline buttons) always go through.
+                if "can't parse entities" in desc or "parse mode" in desc:
+                    payload.pop("parse_mode", None)
+                    resp = await client.post(_get_api_url("sendMessage"), data=payload)
+                    data = resp.json()
+            if not data.get("ok"):
                 logger.error("Telegram sendMessage failed: %s", data.get("description"))
                 return None
             return data.get("result")
@@ -85,6 +107,12 @@ async def edit_message(message_id: int, text: str) -> bool:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(_get_api_url("editMessageText"), data=payload)
             data = resp.json()
+            if not data.get("ok"):
+                desc = (data.get("description") or "").lower()
+                if "can't parse entities" in desc or "parse mode" in desc:
+                    payload.pop("parse_mode", None)
+                    resp = await client.post(_get_api_url("editMessageText"), data=payload)
+                    data = resp.json()
             return data.get("ok", False)
     except Exception:
         logger.debug("Telegram edit_message failed")
@@ -127,12 +155,12 @@ async def request_approval_via_telegram(
     msg_lines = [
         "🔐 <b>Approval Required</b>",
         "",
-        f"<b>Task:</b> {task_goal[:100]}" if task_goal else "",
-        f"<b>Tool:</b> <code>{tool_name}</code>",
-        f"<b>Action:</b> {description[:200]}",
+        f"<b>Task:</b> {_esc(task_goal[:100])}" if task_goal else "",
+        f"<b>Tool:</b> <code>{_esc(tool_name)}</code>",
+        f"<b>Action:</b> {_esc(description[:200])}",
     ]
     if extra_info:
-        msg_lines.append(f"\n<b>Details:</b> {extra_info[:200]}")
+        msg_lines.append(f"\n<b>Details:</b> {_esc(extra_info[:200])}")
     msg_lines.extend([
         "",
         "⏱ Timeout: 5 minutes",
@@ -217,8 +245,8 @@ async def handle_callback_query(callback_query: dict[str, Any]) -> None:
         status = "✅ Approved" if approved else "❌ Denied"
         new_text = (
             f"{status}\n"
-            f"<b>Tool:</b> <code>{tool_name}</code>\n"
-            f"🆔 <code>{step_id[:12]}</code>"
+            f"<b>Tool:</b> <code>{_esc(tool_name)}</code>\n"
+            f"🆔 <code>{_esc(step_id[:12])}</code>"
         )
         await edit_message(msg_id, new_text)
 
@@ -257,8 +285,8 @@ async def notify_task_started(task_id: str, goal: str) -> None:
     """Notify user that a task has started."""
     await send_message(
         f"🚀 <b>Task Started</b>\n"
-        f"<b>Goal:</b> {goal[:200]}\n"
-        f"🆔 <code>{task_id[:12]}</code>"
+        f"<b>Goal:</b> {_esc(goal[:200])}\n"
+        f"🆔 <code>{_esc(task_id[:12])}</code>"
     )
 
 
@@ -266,9 +294,9 @@ async def notify_task_completed(task_id: str, goal: str, result: str) -> None:
     """Notify user that a task completed."""
     await send_message(
         f"✅ <b>Task Completed</b>\n"
-        f"<b>Goal:</b> {goal[:200]}\n"
-        f"<b>Result:</b> {result[:300]}\n"
-        f"🆔 <code>{task_id[:12]}</code>"
+        f"<b>Goal:</b> {_esc(goal[:200])}\n"
+        f"<b>Result:</b> {_esc(result[:300])}\n"
+        f"🆔 <code>{_esc(task_id[:12])}</code>"
     )
 
 
@@ -276,9 +304,9 @@ async def notify_task_failed(task_id: str, goal: str, error: str) -> None:
     """Notify user that a task failed."""
     await send_message(
         f"❌ <b>Task Failed</b>\n"
-        f"<b>Goal:</b> {goal[:200]}\n"
-        f"<b>Error:</b> {error[:300]}\n"
-        f"🆔 <code>{task_id[:12]}</code>"
+        f"<b>Goal:</b> {_esc(goal[:200])}\n"
+        f"<b>Error:</b> {_esc(error[:300])}\n"
+        f"🆔 <code>{_esc(task_id[:12])}</code>"
     )
 
 

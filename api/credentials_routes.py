@@ -5,15 +5,14 @@ Reads/writes .env file safely. Never exposes full secrets to frontend.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/api/credentials", tags=["credentials"])
+from agent.config import _ENV_FILE
 
-_ENV_FILE = Path(".env")
+router = APIRouter(prefix="/api/credentials", tags=["credentials"])
 
 # All supported credential fields grouped by category
 CREDENTIAL_FIELDS: dict[str, list[dict[str, Any]]] = {
@@ -176,11 +175,14 @@ async def save_credentials(req: SaveCredentialsRequest):
     if to_save:
         _write_env(to_save)
         os.environ.update(to_save)
-        # Reload the global settings singleton used by orchestrator/executor
+        # Reload the shared settings singleton IN PLACE so every module
+        # (telegram, gemini_client, api.main) sees the new values immediately —
+        # and persisted to the project-root .env, not the process CWD.
         import agent.config
-        agent.config.settings = agent.config.Settings()
+        agent.config.reload_settings()
 
-    return {"saved": list(to_save.keys()), "count": len(to_save)}
+    saved = list(to_save.keys())
+    return {"saved": saved, "count": len(saved)}
 
 
 @router.delete("/{key}")
@@ -193,7 +195,9 @@ async def delete_credential(key: str):
     new_lines = [line for line in lines if not line.strip().startswith(f"{key}=")]
     _ENV_FILE.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
-    # Remove from os.environ
+    # Remove from os.environ and refresh running config
     os.environ.pop(key, None)
+    import agent.config
+    agent.config.reload_settings()
 
     return {"deleted": key}

@@ -14,6 +14,12 @@ from pydantic_settings import BaseSettings
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# Single source of truth for the .env path. Everything that reads/writes .env
+# MUST use this — CWD-relative Path(".env") breaks on new machines where the
+# server is launched from a different directory (credentials get written to a
+# .env that Settings never reads).
+_ENV_FILE = _PROJECT_ROOT / ".env"
+
 
 def _load_dotenv() -> None:
     """Load .env file into os.environ so all modules can access env vars."""
@@ -129,3 +135,30 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def reload_settings() -> None:
+    """Re-sync the shared ``settings`` singleton from .env + os.environ IN PLACE.
+
+    Credentials saved at runtime must take effect immediately. Modules that did
+    ``from agent.config import settings`` at import time (telegram,
+    gemini_client, api.main) hold a reference to THIS object, so mutating it
+    propagates everywhere — reassigning the module global would leave them
+    staring at the stale pre-save config.
+
+    Also refreshes cached snapshots (Gemini key rotator) so newly added API
+    keys are usable without a server restart.
+    """
+    fresh = Settings()
+    for field_name in type(fresh).model_fields:
+        try:
+            setattr(settings, field_name, getattr(fresh, field_name))
+        except Exception:
+            # Non-assertable private/legacy fields are fine to skip
+            continue
+    try:
+        from agent.core.gemini_client import rotator
+
+        rotator.refresh()
+    except Exception:
+        pass

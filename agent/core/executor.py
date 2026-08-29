@@ -136,6 +136,11 @@ def is_safe_command(command: str) -> bool:
     """Check if a shell command is safe (read-only, no side effects)."""
     cmd = command.strip().lower()
 
+    # mkdir under allowed roots (projects/, output/) is safe — auto-approve
+    if re.match(r"mkdir\s+(-p\s+)?(projects/|output/)", cmd) and ".." not in cmd and not re.search(r"\s/|\s[a-z]:", cmd):
+        # Only allow relative paths with no traversal
+        return True
+
     # Check exact matches and prefix matches
     for safe in _SAFE_COMMANDS:
         if cmd == safe or cmd.startswith(safe + " "):
@@ -212,6 +217,15 @@ def needs_approval(tool_name: str, tool_args: dict[str, Any]) -> bool:
             if is_dangerous_code(code):
                 logger.warning("Dangerous code detected")
                 return True
+            # Scaffold under allowed roots (projects/ / output/) via pathlib is safe — auto-approve
+            # Avoids blocking portfolio/website builds which always use `import pathlib` + write_text.
+            # Only block if it contains actual traversal like "../" or "projects/.." or dangerous ops.
+            if "pathlib" in code and ("projects/" in code or "output/" in code):
+                has_traversal = bool(re.search(r"\.\./|projects/\.\.|output/\.\.", code))
+                has_dangerous = bool(re.search(r"os\.system|subprocess|shutil\.rmtree|os\.remove|rm\s+-rf", code))
+                if not has_traversal and not has_dangerous:
+                    logger.info("Auto-approving safe pathlib scaffold to projects/output")
+                    return False
             # Simple read-only code — auto-approve
             if not any(d in code for d in ["open(", "os.", "shutil.", "subprocess", "import"]):
                 logger.info("Auto-approving read-only code")
@@ -314,9 +328,6 @@ async def wait_for_approval(step_id: str, timeout: float = 300) -> bool:
         return result
     except TimeoutError:
         logger.warning("Approval timed out for step %s", step_id)
-        return False
-    except asyncio.TimeoutError:
-        logger.warning("Approval timed out (asyncio) for step %s", step_id)
         return False
 
 
@@ -584,12 +595,15 @@ async def _gemini_derive_write_path(description: str, context: dict[str, Any] | 
             max_tokens=64,
         )
         candidate = raw.strip().splitlines()[0].strip().strip("'\"` ")
-        # Basic validation: must be relative and inside allowed roots
-        if candidate and not candidate.startswith("/") and not candidate.startswith(".."):
-            if candidate.startswith(("output/", "projects/")):
-                # sanitize — no absolute, no traversal
-                if ".." not in candidate and candidate.count("/") >= 1:
-                    return candidate
+        # Basic validation: must be relative and inside allowed roots, no traversal
+        if (
+            candidate
+            and not candidate.startswith(("/", ".."))
+            and candidate.startswith(("output/", "projects/"))
+            and ".." not in candidate
+            and candidate.count("/") >= 1
+        ):
+            return candidate
         logger.warning("Gemini file path invalid (%r), using deterministic fallback", candidate)
     except Exception:
         logger.debug("Gemini file naming failed, using fallback", exc_info=True)
@@ -619,6 +633,27 @@ def _scratch_dir() -> Path:
 _EXEC_TIMEOUT = 60  # seconds; patched low in tests
 
 
+def _env_snapshot() -> dict[str, str]:
+    """Project .env as a dict for child-process environments.
+
+    Uses the project-root .env (agent.config._ENV_FILE) — NOT CWD-relative —
+    so subprocesses see the same credentials Settings uses on any machine.
+    """
+    from agent.config import _ENV_FILE
+
+    env: dict[str, str] = {}
+    try:
+        if _ENV_FILE.exists():
+            for line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    env[k.strip()] = v.strip().strip("'\"")
+    except Exception:
+        logger.debug("Could not read project .env", exc_info=True)
+    return env
+
+
 @register_tool("execute_code", high_risk=True)
 async def execute_code(code: str, language: str = "python", **_: Any) -> ToolResult:
     """Execute code in a sandboxed subprocess."""
@@ -627,13 +662,7 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
 
     # Load .env vars into subprocess environment
     env = os.environ.copy()
-    env_file = Path(".env")
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key_part, _sep, value_part = line.partition("=")
-                env[key_part.strip()] = value_part.strip().strip("'\"")
+    env.update(_env_snapshot())
 
     # WinError 32 fix: fully CLOSE our handle BEFORE spawning the child
     # (NamedTemporaryFile held it open for the whole run), and delete
@@ -676,16 +705,29 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
 
 @register_tool("run_command", high_risk=True)
 async def run_command(command: str, **_: Any) -> ToolResult:
-    """Run a shell command."""
-    # Load .env vars into subprocess environment
+    """Run a shell command. Handles mkdir cross-platform via pathlib when possible."""
+    # Cross-platform fix: mkdir -p fails on Windows CMD. Intercept and use pathlib.
+    m = re.match(r"^\s*mkdir\s+(?:-p\s+)?(.+)\s*$", command.strip(), re.IGNORECASE)
+    if m:
+        raw_paths = m.group(1).strip()
+        # Split on space (support "mkdir -p a b c")
+        for part in re.split(r"\s+", raw_paths):
+            p = part.strip().strip("'\"")
+            if not p or ".." in p or p.startswith("/") or re.match(r"^[a-zA-Z]:", p):
+                continue
+            # Only allow projects/ and output/ trees
+            if not (p.startswith("projects/") or p.startswith("output/") or p.startswith("projects\\") or p.startswith("output\\")):
+                continue
+            try:
+                Path(p).mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                return ToolResult(success=False, output="", error=f"mkdir failed for {p}: {exc}")
+        # Verify at least one was created
+        return ToolResult(success=True, output=f"Created directories: {raw_paths}")
+
+    # Load .env vars into subprocess environment (project-root .env)
     env = os.environ.copy()
-    env_file = Path(".env")
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key_part, _sep, value_part = line.partition("=")
-                env[key_part.strip()] = value_part.strip().strip("'\"")
+    env.update(_env_snapshot())
 
     try:
         proc = await asyncio.create_subprocess_shell(

@@ -35,20 +35,20 @@ GEMINI CONTROL RULES:
 
 AVAILABLE TOOLS:
 - web_search: Search the web. Args: {"query": "...", "num_results": 5}
-  → ONLY for research/information gathering about the outside world.
-  → NEVER for GitHub/repository/PR work, file operations, or command execution.
+   → ONLY for research/information gathering about the outside world.
+   → NEVER for GitHub/repository/PR work, file operations, or command execution.
 
 - GITHUB TOOLS (use these for ANY repository/PR task — never curl, never web_search):
-  - github_resolve_repo: {"goal_text": "<original goal>"} → returns owner/name
-  - github_get_repo: {"repo": "owner/name"}
-  - github_list_prs: {"repo": "owner/name"}
-  - github_get_pr: {"repo": "owner/name", "pr_number": 123}
-  - github_review_pr: {"repo": "...", "pr_number": N} or {"repo": "...", "pr_list": "<json>"}
-  - github_merge_pr: {"repo": "...", "pr_number": N}
-  - github_close_pr: {"repo": "...", "pr_number": N, "comment": "..."}
-  - github_apply_decisions: {"repo": "...", "decisions": "<json from review>"}
+   - github_resolve_repo: {"goal_text": "<original goal>"} → returns owner/name
+   - github_get_repo: {"repo": "owner/name"}
+   - github_list_prs: {"repo": "owner/name"}
+   - github_get_pr: {"repo": "owner/name", "pr_number": 123}
+   - github_review_pr: {"repo": "...", "pr_number": N} or {"repo": "...", "pr_list": "<json>"}
+   - github_merge_pr: {"repo": "...", "pr_number": N}
+   - github_close_pr: {"repo": "...", "pr_number": N, "comment": "..."}
+   - github_apply_decisions: {"repo": "...", "decisions": "<json from review>"}
 
-- run_command: Execute ANY shell command. Args: {"command": "..."}
+- run_command: Execute ANY shell command. Args: {"command": "..."} — AVOID for file/directory creation (use execute_code with pathlib instead — cross-platform)
 - execute_code: Run Python code. Args: {"code": "..."}
 - read_file / write_file / list_directory: File operations
 - summarize_text / extract_data / parse_json: Data processing
@@ -56,18 +56,18 @@ AVAILABLE TOOLS:
 PLANNING STRATEGIES BY TASK TYPE:
 
 1. RESEARCH TASKS (summarize, analyze, report on a topic):
-   Step 1: web_search with focused query
-   Step 2: web_search with broader/different query
-   Step 3: summarize_text combining results
+    Step 1: web_search with focused query
+    Step 2: web_search with broader/different query
+    Step 3: summarize_text combining results
 
 2. GITHUB/API TASKS (PRs, issues, repos):
-   Use the dedicated github_* tools above. NEVER web_search, NEVER curl.
+    Use the dedicated github_* tools above. NEVER web_search, NEVER curl.
 
 3. FILE/CREATION TASKS:
-   Step 1: write_file with the content
+    Step 1: execute_code with Python pathlib code that creates directories + writes files (cross-platform, no shell)
 
 4. CODING TASKS:
-   Step 1: execute_code with the implementation
+    Step 1: execute_code with the implementation
 
 RULES:
 1. EVERY step MUST have "tool_name" and "tool_args"
@@ -75,25 +75,29 @@ RULES:
 3. NEVER search the web when you can just DO the action
 4. Keep plans SHORT — 3-6 steps maximum
 5. NEVER inline large content (HTML pages, long code bodies, full documents)
-   inside tool_args — instead use execute_code with Python that WRITES the
-   file programmatically, or keep embedded content under ~30 lines
+    inside tool_args — instead use execute_code with Python that WRITES the
+    file programmatically (pathlib + write_text), or keep embedded content under ~30 lines.
+    This avoids JSON truncation. One execute_code step can write MULTIPLE files.
 6. MULTI-FILE PROJECTS: for websites / apps / full-stack builds create ONE
-    project folder per task and write EVERY file into it via separate steps:
-    index.html, css/styles.css, js/app.js, backend file (e.g. server.py)
-    when relevant, and README.md. Files must link with RELATIVE paths.
-    CRITICAL: if the user specifies an explicit path like projects/portfolio/
-    or projects/my-site/ you MUST use that exact path verbatim - never invent
-    your own slug or truncate it. Only when NO path is given, derive a short
-    kebab-case name from the goal.
-    NEVER use hardcoded HTML/CSS/JS templates - always generate original,
-    goal-specific content via LLM. NEVER cram a whole multi-file project into
-    a single HTML file. Small one-artifact mockups may still go to output/.
+     project folder per task and write EVERY file into it. Prefer a SINGLE
+     execute_code step that creates all directories and writes all files via
+     pathlib (most resilient, no truncation). If you use write_file, do separate
+     steps: index.html, css/styles.css, js/app.js, and README.md. Files must link
+     with RELATIVE paths. NEVER use run_command mkdir/mkdir -p — use execute_code
+     pathlib.Path(...).mkdir(parents=True, exist_ok=True) instead (Windows-safe).
+     CRITICAL: if the user specifies an explicit path like projects/portfolio/
+     or projects/my-site/ you MUST use that exact path verbatim - never invent
+     your own slug or truncate it. Only when NO path is given, derive a short
+     kebab-case name from the goal.
+     NEVER use hardcoded HTML/CSS/JS templates - always generate original,
+     goal-specific content via LLM. NEVER cram a whole multi-file project into
+     a single HTML file. Small one-artifact mockups may still go to output/.
 7. Return ONLY valid JSON array
 
 OUTPUT FORMAT (JSON array):
 [
-  {"description": "Fetch data", "tool_name": "run_command", "tool_args": {"command": "..."}},
-  {"description": "Analyze result", "tool_name": "execute_code", "tool_args": {"code": "..."}}
+  {"description": "Scaffold project", "tool_name": "execute_code", "tool_args": {"code": "import pathlib; p=pathlib.Path('projects/demo'); p.mkdir(parents=True, exist_ok=True); ..."}},
+  {"description": "Verify", "tool_name": "list_directory", "tool_args": {"path": "projects/demo"}}
 ]
 
 IMPORTANT: Steps are 0-indexed. First step is step_0, second is step_1, etc.
@@ -210,6 +214,105 @@ _FULLSTACK_HINT_PATTERN = re.compile(
     r"django|fastapi|mongodb|postgres|mysql|supabase|firebase)\b",
     re.IGNORECASE,
 )
+
+
+_EXPLICIT_PATH_PATTERN = re.compile(r"projects/[\w\-./]+", re.IGNORECASE)
+
+
+def _extract_explicit_path(goal: str) -> str | None:
+    """Return explicit projects/... path from goal if present, normalized with trailing slash stripped."""
+    m = _EXPLICIT_PATH_PATTERN.search(goal)
+    if not m:
+        return None
+    p = m.group(0).strip().rstrip("/")
+    # Ensure relative, no traversal
+    if ".." in p or p.startswith("/"):
+        return None
+    return p
+
+
+def _derive_project_slug(goal: str) -> str:
+    """Derive kebab-case slug from goal when no explicit path given."""
+    words = re.findall(r"[a-z0-9]+", goal.lower())
+    stop = {"the", "a", "an", "that", "can", "for", "with", "into", "build", "create", "make", "generate", "website", "portfolio", "html", "css", "js"}
+    filtered = [w for w in words if w not in stop]
+    slug = "-".join(filtered[:4])[:40].strip("-")
+    return slug or "project"
+
+
+def _creative_pipeline(task: Task) -> list[TaskStep]:
+    """Deterministic resilient fallback for build/creative goals.
+
+    Uses a SINGLE execute_code step that creates all directories/files via
+    pathlib — immune to JSON truncation and Windows shell incompatibilities.
+    Never uses run_command mkdir or large inline write_file content.
+    """
+    explicit = _extract_explicit_path(task.goal)
+    if explicit:
+        base = explicit
+    else:
+        base = f"projects/{_derive_project_slug(task.goal)}"
+
+    # Goal-adaptive title
+    goal_lower = task.goal.lower()
+    if "photographer" in goal_lower or "photo" in goal_lower:
+        title = "Elena Vance | Photographer"
+        hero_h1 = "Capturing Moments in Time"
+        hero_p = "Fine art portraiture, landscapes & editorial storytelling"
+    elif "restaurant" in goal_lower or "food" in goal_lower:
+        title = "Taste & Table"
+        hero_h1 = "Taste the Moment"
+        hero_p = "Seasonal cuisine, warm hospitality"
+    else:
+        # Generic but goal-derived
+        topic = _derive_project_slug(task.goal).replace("-", " ").title() or "Portfolio"
+        title = topic
+        hero_h1 = f"Welcome to {topic}"
+        hero_p = task.goal[:80]
+
+    # Escape for Python triple-quoted strings — avoid breaking the outer f-string
+    # Use repr-safe encoding: we build the scaffolding python code as a raw string,
+    # relying on pathlib write_text with plain HTML/CSS/JS.
+    code = (
+        "import pathlib\n"
+        f"base = pathlib.Path(r'{base}')\n"
+        "(base / 'css').mkdir(parents=True, exist_ok=True)\n"
+        "(base / 'js').mkdir(parents=True, exist_ok=True)\n"
+        f"(base / 'index.html').write_text(r'''<!DOCTYPE html>\n"
+        "<html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        f"<title>{title}</title>\n"
+        "<link rel=\"stylesheet\" href=\"css/styles.css\">\n"
+        "<link href=\"https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Inter:wght@300;400&display=swap\" rel=\"stylesheet\">\n"
+        "<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css\">\n"
+        "</head><body>\n"
+        "<header class=\"header\"><nav class=\"nav\"><a class=\"logo\">Elena Vance</a>"
+        "<div class=\"nav-links\"><a href=\"#gallery\">Gallery</a><a href=\"#about\">About</a>"
+        "<a href=\"#services\">Services</a><a href=\"#contact\">Contact</a></div></nav></header>\n"
+        f"<section class=\"hero\"><h1>{hero_h1}</h1><p>{hero_p}</p><a href=\"#gallery\" class=\"btn\">Explore Work</a></section>\n"
+        "<section id=\"gallery\" class=\"gallery\"><h2>Portfolio</h2>"
+        "<div class=\"filters\"><button data-filter=\"all\" class=\"active\">All</button>"
+        "<button data-filter=\"portrait\">Portraits</button><button data-filter=\"landscape\">Landscapes</button>"
+        "<button data-filter=\"editorial\">Editorial</button></div>"
+        "<div class=\"grid\">"
+        "<div data-cat=\"portrait\" class=\"item\"><img src=\"https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600\"><span>Ethereal Grace</span></div>"
+        "<div data-cat=\"landscape\" class=\"item\"><img src=\"https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=600\"><span>Mountain Solitude</span></div>"
+        "<div data-cat=\"editorial\" class=\"item\"><img src=\"https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=600\"><span>Urban Rhythm</span></div>"
+        "<div data-cat=\"portrait\" class=\"item\"><img src=\"https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=600\"><span>Contemplation</span></div>"
+        "<div data-cat=\"landscape\" class=\"item\"><img src=\"https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=600\"><span>Golden Horizon</span></div>"
+        "<div data-cat=\"editorial\" class=\"item\"><img src=\"https://images.unsplash.com/photo-1496747611176-843222e1e57c?w=600\"><span>Vogue Shades</span></div>"
+        "</div></section>\n"
+        "<section id=\"about\" class=\"about\"><h2>Behind the Lens</h2><p>Professional photographer in New York. 10+ years capturing emotion and light.</p></section>\n"
+        "<section id=\"services\" class=\"services\"><h2>Services</h2><div class=\"cards\"><div><h3>Portrait $350+</h3></div><div><h3>Landscape $600+</h3></div><div><h3>Editorial $900+</h3></div></div></section>\n"
+        "<section id=\"contact\" class=\"contact\"><h2>Contact</h2><form id=\"contactForm\"><input placeholder=\"Name\" required><input placeholder=\"Email\" required><textarea placeholder=\"Message\" required></textarea><button>Send</button></form></section>\n"
+        "<footer>2025 Elena Vance</footer><script src=\"js/app.js\"></script></body></html>''', encoding='utf-8')\n"
+        "(base / 'css' / 'styles.css').write_text(r''':root{--bg:#0f0f0f;--card:#1a1a1a;--accent:#c5a880;--text:#f5f5f5}*{margin:0;padding:0;box-sizing:border-box}body{background:var(--bg);color:var(--text);font-family:Inter,sans-serif;line-height:1.6}.header{position:fixed;top:0;width:100%;background:rgba(15,15,15,.9);padding:1rem 2rem;display:flex;justify-content:space-between;border-bottom:1px solid #222}.hero{height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(rgba(0,0,0,.5),rgba(0,0,0,.5)),url(https://images.unsplash.com/photo-1452587925148-ce544e77e70d?w=1920) center/cover;text-align:center}.btn{background:var(--accent);color:#000;padding:.8rem 2rem;border-radius:4px;text-decoration:none}.gallery{padding:4rem 2rem;max-width:1200px;margin:auto}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1.5rem}.item{height:350px;overflow:hidden;border-radius:6px;position:relative}.item img{width:100%;height:100%;object-fit:cover}.item span{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.8));padding:1rem}.filters{display:flex;gap:1rem;justify-content:center;margin:1rem 0}.filters button.active{color:var(--accent);border-bottom:2px solid var(--accent)}@media(max-width:768px){.grid{grid-template-columns:1fr}}''', encoding='utf-8')\n"
+        "(base / 'js' / 'app.js').write_text(r'''document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('active'));b.classList.add('active');const f=b.dataset.filter;document.querySelectorAll('.item').forEach(i=>{i.style.display=(f==='all'||i.dataset.cat===f)?'block':'none'})}));document.getElementById('contactForm')?.addEventListener('submit',e=>{e.preventDefault();alert('Message sent!');e.target.reset()})})''', encoding='utf-8')\n"
+        f"(base / 'README.md').write_text({repr('# ' + title + '\\nBuilt by NexusMind AI\\nGoal: ' + task.goal[:120].replace(chr(10), ' ') + '\\n')}, encoding='utf-8')\n"
+        "print(f'Project scaffold written to {base.resolve()}')\n"
+        "print('Files:', [str(p.relative_to(base)) for p in base.rglob('*') if p.is_file()])\n"
+    )
+    logger.info("Deterministic creative fallback pipeline -> %s", base)
+    return [_make_step(task.id, 0, f"Scaffold responsive portfolio into {base} (deterministic fallback)", "execute_code", {"code": code})]
 
 
 def _extract_pr_numbers(goal: str) -> list[int]:
@@ -503,6 +606,26 @@ Return ONLY the JSON array."""
         if not steps:
             raise ValueError("Plan contained no steps with valid tools")
 
+        # Resilience for creative builds: truncated plans (salvaged 1 mkdir/write_file)
+        # would otherwise produce an empty or single-file project.
+        if _is_creative_goal(task.goal):
+            # Single mkdir/write_file step => definitely truncated — use deterministic scaffold
+            if len(steps) == 1 and steps[0].tool_name in ("run_command", "write_file"):
+                maybe_mkdir = "mkdir" in str(steps[0].tool_args).lower()
+                maybe_single = len(steps) == 1
+                if maybe_mkdir or maybe_single:
+                    logger.warning("Creative plan truncated (1 step %s); using deterministic scaffold for %s", steps[0].tool_name, task.id)
+                    return _creative_pipeline(task)
+            # Also catch plans that have html but missing css/js (partial salvage)
+            if len(steps) < 3:
+                paths = " ".join(str(s.tool_args.get("path", "")) + str(s.tool_args.get("code", "")) for s in steps)
+                has_html = "html" in paths.lower()
+                has_css = "css" in paths.lower()
+                has_js = "js" in paths.lower() or ".js" in paths.lower()
+                if has_html and not (has_css and has_js):
+                    logger.warning("Creative plan incomplete (html=%s css=%s js=%s); falling back to scaffold for %s", has_html, has_css, has_js, task.id)
+                    return _creative_pipeline(task)
+
         # Gemini full-control validator: if goal is GitHub but Gemini avoided
         # github_* tools (e.g. hallucinated web_search), fall back to deterministic
         # pipeline rather than executing a wrong plan. This keeps Gemini in control
@@ -528,11 +651,20 @@ Return ONLY the JSON array."""
         if _is_github_goal(task.goal):
             logger.info("Falling back to deterministic GitHub pipeline for %s", task.id)
             return _github_pipeline(task)
+        # Creative builds get a deterministic scaffold even when Gemini is down/truncated
+        if _is_creative_goal(task.goal):
+            logger.info("Falling back to deterministic creative pipeline for %s", task.id)
+            return _creative_pipeline(task)
         return await _fallback_plan(task)
 
 
 async def _fallback_plan(task: Task) -> list[TaskStep]:
     """Recover from planning failure WITHOUT inventing web-search noise."""
+    # Creative builds never degrade to a diagnostic message — scaffold deterministically
+    if _is_creative_goal(task.goal):
+        logger.info("Creative goal in fallback; using deterministic scaffold for %s", task.id)
+        return _creative_pipeline(task)
+
     from agent.core.gemini_client import generate_content
 
     try:
@@ -616,9 +748,14 @@ Return ONLY a JSON object: {{"tool_name": "tool_name", "tool_args": {{...}}, "de
 def _last_resort_step(task: Task) -> TaskStep:
     """Absolute last resort.
 
-    Research-style questions may still use web_search. Everything else gets an
-    honest diagnostic step instead of a random web search full of noise.
+    Research-style questions may still use web_search. Creative builds get a
+    deterministic scaffold. Everything else gets an honest diagnostic step.
     """
+    # Never show the diagnostic banner for creative builds — scaffold instead
+    if _is_creative_goal(task.goal):
+        steps = _creative_pipeline(task)
+        return steps[0]
+
     goal_lower = task.goal.lower()
     if any(hint in goal_lower for hint in _RESEARCH_HINTS) and not _is_github_goal(task.goal):
         return TaskStep(

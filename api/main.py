@@ -643,7 +643,7 @@ async def set_approval_mode(req: ApprovalModeRequest):
     req_mode = canonical
     # Persist to .env so refresh/restart keeps the choice
     try:
-        env_file = pathlib.Path(".env")
+        env_file = _cfg._ENV_FILE
         lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
         found = False
         new_lines: list[str] = []

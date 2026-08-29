@@ -37,7 +37,7 @@ def _resolve_github_token() -> str:
     except Exception:
         pass
 
-    env_file = Path(".env")
+    env_file = Path(__file__).resolve().parents[2] / ".env"
     if env_file.exists():
         for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()

@@ -15,6 +15,7 @@ Memory policy (inspired by Hermes Agent):
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -127,7 +128,6 @@ async def _gemini_should_store(task: Task, is_failure: bool = False) -> bool:
     When Gemini is unavailable, falls back to deterministic heuristics.
     """
     try:
-        from agent.config import settings
         from agent.core.gemini_client import generate_content
 
         steps_summary = "; ".join(f"{s.tool_name}:{s.status.value}" for s in task.steps[:6])
@@ -158,8 +158,66 @@ async def _gemini_should_store(task: Task, is_failure: bool = False) -> bool:
     if _is_trivial(task):
         return False
     successful = [s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name]
-    distinct = {s.tool_name for s in successful}
     return len(successful) >= 1  # looser than legacy 2x2 when Gemini decides fallback
+
+
+_CREDENTIAL_HINTS: list[tuple[tuple[str, ...], str]] = [
+    (("github", "ghp_", "api.github.com", "bad credentials"), "GITHUB_TOKEN"),
+    (("utterances", "issue comment", "pull_request", "pull request"), "GITHUB_TOKEN"),
+    (("customsearch", "googlesearch", "google search", "gcloud", "google", "quotaexceeded", "serp"), "GOOGLE_SEARCH_API_KEY / GOOGLE_SEARCH_CX / GEMINI_API_KEY"),
+    (("slack", "app.slack.com"), "SLACK_BOT_TOKEN"),
+    (("discord", "discord.com"), "DISCORD_BOT_TOKEN"),
+    (("gitlab", "gitlab.com"), "GITLAB_TOKEN / GITLAB_BASE_URL"),
+    (("jira", "atlassian"), "JIRA_DOMAIN / JIRA_EMAIL / JIRA_TOKEN"),
+    (("reddit", "reddit.com"), "REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET"),
+    (("imap", "email", "smtp"), "EMAIL_IMAP_SERVER / EMAIL_ADDRESS / EMAIL_IMAP_PASSWORD"),
+    (("telegram", "bot token", "chat id"), "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID"),
+]
+
+_CREDENTIAL_KEYWORD_RE = re.compile(
+    r"\b401\b|\b403\b|\b429\b|api[_ -]?key|authentication failed|unauthorized|forbidden|invalid.*token|no token",
+    re.IGNORECASE,
+)
+
+
+def _credential_hint(error_text: str) -> str:
+    """Return actionable 'credential missing/invalid' guidance, or '' if N/A."""
+    if not error_text:
+        return ""
+    deets = error_text.lower()
+    keys: list[str] = []
+    for needles, env_keys in _CREDENTIAL_HINTS:
+        if any(n in deets for n in needles):
+            keys.append(env_keys)
+    if not keys and not _CREDENTIAL_KEYWORD_RE.search(error_text):
+        return ""
+    if not keys:
+        keys = ["the failing service's API key"]
+    keys = list(dict.fromkeys(keys))
+    return (
+        "Hint: this looks like a missing or invalid credential. Set "
+        + " / ".join(keys)
+        + " under Dashboard → Settings → Credentials (saved to the project .env) and retry the task."
+    )
+
+
+def _compose_failure_error(task: Task) -> str:
+    """Build an actionable error message when every planned step failed."""
+    errors = [
+        (s.error or s.description or f"step {s.order}").strip()
+        for s in task.steps
+        if s.status != StepStatus.SUCCESS and (s.error or "").strip()
+    ]
+    detail = "; ".join(dict.fromkeys(e.strip() for e in errors))[:800] or (
+        "All planned steps failed with no recorded error message."
+    )
+    hint = _credential_hint("\n".join(errors))
+    message = (
+        f"The task could not be completed — {len(task.steps)} planned step(s) ran but none succeeded.\n" + detail
+    )
+    if hint:
+        message += "\n\n" + hint
+    return message
 
 
 class Orchestrator:
@@ -272,6 +330,25 @@ class Orchestrator:
                     continue
 
             task.status = TaskStatus.COMPLETED
+            # If EVERY planned step failed (e.g. required credentials missing,
+            # sandbox blocked, plan guessed wrong), the task did NOT succeed.
+            # Previously this was silently reported as "completed" — surface it
+            # as a FAILURE with actionable guidance instead.
+            failed = [s for s in task.steps if s.status != StepStatus.SUCCESS]
+            successful = [s for s in task.steps if s.status == StepStatus.SUCCESS]
+            if task.steps and not successful:
+                task.status = TaskStatus.FAILED
+                task.error = _compose_failure_error(task)
+                task.result = ""
+                if not _is_trivial(task):
+                    self.memory.save_task_outcome(task.goal, task.error[:200], success=False)
+                from agent.telegram import is_configured, notify_task_failed
+                if is_configured():
+                    await notify_task_failed(task.id, task.goal, task.error[:300])
+                task.updated_at = datetime.now(UTC)
+                logger.error("Task [%s] FAILED: %s", task.id, task.error[:200])
+                return task
+
             # Use the most meaningful result (prefer summarize/extract over write_file)
             if task.steps:
                 best_result = None
@@ -310,6 +387,20 @@ class Orchestrator:
                         if p not in uniq:
                             uniq.append(p)
                     task.result = task.result.rstrip() + "\n\n📁 Saved to:\n" + "\n".join(f"- {p}" for p in uniq)
+                # Partial failure: surface skipped steps instead of hiding them
+                if failed:
+                    notes = []
+                    for s in failed[:5]:
+                        label = (s.error or "unknown error").strip()[:120]
+                        notes.append(f"- Step {s.order}: {label}")
+                    partial = (
+                        f"\n\n⚠️ {len(failed)} of {len(task.steps)} step(s) failed and were skipped:\n"
+                        + "\n".join(notes)
+                    )
+                    hint = _credential_hint("\n".join(s.error or "" for s in failed))
+                    if hint:
+                        partial += "\n\n" + hint
+                    task.result = task.result.rstrip() + partial
             else:
                 task.result = context.get("step_0_result", "Task completed")
             task.updated_at = datetime.now(UTC)

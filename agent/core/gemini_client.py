@@ -37,6 +37,24 @@ class KeyRotator:
         self._keys = [k.strip() for k in raw.split(",") if k.strip()]
         logger.info("Gemini key rotator initialized with %d keys", len(self._keys))
 
+    def refresh(self) -> None:
+        """Re-parse GEMINI_API_KEY after a settings reload.
+
+        Keys saved via the dashboard at runtime must be usable immediately
+        without a server restart. Removes clients/cooldowns for keys that were
+        dropped so rotation state stays consistent with the live key set.
+        """
+        raw = (settings.gemini_api_key or "").strip()
+        if not raw or raw == "your-gemini-api-key":
+            self._keys = []
+        else:
+            self._keys = [k.strip() for k in raw.split(",") if k.strip()]
+        for key in list(self._clients):
+            if key not in self._keys:
+                self._clients.pop(key, None)
+        self._cooldowns = {k: v for k, v in self._cooldowns.items() if k in self._keys}
+        logger.info("Gemini key rotator refreshed: %d key(s) active", len(self._keys))
+
     def _get_next_key(self) -> str:
         """Get the next available key (skips keys in cooldown)."""
         if not self._keys:
