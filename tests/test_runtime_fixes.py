@@ -212,6 +212,104 @@ class TestCreativePipeline:
         assert planner_mod._is_fullstack_goal("build a full stack ecommerce site")
 
 
+class TestCreativePipelineDistinctness:
+    """The regression: two DIFFERENT website goals produced the SAME site.
+    Root cause was a hardcoded photographer template in the deterministic
+    fallback. The scaffold must now be goal-adaptive so different goals
+    (and even two vague goals) produce distinct builds."""
+
+    def test_different_creative_goals_yield_distinct_builds(self):
+        codes = {
+            goal: str(
+                planner_mod._creative_pipeline(Task(goal=goal))[0].tool_args["code"]
+            )
+            for goal in (
+                "make a coffee shop website",
+                "build a portfolio website for a photographer named Sara",
+                "build a landing page for a saas startup selling analytics",
+            )
+        }
+        assert len({c for c in codes.values()}) == 3
+        combined = " ".join(codes.values())
+        assert "Elena Vance" not in combined  # legacy template must be gone
+        coffee = codes["make a coffee shop website"]
+        portfolio = codes["build a portfolio website for a photographer named Sara"]
+        assert "Coffee Shop Table" in coffee
+        assert "Coffee Shop Table" not in portfolio
+        assert "Photographer Named Sara" in portfolio
+        assert "Coffee Shop" not in codes["build a landing page for a saas startup selling analytics"]
+
+    def test_vague_goals_still_render_distinct_builds(self):
+        a = str(planner_mod._creative_pipeline(Task(goal="make a website"))[0].tool_args["code"])
+        b = str(planner_mod._creative_pipeline(Task(goal="make another website"))[0].tool_args["code"])
+        assert a != b
+
+    @pytest.mark.asyncio
+    async def test_ghost_mkdir_step_replaced_by_scaffold(self, gemini):
+        """A single 'mkdir' step is a truncated plan -> deterministic scaffold."""
+        _, responses = gemini
+        responses[:] = [
+            json.dumps([
+                {"description": "Create project dir",
+                 "tool_name": "run_command",
+                 "tool_args": {"command": "mkdir -p projects/foo"}},
+            ])
+        ]
+        steps = await planner_mod.plan_task(Task(goal="make a cool website"))
+        assert [s.tool_name for s in steps] == ["execute_code"]
+        assert "pathlib" in str(steps[0].tool_args.get("code", ""))
+
+    @pytest.mark.asyncio
+    async def test_substantive_single_write_file_is_kept(self, gemini):
+        """A single write_file WITH real content is a complete plan -> keep it."""
+        _, responses = gemini
+        html = "<html><body><h1>Inline single-page site</h1></body></html>"
+        responses[:] = [
+            json.dumps([
+                {"description": "Write whole site inline",
+                 "tool_name": "write_file",
+                 "tool_args": {"path": "projects/foo/index.html", "content": html}},
+            ])
+        ]
+        steps = await planner_mod.plan_task(Task(goal="make a cool website"))
+        assert [s.tool_name for s in steps] == ["write_file"]
+        assert "pathlib" not in str(steps[0].tool_args.get("code", ""))
+
+    @pytest.mark.asyncio
+    async def test_html_only_plan_salvaged_to_scaffold(self, gemini):
+        """index.html without css OR js is a partial salvage -> scaffold."""
+        _, responses = gemini
+        responses[:] = [
+            json.dumps([
+                {"description": "Write page",
+                 "tool_name": "write_file",
+                 "tool_args": {"path": "projects/foo/index.html", "content": "<html></html>"}},
+                {"description": "Write readme",
+                 "tool_name": "write_file",
+                 "tool_args": {"path": "projects/foo/README.md", "content": "# doc"}},
+            ])
+        ]
+        steps = await planner_mod.plan_task(Task(goal="make a cool website"))
+        assert [s.tool_name for s in steps] == ["execute_code"]
+
+    @pytest.mark.asyncio
+    async def test_html_and_css_plan_kept(self, gemini):
+        """html + css (no js) is plausibly complete -> NOT replaced by scaffold."""
+        _, responses = gemini
+        responses[:] = [
+            json.dumps([
+                {"description": "Write page",
+                 "tool_name": "write_file",
+                 "tool_args": {"path": "projects/foo/index.html", "content": "<html></html>"}},
+                {"description": "Write styles",
+                 "tool_name": "write_file",
+                 "tool_args": {"path": "projects/foo/styles.css", "content": "body{}"}},
+            ])
+        ]
+        steps = await planner_mod.plan_task(Task(goal="make a cool website"))
+        assert [s.tool_name for s in steps] == ["write_file", "write_file"]
+
+
 class TestScaffoldTemplates:
     def test_hardcoded_templates_removed(self):
         assert not hasattr(planner_mod, "_SCAFFOLD_LANDING")

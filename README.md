@@ -533,7 +533,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **200 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, API endpoints, and the ADK integration (agent creation, callbacks, Runner path, API routing).
+All **223 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, API endpoints, and the ADK integration (agent creation, callbacks, Runner path, API routing).
 
 ---
 
