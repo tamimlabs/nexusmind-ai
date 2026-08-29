@@ -8,13 +8,17 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
+from google.genai.types import FinishReason
 
 import agent.core.executor as ex
+import agent.core.gemini_client as gc
 import agent.core.planner as planner_mod
 import agent.skills.file_management.skill as fm_mod
+from agent.core.gemini_client import OutputTruncatedError, rotator
 from agent.models import Task, TaskStep
 
 
@@ -84,9 +88,7 @@ def gemini(monkeypatch):
             return responses.pop(0)
         raise IndexError("no scripted response")  # exercises fallback paths
 
-    monkeypatch.setattr(
-        "agent.core.gemini_client.generate_content", fake_generate
-    )
+    monkeypatch.setattr("agent.core.gemini_client.generate_content", fake_generate)
     return calls, responses
 
 
@@ -106,8 +108,7 @@ class TestPlannerDiagnostics:
         _, responses = gemini
         responses[:] = [
             "I'm sorry, but I cannot help with that request.",
-            json.dumps({"tool_name": "web_search",
-                        "tool_args": {"query": "quantum"}}),
+            json.dumps({"tool_name": "web_search", "tool_args": {"query": "quantum"}}),
         ]
         with caplog.at_level("WARNING"):
             steps = await planner_mod.plan_task(Task(goal="research quantum computing"))
@@ -119,12 +120,16 @@ class TestTruncatedPlanRecovery:
     """max_output_tokens truncation must not kill otherwise-valid plans."""
 
     GOOD_STEPS: ClassVar[list[dict[str, Any]]] = [
-        {"description": "Find news",
-         "tool_name": "web_search",
-         "tool_args": {"query": "quantum computing"}},
-        {"description": "Summarize findings",
-         "tool_name": "summarize_text",
-         "tool_args": {"text": "{{step_0_result}}"}},
+        {
+            "description": "Find news",
+            "tool_name": "web_search",
+            "tool_args": {"query": "quantum computing"},
+        },
+        {
+            "description": "Summarize findings",
+            "tool_name": "summarize_text",
+            "tool_args": {"text": "{{step_0_result}}"},
+        },
     ]
 
     def test_salvage_recovers_completed_steps(self):
@@ -136,9 +141,7 @@ class TestTruncatedPlanRecovery:
     async def test_truncated_plan_used_without_correction_round(self, gemini):
         calls, responses = gemini
         responses[:] = [json.dumps(self.GOOD_STEPS)[:-1] + ', {"tool_name": "wri']
-        steps = await planner_mod.plan_task(
-            Task(goal="research quantum computing breakthroughs")
-        )
+        steps = await planner_mod.plan_task(Task(goal="research quantum computing breakthroughs"))
         assert len(calls) == 1  # salvaged -> NO corrective re-plan round
         assert [s.tool_name for s in steps] == ["web_search", "summarize_text"]
 
@@ -146,11 +149,129 @@ class TestTruncatedPlanRecovery:
     async def test_planner_budget_raised(self, gemini):
         calls, responses = gemini
         responses[:] = [
-            json.dumps([{"description": "a", "tool_name": "web_search",
-                         "tool_args": {"query": "x"}}])
+            json.dumps(
+                [{"description": "a", "tool_name": "web_search", "tool_args": {"query": "x"}}]
+            )
         ]
         await planner_mod.plan_task(Task(goal="research fusion energy"))
         assert calls[0]["max_tokens"] >= 8192
+
+
+def _resp(text: str, reason: FinishReason) -> SimpleNamespace:
+    return SimpleNamespace(
+        text=text,
+        candidates=[SimpleNamespace(finish_reason=reason)],
+    )
+
+
+class _FakeModels:
+    def __init__(self, responses: list[Any]):
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def generate_content(self, *, model=None, contents=None, config=None):
+        self.calls.append({"model": model, "max_output_tokens": config.max_output_tokens})
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class _FakeClient:
+    def __init__(self, responses: list[Any]):
+        self.models = _FakeModels(responses)
+
+
+@pytest.fixture()
+def fake_rotator(monkeypatch):
+    """Pin the key rotator to a single scriptable fake client."""
+    monkeypatch.setattr(rotator, "_keys", ["kfake"])
+    monkeypatch.setattr(rotator, "_clients", {})
+    monkeypatch.setattr(rotator, "_cooldowns", {})
+    monkeypatch.setattr(gc.settings, "gemini_model", "gemini-3.5-flash")
+    monkeypatch.setattr(gc.settings, "gemini_model_pro", "gemini-3.5-pro")
+    return rotator
+
+
+class TestOutputTruncationFallback:
+    """max_output_tokens truncation must switch to the stronger model so the
+    task CONTINUES instead of stopping on an unfinished reply."""
+
+    @pytest.mark.asyncio
+    async def test_truncated_then_fallback_model_finishes(self, fake_rotator):
+        client = _FakeClient(
+            [
+                _resp("{", FinishReason.MAX_TOKENS),
+                _resp('{"done": true, "result": "finished"}', FinishReason.STOP),
+            ]
+        )
+        fake_rotator._clients["kfake"] = client
+
+        out = await gc.generate_content(
+            model="gemini-3.5-flash", user="do the thing", max_tokens=16384
+        )
+        assert out == '{"done": true, "result": "finished"}'
+        assert [c["model"] for c in client.models.calls] == ["gemini-3.5-flash", "gemini-3.5-pro"]
+        assert client.models.calls[1]["max_output_tokens"] == 32768  # doubled budget
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_model_raises_truncation(self, fake_rotator):
+        fake_rotator._clients["kfake"] = _FakeClient(
+            [_resp("partial json", FinishReason.MAX_TOKENS)]
+        )
+        # Simulate no pro model configured.
+        gc.settings.gemini_model_pro = ""
+        with pytest.raises(OutputTruncatedError) as excinfo:
+            await gc.generate_content(model="gemini-3.5-flash", user="x", max_tokens=512)
+        assert excinfo.value.partial == "partial json"
+
+    @pytest.mark.asyncio
+    async def test_fallback_also_truncated_raises_after_two_models(self, fake_rotator):
+        fake_rotator._clients["kfake"] = _FakeClient(
+            [
+                _resp("still", FinishReason.MAX_TOKENS),
+                _resp("still", FinishReason.MAX_TOKENS),
+            ]
+        )
+        with pytest.raises(OutputTruncatedError):
+            await gc.generate_content(model="gemini-3.5-flash", user="x")
+
+    @pytest.mark.asyncio
+    async def test_complete_reply_uses_primary_model_only(self, fake_rotator):
+        client = _FakeClient([_resp("short ok", FinishReason.STOP)])
+        fake_rotator._clients["kfake"] = client
+        out = await gc.generate_content(model="gemini-3.5-flash", user="x", max_tokens=4096)
+        assert out == "short ok"
+        assert [c["model"] for c in client.models.calls] == ["gemini-3.5-flash"]
+        assert client.models.calls[0]["max_output_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_decide_next_step_continues_after_truncation(self, monkeypatch):
+        """A truncated decision reply must feed a repair note back to the loop
+        (via _error), never crash it — the loop then retries and moves on."""
+        calls: list[dict[str, Any]] = []
+
+        async def fake_gc(**kwargs: Any) -> str:
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise OutputTruncatedError('{"tool_nam')
+            return json.dumps(
+                {
+                    "description": "Write a todo file",
+                    "tool_name": "write_file",
+                    "tool_args": {"path": "output/t.txt", "content": "hi"},
+                }
+            )
+
+        monkeypatch.setattr("agent.core.gemini_client.generate_content", fake_gc)
+        from agent.core.agent_loop import decide_next_step
+
+        first = await decide_next_step({"goal": "build a quick file"})
+        assert "cut off" in str(first.get("_error", "")).lower()
+
+        second = await decide_next_step({"goal": "build a quick file"})
+        assert second.get("tool_name") == "write_file"
+        assert second["tool_args"]["content"] == "hi"
 
 
 class TestFallbackSelectorParsing:
@@ -227,14 +348,23 @@ class TestGoalAndMemoryDriveBuilds:
         calls, responses = gemini
         html = "<html><body><h1>BlueBottle espresso bar</h1></body></html>"
         responses[:] = [
-            json.dumps([
-                {"description": "Write page",
-                 "tool_name": "write_file",
-                 "tool_args": {"path": "projects/bluebottle/index.html", "content": html}},
-                {"description": "Write styles",
-                 "tool_name": "write_file",
-                 "tool_args": {"path": "projects/bluebottle/styles.css", "content": "body{}"}},
-            ])
+            json.dumps(
+                [
+                    {
+                        "description": "Write page",
+                        "tool_name": "write_file",
+                        "tool_args": {"path": "projects/bluebottle/index.html", "content": html},
+                    },
+                    {
+                        "description": "Write styles",
+                        "tool_name": "write_file",
+                        "tool_args": {
+                            "path": "projects/bluebottle/styles.css",
+                            "content": "body{}",
+                        },
+                    },
+                ]
+            )
         ]
         memory = "brand: BlueBottle, customer preference: espresso"
         steps = await planner_mod.plan_task(
@@ -253,11 +383,15 @@ class TestGoalAndMemoryDriveBuilds:
         """Ghost/truncated plans are kept as Gemini authored them — no swap."""
         _, responses = gemini
         responses[:] = [
-            json.dumps([
-                {"description": "Create project dir",
-                 "tool_name": "run_command",
-                 "tool_args": {"command": "mkdir -p projects/foo"}},
-            ])
+            json.dumps(
+                [
+                    {
+                        "description": "Create project dir",
+                        "tool_name": "run_command",
+                        "tool_args": {"command": "mkdir -p projects/foo"},
+                    },
+                ]
+            )
         ]
         steps = await planner_mod.plan_task(Task(goal="make a cool website"))
         assert [s.tool_name for s in steps] == ["run_command"]
@@ -268,11 +402,15 @@ class TestGoalAndMemoryDriveBuilds:
         _, responses = gemini
         html = "<html><body><h1>Inline single-page site</h1></body></html>"
         responses[:] = [
-            json.dumps([
-                {"description": "Write whole site inline",
-                 "tool_name": "write_file",
-                 "tool_args": {"path": "projects/foo/index.html", "content": html}},
-            ])
+            json.dumps(
+                [
+                    {
+                        "description": "Write whole site inline",
+                        "tool_name": "write_file",
+                        "tool_args": {"path": "projects/foo/index.html", "content": html},
+                    },
+                ]
+            )
         ]
         steps = await planner_mod.plan_task(Task(goal="make a cool website"))
         assert [s.tool_name for s in steps] == ["write_file"]
@@ -282,12 +420,16 @@ class TestGoalAndMemoryDriveBuilds:
         """Truncated JSON is salvaged (complete steps preserved), never templated."""
         _, responses = gemini
         data = [
-            {"description": "Write page",
-             "tool_name": "write_file",
-             "tool_args": {"path": "projects/foo/index.html", "content": "<html></html>"}},
-            {"description": "Write styles",
-             "tool_name": "write_file",
-             "tool_args": {"path": "projects/foo/styles.css", "content": "body{}"}},
+            {
+                "description": "Write page",
+                "tool_name": "write_file",
+                "tool_args": {"path": "projects/foo/index.html", "content": "<html></html>"},
+            },
+            {
+                "description": "Write styles",
+                "tool_name": "write_file",
+                "tool_args": {"path": "projects/foo/styles.css", "content": "body{}"},
+            },
         ]
         responses[:] = [json.dumps(data)[:-1] + ', {"tool_name": "wri']
         steps = await planner_mod.plan_task(Task(goal="make a cool website"))
@@ -298,14 +440,23 @@ class TestGoalAndMemoryDriveBuilds:
         """html + css (no js) is plausibly complete -> kept as-is."""
         _, responses = gemini
         responses[:] = [
-            json.dumps([
-                {"description": "Write page",
-                 "tool_name": "write_file",
-                 "tool_args": {"path": "projects/foo/index.html", "content": "<html></html>"}},
-                {"description": "Write styles",
-                 "tool_name": "write_file",
-                 "tool_args": {"path": "projects/foo/styles.css", "content": "body{}"}},
-            ])
+            json.dumps(
+                [
+                    {
+                        "description": "Write page",
+                        "tool_name": "write_file",
+                        "tool_args": {
+                            "path": "projects/foo/index.html",
+                            "content": "<html></html>",
+                        },
+                    },
+                    {
+                        "description": "Write styles",
+                        "tool_name": "write_file",
+                        "tool_args": {"path": "projects/foo/styles.css", "content": "body{}"},
+                    },
+                ]
+            )
         ]
         steps = await planner_mod.plan_task(Task(goal="make a cool website"))
         assert [s.tool_name for s in steps] == ["write_file", "write_file"]
@@ -323,9 +474,7 @@ class TestWriteFileRoots:
     @pytest.mark.asyncio
     async def test_projects_path_kept_with_nested_dirs(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        result = await fm_mod.write_file(
-            "projects/my-app/css/styles.css", "body{}"
-        )
+        result = await fm_mod.write_file("projects/my-app/css/styles.css", "body{}")
         assert result.success is True
         assert (tmp_path / "projects" / "my-app" / "css" / "styles.css").exists()
 
@@ -360,9 +509,7 @@ class TestArgNormalization:
         result = await ex.execute_step(step, {})
         assert result.success is True
         # loose filename -> write_file parks it under output/
-        assert (
-            tmp_path / "output" / "x.html"
-        ).read_text(encoding="utf-8") == "<h1>hi</h1>"
+        assert (tmp_path / "output" / "x.html").read_text(encoding="utf-8") == "<h1>hi</h1>"
 
     @pytest.mark.asyncio
     async def test_missing_path_derived_from_description(self, tmp_path, monkeypatch):
@@ -379,9 +526,7 @@ class TestArgNormalization:
         context = {"task_goal": "make a product landing page"}
         result = await ex.execute_step(step, context)
         assert result.success is True
-        expected = (
-            tmp_path / "projects" / "make-product-landing-page" / "styles.css"
-        )
+        expected = tmp_path / "projects" / "make-product-landing-page" / "styles.css"
         assert expected.exists()
 
     @pytest.mark.asyncio
@@ -397,7 +542,7 @@ class TestArgNormalization:
         assert len(steps) == 1
         args = steps[0].tool_args
         assert args["path"] == "output/result.md"  # default merged in
-        assert args["content"] == "PRECIOUS"       # LLM content preserved
+        assert args["content"] == "PRECIOUS"  # LLM content preserved
 
 
 class TestApprovalModes:
@@ -410,6 +555,7 @@ class TestApprovalModes:
     @pytest.fixture()
     def smart_mode(self, monkeypatch):
         from agent.config import settings
+
         monkeypatch.setattr(settings, "approval_mode", "smart")
         return monkeypatch
 
@@ -475,7 +621,10 @@ class TestApprovalModes:
 
     def test_execute_code_os_access_asks(self, smart_mode):
         assert ex.needs_approval("execute_code", {"code": "import os; os.system('x')"}) is True
-        assert ex.needs_approval("execute_code", {"code": "subprocess.run(['rm', '-rf', '/'])"}) is True
+        assert (
+            ex.needs_approval("execute_code", {"code": "subprocess.run(['rm', '-rf', '/'])"})
+            is True
+        )
         assert ex.needs_approval("execute_code", {"code": "shutil.rmtree('x')"}) is True
 
     @pytest.mark.asyncio
@@ -489,20 +638,23 @@ class TestApprovalModes:
         ex._approval_timed_out.discard(sid)
 
     @pytest.mark.asyncio
-    async def test_execute_step_distinguishes_timeout_from_denial(
-        self, monkeypatch, smart_mode
-    ):
+    async def test_execute_step_distinguishes_timeout_from_denial(self, monkeypatch, smart_mode):
         import agent.telegram as tg
+
         monkeypatch.setattr(tg, "is_configured", lambda: False)
 
         step = TaskStep(
-            task_id="t", description="remove temp dir", tool_name="run_command",
-            tool_args={"command": "rm -rf projects/x"}, order=0,
+            task_id="t",
+            description="remove temp dir",
+            tool_name="run_command",
+            tool_args={"command": "rm -rf projects/x"},
+            order=0,
         )
 
         async def timed_out(step_id, timeout=300):
             ex._approval_timed_out.add(step_id)
             return False
+
         monkeypatch.setattr(ex, "wait_for_approval", timed_out)
         result = await ex.execute_step(step, {})
         assert result.success is False
@@ -511,6 +663,7 @@ class TestApprovalModes:
         async def denied(step_id, timeout=300):
             ex._approval_timed_out.discard(step_id)
             return False
+
         monkeypatch.setattr(ex, "wait_for_approval", denied)
         result = await ex.execute_step(step, {})
         assert result.success is False
@@ -525,6 +678,7 @@ class TestPerTaskApprovalTrust:
     @pytest.fixture()
     def smart_mode(self, monkeypatch):
         from agent.config import settings
+
         monkeypatch.setattr(settings, "approval_mode", "smart")
         return monkeypatch
 
@@ -577,6 +731,7 @@ class TestPerTaskApprovalTrust:
 
         try:
             import agent.telegram as tg
+
             monkeypatch.setattr(tg, "is_configured", lambda: False)
 
             async def should_never_be_called(*_a, **_k):
@@ -590,8 +745,11 @@ class TestPerTaskApprovalTrust:
             ex.trust_task("t-approve-skip")
 
             step = TaskStep(
-                task_id="t-approve-skip", description="risky",
-                tool_name="trust_test_risky_tool", tool_args={}, order=0,
+                task_id="t-approve-skip",
+                description="risky",
+                tool_name="trust_test_risky_tool",
+                tool_args={},
+                order=0,
             )
             result = await ex.execute_step(step, {"task_id": "t-approve-skip"})
             assert result.success is True
@@ -610,6 +768,7 @@ class TestPerTaskApprovalTrust:
 
         try:
             import agent.telegram as tg
+
             monkeypatch.setattr(tg, "is_configured", lambda: False)
 
             calls: list[dict[str, Any]] = []
@@ -625,8 +784,11 @@ class TestPerTaskApprovalTrust:
             ex.untrust_task("t-approve-ask")
 
             step = TaskStep(
-                task_id="t-approve-ask", description="risky",
-                tool_name="trust_test_risky_tool2", tool_args={}, order=0,
+                task_id="t-approve-ask",
+                description="risky",
+                tool_name="trust_test_risky_tool2",
+                tool_args={},
+                order=0,
             )
             result = await ex.execute_step(step, {"task_id": "t-approve-ask"})
             assert result.success is True

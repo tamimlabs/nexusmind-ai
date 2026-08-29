@@ -417,7 +417,7 @@ async def decide_next_step(state: dict[str, Any]) -> dict[str, Any]:
     the original text for diagnostics.
     """
     from agent.config import settings
-    from agent.core.gemini_client import generate_content
+    from agent.core.gemini_client import OutputTruncatedError, generate_content
 
     user = _DECISION_USER_TEMPLATE.format(
         goal=state.get("goal", ""),
@@ -431,13 +431,27 @@ async def decide_next_step(state: dict[str, Any]) -> dict[str, Any]:
         transcript=state.get("transcript") or "_None yet._",
         feedback=(state.get("feedback") or "") + "\n" if state.get("feedback") else "",
     )
-    raw = await generate_content(
-        model=settings.gemini_model,
-        system=_CONTROLLER_SYSTEM_PROMPT,
-        user=user,
-        temperature=0.2,
-        max_tokens=_DECISION_MAX_TOKENS,
-    )
+    try:
+        raw = await generate_content(
+            model=settings.gemini_model,
+            system=_CONTROLLER_SYSTEM_PROMPT,
+            user=user,
+            temperature=0.2,
+            max_tokens=_DECISION_MAX_TOKENS,
+        )
+    except OutputTruncatedError as exc:
+        # Even after the automatic pro-model retry in generate_content, the
+        # reply got cut off. Feed a repair note back so the loop CONTINUES
+        # with a shorter reply instead of dying mid-task.
+        return {
+            "_error": (
+                "SYSTEM NOTE: your previous reply was cut off (max output tokens "
+                "reached, even on the fallback model). Reply again but MUCH SHORTER "
+                "— any large inline file content must be moved into a small "
+                "execute_code step that WRITES the file programmatically."
+            ),
+            "_raw": getattr(exc, "partial", ""),
+        }
     obj = _extract_json_object(raw) or {}
     obj = dict(obj)
     obj["_raw"] = raw

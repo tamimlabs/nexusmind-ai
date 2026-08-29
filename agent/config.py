@@ -60,6 +60,10 @@ class Settings(BaseSettings):
 
     # --- Gemini / Vertex AI ---
     gemini_model: str = "gemini-3.5-flash"
+    # Stronger fallback model: when the primary model hits its max output
+    # tokens mid-reply, generation is transparently retried here so the agent
+    # CONTINUES instead of stopping on an unfinished step.
+    gemini_model_pro: str = "gemini-3.5-pro"
     gemini_api_key: str = ""
     # When True, Gemini controls tool selection, file naming and memory policy.
     # Deterministic heuristics remain only as fallback/validator.

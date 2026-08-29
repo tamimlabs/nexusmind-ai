@@ -16,6 +16,37 @@ from agent.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Upper bound for the fallback's output budget. Doubling the primary budget is
+# enough for an agent to finish the step; the Pro model supports far more.
+_FALLBACK_TOKEN_CEILING = 65536
+
+
+class OutputTruncatedError(RuntimeError):
+    """The model hit its ``max_output_tokens`` limit mid-reply.
+
+    Raise when the API reports the response was cut off, so callers can retry
+    on a stronger model or feed a truncation note back to the model and
+    continue the task instead of silently dropping the partial reply.
+    """
+
+    def __init__(self, partial: str = "") -> None:
+        super().__init__("model reply was truncated (max output tokens reached)")
+        self.partial = partial or ""
+
+
+def _was_truncated(response: Any) -> bool:
+    """True when the API reports ``finish_reason == MAX_TOKENS``."""
+    from google.genai import types
+
+    try:
+        return bool(
+            response.candidates
+            and response.candidates[0].finish_reason == types.FinishReason.MAX_TOKENS
+        )
+    except Exception:
+        # Unknown SDK shape — never assume truncation on a complete-looking reply.
+        return False
+
 
 class KeyRotator:
     """Manages multiple Gemini API keys with round-robin rotation and rate-limit backoff."""
@@ -123,14 +154,29 @@ async def generate_content(
     temperature: float = 0.3,
     max_tokens: int = 4096,
     retry: bool = True,
+    fallback_max_tokens: int | None = None,
 ) -> str:
-    """Generate text content using Gemini with automatic key rotation and retry."""
+    """Generate text content using Gemini with automatic key rotation and retry.
+
+    If the primary model hits its output-token limit (truncated reply), the
+    call transparently retries once on the stronger configured model
+    (``settings.gemini_model_pro``) with a larger output budget — so long
+    tasks keep going instead of stopping on an unfinished answer.
+    ``OutputTruncatedError`` is raised only when no fallback model is set or
+    the fallback is truncated too (the caller can then tell the model to reply
+    shorter, which the agent loop does).
+    """
     from google.genai import types
 
-    model_name = model or settings.gemini_model
-    last_error = None
+    primary_model = model or settings.gemini_model
+    fallback_model = settings.gemini_model_pro
+    model_name = primary_model
+    active_max = max_tokens
+    used_fallback = False
+    last_error: Exception | None = None
+    fallback_rounds = 1 if (fallback_model and fallback_model != primary_model) else 0
 
-    for attempt in range(rotator.key_count):
+    for attempt in range(rotator.key_count + fallback_rounds):
         client, key_used = rotator.get_client()
 
         # If all keys in cooldown, async wait before trying
@@ -139,7 +185,7 @@ async def generate_content(
             if shortest > 0:
                 await asyncio.sleep(min(shortest, 5))
 
-        def _call(client=client) -> str:
+        def _call(client=client, model=model_name, max_out=active_max) -> str:
             contents = []
             if system:
                 contents.append(
@@ -151,32 +197,61 @@ async def generate_content(
                 contents.append(
                     types.Content(
                         role="model",
-                        parts=[types.Part.from_text(text="Understood. I will follow these instructions.")],
+                        parts=[
+                            types.Part.from_text(
+                                text="Understood. I will follow these instructions."
+                            )
+                        ],
                     )
                 )
             contents.append(types.Content(role="user", parts=[types.Part.from_text(text=user)]))
 
             response = client.models.generate_content(
-                model=model_name,
+                model=model,
                 contents=contents,
                 config=types.GenerateContentConfig(
                     temperature=temperature,
-                    max_output_tokens=max_tokens,
+                    max_output_tokens=max_out,
                 ),
             )
-            return response.text or ""
+            text = response.text or ""
+            if _was_truncated(response):
+                raise OutputTruncatedError(text)
+            return text
 
         try:
-            result = await asyncio.to_thread(_call)
-            return result
+            return await asyncio.to_thread(_call)
+
+        except OutputTruncatedError:
+            if not fallback_rounds or used_fallback:
+                raise
+            used_fallback = True
+            logger.warning(
+                "Max output tokens reached on %s; switching to %s to continue",
+                model_name,
+                fallback_model,
+            )
+            model_name = fallback_model
+            active_max = fallback_max_tokens or min(max_tokens * 2, _FALLBACK_TOKEN_CEILING)
+            continue
 
         except Exception as exc:
             last_error = exc
             error_str = str(exc).lower()
 
-            if "rate" in error_str or "429" in error_str or "quota" in error_str or "503" in error_str or "unavailable" in error_str:
+            if (
+                "rate" in error_str
+                or "429" in error_str
+                or "quota" in error_str
+                or "503" in error_str
+                or "unavailable" in error_str
+            ):
                 rotator.mark_rate_limited(key_used, retry_after=15 + attempt * 15)
-                logger.warning("Rate limited/unavailable on key ...%s (attempt %d), rotating", key_used[-6:], attempt + 1)
+                logger.warning(
+                    "Rate limited/unavailable on key ...%s (attempt %d), rotating",
+                    key_used[-6:],
+                    attempt + 1,
+                )
                 continue
             elif "invalid" in error_str and "key" in error_str:
                 rotator.mark_rate_limited(key_used, retry_after=86400)
