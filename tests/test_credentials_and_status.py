@@ -27,10 +27,15 @@ from agent.models import StepStatus, Task, TaskStep, ToolResult
 
 
 class TestEnvFileResolution:
-    def test_env_file_points_at_project_root(self):
+    def test_env_file_points_at_project_root(self, monkeypatch):
         assert config_mod._ENV_FILE == config_mod._PROJECT_ROOT / ".env"
-        # Settings reads the very file credentials_routes writes to.
-        assert config_mod.settings.gemini_api_key  # loaded from project .env
+        # Settings reads the very file the credentials routes write to.
+        # Verify via env-var precedence: BaseSettings gives real os.environ
+        # priority over the dotenv file, so this is deterministic with and
+        # without a real (gitignored) .env on disk — CI has none.
+        monkeypatch.setenv("GEMINI_API_KEY", "hermetic-test-key")
+        config_mod.reload_settings()
+        assert config_mod.settings.gemini_api_key == "hermetic-test-key"
 
 
 class TestSettingsReload:

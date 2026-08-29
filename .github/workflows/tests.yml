@@ -38,6 +38,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install .[dev]
 
+      # Tests assume a project-root .env exists — Settings and the credentials
+      # code both read _PROJECT_ROOT/.env. Fresh CI checkouts have none (it's
+      # gitignored), so synthesize one from the example with a placeholder key.
+      - name: Create .env for tests
+        run: |
+          cp .env.example .env
+          sed -i 's/^GEMINI_API_KEY=.*/GEMINI_API_KEY=ci-placeholder-key/' .env
+
       # continue-on-error lets the badge reflect a red result instead of
       # aborting before it is written; the final step re-fails the job so
       # PR gating stays honest.
