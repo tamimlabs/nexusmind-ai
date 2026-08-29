@@ -9,6 +9,7 @@ where it is launched from.
 import os
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +55,9 @@ class Settings(BaseSettings):
     # --- Gemini / Vertex AI ---
     gemini_model: str = "gemini-3.5-flash"
     gemini_api_key: str = ""
+    # When True, Gemini controls tool selection, file naming and memory policy.
+    # Deterministic heuristics remain only as fallback/validator.
+    gemini_full_control: bool = True
 
     # --- Firestore ---
     firestore_collection_tasks: str = "tasks"
@@ -72,10 +76,27 @@ class Settings(BaseSettings):
     agent_memory_max_items: int = 1000
 
     # --- Approval Mode ---
-    # "always" = ask for every high-risk tool (default, safe but annoying)
+    # "always" / "ask_everytime" = ask for every high-risk tool (safe but annoying)
     # "smart"  = auto-approve safe commands, ask only for dangerous ones (recommended)
     # "never"  = auto-approve everything (risky but fast)
     approval_mode: str = "smart"
+
+    @field_validator("approval_mode", mode="before")
+    @classmethod
+    def _normalize_approval_mode(cls, v: object) -> str:
+        """Accept aliases like 'ask_everytime', 'Ask Everytime', 'everytime'."""
+        if not isinstance(v, str):
+            return "smart"
+        raw = v.strip().lower().replace(" ", "_").replace("-", "_")
+        # Map all ask-everytime variants to canonical "always"
+        if raw in {"always", "ask", "ask_everytime", "everytime", "ask_every_time", "always_ask"}:
+            return "always"
+        if raw in {"smart", "auto", "intelligent"}:
+            return "smart"
+        if raw in {"never", "none", "no_ask", "disabled", "off"}:
+            return "never"
+        # Unknown -> fall back to smart (safe default keeps agent useful)
+        return "smart" if raw not in {"always", "smart", "never"} else raw
 
     # --- Telegram Bot (for remote approvals) ---
     telegram_bot_token: str = ""

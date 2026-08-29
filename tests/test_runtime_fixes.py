@@ -177,82 +177,42 @@ class TestCreativePipeline:
         assert not planner_mod._is_creative_goal("what did we create for homepage docs?")
         assert not planner_mod._is_creative_goal("merge pr 5 into main")
 
+    def test_no_hardcoded_scaffold(self):
+        """Hardcoded templates removed - planner must not expose them."""
+        assert not hasattr(planner_mod, "_SCAFFOLD_LANDING")
+        assert not hasattr(planner_mod, "_SCAFFOLD_DASHBOARD")
+        assert not hasattr(planner_mod, "_SCAFFOLD_FEED")
+        assert not hasattr(planner_mod, "_SCAFFOLD_TEMPLATES")
+        assert not hasattr(planner_mod, "_creative_pipeline")
+        assert not hasattr(planner_mod, "_artifact_kind")
+        assert not hasattr(planner_mod, "_headline_from_goal")
+
     @pytest.mark.asyncio
-    async def test_dead_api_still_ships_project_zero_llm_calls(self, gemini):
-        """Planner totally down + rate limits -> deterministic project folder."""
+    async def test_dead_api_no_longer_ships_hardcoded_project(self, gemini):
+        """Planner down -> fallback via tool selector, not hardcoded scaffold."""
         calls, _ = gemini  # every call raises IndexError
         steps = await planner_mod.plan_task(
             Task(goal="redesign the youtube homepage that can shock the youtube")
         )
-        assert len(calls) == 1  # one failed plan attempt, then ZERO further LLM use
+        # Should go through fallback_plan, not hardcoded execute_code scaffold
         assert len(steps) == 1
-        assert steps[0].tool_name == "execute_code"
-        code = steps[0].tool_args["code"]
-        # Multi-file scaffold, not a single dumped HTML file
-        assert "'projects'" in code
-        assert "css/styles.css" in code or "(root / 'css'" in code
-        for filename in ("index.html", "styles.css", "app.js", "README.md"):
-            assert filename in code
-        assert "<!DOCTYPE html>" in code
+        # No hardcoded chipbar/hero content
+        code = str(steps[0].tool_args.get("code", "")) + str(steps[0].tool_args.get("content", ""))
+        assert "chipbar" not in code
+        assert "class=hero" not in code
 
     @pytest.mark.asyncio
-    async def test_fullstack_goal_adds_server_file(self, gemini):
-        _, _ = gemini
-        steps = await planner_mod.plan_task(
-            Task(goal="build a full stack ecommerce site with login and database")
-        )
-        code = steps[0].tool_args["code"]
+    async def test_fullstack_detection_still_works(self, gemini):
+        # _is_fullstack_goal helper retained for potential future use
         assert planner_mod._is_fullstack_goal("build a full stack ecommerce site")
-        assert '"server.py"' in code and "http.server" in code
-
-    @pytest.mark.asyncio
-    async def test_simple_mockup_has_no_server(self, gemini):
-        _, _ = gemini
-        steps = await planner_mod.plan_task(
-            Task(goal="make a landing page mockup for our product launch")
-        )
-        assert '"server.py"' not in steps[0].tool_args["code"]
 
 
 class TestScaffoldTemplates:
-    def test_artifact_kind_detection(self):
-        assert planner_mod._artifact_kind("make a product landing page") == "landing"
-        assert planner_mod._artifact_kind("build an analytics dashboard") == "dashboard"
-        assert planner_mod._artifact_kind("video gallery like netflix") == "feed"
-        assert planner_mod._artifact_kind("redesign the youtube homepage") == "feed"
-        # unknown artifact -> landing default
-        assert planner_mod._artifact_kind("craft a widget configurator") == "landing"
-
-    def test_templates_are_actually_different(self):
-        landing = planner_mod._SCAFFOLD_LANDING
-        dash = planner_mod._SCAFFOLD_DASHBOARD
-        feed = planner_mod._SCAFFOLD_FEED
-        assert "class=hero" in landing["body"]
-        assert "chipbar" not in landing["body"]
-        assert "<aside>" in dash["body"] and "kpis" in dash["body"]
-        assert "chipbar" in feed["body"]
-
-    def test_headline_derived_from_goal(self):
-        headline, sub = planner_mod._headline_from_goal(
-            "make a product landing page for nike shoes", "landing"
-        )
-        assert "nike" in headline.lower()
-        assert "shoes" in headline.lower()
-        assert sub  # subtitle present
-
-    @pytest.mark.asyncio
-    async def test_landing_goal_produces_hero_not_grid(self, gemini):
-        _, responses = gemini
-        responses[:] = [""]  # force deterministic fallback path
-        steps = await planner_mod.plan_task(
-            Task(goal="make a product landing page for our startup")
-        )
-        assert len(steps) == 1
-        desc = steps[0].description
-        assert "landing project" in desc
-        code = steps[0].tool_args["code"]
-        assert "class=hero" in code
-        assert "chipbar" not in code
+    def test_hardcoded_templates_removed(self):
+        assert not hasattr(planner_mod, "_SCAFFOLD_LANDING")
+        assert not hasattr(planner_mod, "_SCAFFOLD_DASHBOARD")
+        assert not hasattr(planner_mod, "_SCAFFOLD_FEED")
+        assert not hasattr(planner_mod, "_artifact_kind")
 
 
 class TestWriteFileRoots:

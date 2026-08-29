@@ -121,6 +121,47 @@ def _is_novel_reflection(reflection: str, existing: list[str]) -> bool:
     return True
 
 
+async def _gemini_should_store(task: Task, is_failure: bool = False) -> bool:
+    """Ask Gemini whether this task outcome is worth remembering.
+
+    When Gemini is unavailable, falls back to deterministic heuristics.
+    """
+    try:
+        from agent.config import settings
+        from agent.core.gemini_client import generate_content
+
+        steps_summary = "; ".join(f"{s.tool_name}:{s.status.value}" for s in task.steps[:6])
+        prompt = (
+            f"Task goal: {task.goal}\n"
+            f"Success: {not is_failure and task.status.value == 'completed'}\n"
+            f"Steps: {steps_summary or 'none'}\n"
+            f"Result snippet: {(task.result or task.error or '')[:300]}\n\n"
+            "Should this be saved to long-term memory? Consider:\n"
+            "- Is there a reusable outcome, decision, or preference?\n"
+            "- Is it trivial (greetings, one-word, simple lookup)?\n"
+            "Reply with ONLY 'YES' or 'NO'."
+        )
+        raw = await generate_content(
+            system="You are a memory policy controller. Answer only YES or NO.",
+            user=prompt,
+            temperature=0.1,
+            max_tokens=8,
+        )
+        answer = raw.strip().lower()
+        if "yes" in answer:
+            return True
+        if "no" in answer:
+            return False
+    except Exception:
+        logger.debug("Gemini memory decision failed, using fallback", exc_info=True)
+    # Deterministic fallback
+    if _is_trivial(task):
+        return False
+    successful = [s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name]
+    distinct = {s.tool_name for s in successful}
+    return len(successful) >= 1  # looser than legacy 2x2 when Gemini decides fallback
+
+
 class Orchestrator:
     """Main agent loop — receives tasks, plans, executes, learns."""
 
@@ -273,19 +314,34 @@ class Orchestrator:
                 task.result = context.get("step_0_result", "Task completed")
             task.updated_at = datetime.now(UTC)
 
-            # Only store outcome if task was substantial (Hermes pattern: >=2 steps with >=2 distinct tools)
-            # Prevents noisy single-tool web_search loops from polluting task_outcome
-            if not _is_trivial(task) and len(task.steps) > 1:
-                successful = [s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name]
-                distinct = {s.tool_name for s in successful}
-                if len(successful) >= 2 and len(distinct) >= 2:
-                    self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
+            # Memory policy: when gemini_full_control is True, Gemini decides
+            # what to store, what filename to use, and what lessons to keep.
+            # Deterministic gates remain as fallback when Gemini unavailable.
+            from agent.config import settings as _settings
 
-            # Auto-extract durable preferences/decisions from this interaction
-            # (Hermes session-harvest pattern, applied per-task instead).
-            extracted = self.memory.extract_and_store(task.goal)
-            if extracted:
-                logger.info("Auto-extracted %d durable fact(s) from task goal", extracted)
+            if _settings.gemini_full_control and _settings.gemini_api_key:
+                should_store = await _gemini_should_store(task)
+                if should_store:
+                    self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
+                    logger.info("Gemini decided to store task outcome for %s", task.id)
+                # Gemini-driven extraction (preferences/decisions/memory hints)
+                try:
+                    extracted = await self.memory.gemini_extract_and_store(task.goal)
+                except Exception:
+                    logger.debug("Gemini memory extraction failed, falling back to regex", exc_info=True)
+                    extracted = self.memory.extract_and_store(task.goal)
+                if extracted:
+                    logger.info("Gemini auto-extracted %d durable fact(s) from task goal", extracted)
+            else:
+                # Legacy deterministic policy
+                if not _is_trivial(task) and len(task.steps) > 1:
+                    successful = [s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name]
+                    distinct = {s.tool_name for s in successful}
+                    if len(successful) >= 2 and len(distinct) >= 2:
+                        self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
+                extracted = self.memory.extract_and_store(task.goal)
+                if extracted:
+                    logger.info("Auto-extracted %d durable fact(s) from task goal", extracted)
 
             # Credit any injected procedural skills that were actually followed,
             # then try to grow the library from this task (self-evolution).
@@ -308,8 +364,18 @@ class Orchestrator:
             logger.exception("Task [%s] failed with exception", task.id)
             task.status = TaskStatus.FAILED
             task.error = str(exc)
-            if not _is_trivial(task):
-                self.memory.save_task_outcome(task.goal, str(exc)[:200], success=False)
+            from agent.config import settings as _fail_settings
+            if _fail_settings.gemini_full_control and _fail_settings.gemini_api_key:
+                try:
+                    if await _gemini_should_store(task, is_failure=True):
+                        self.memory.save_task_outcome(task.goal, str(exc)[:200], success=False)
+                except Exception:
+                    # fallback to deterministic gate
+                    if not _is_trivial(task):
+                        self.memory.save_task_outcome(task.goal, str(exc)[:200], success=False)
+            else:
+                if not _is_trivial(task):
+                    self.memory.save_task_outcome(task.goal, str(exc)[:200], success=False)
 
             # Notify via Telegram
             from agent.telegram import is_configured, notify_task_failed
@@ -422,13 +488,17 @@ execute_code, read_file, write_file, github_*>
             logger.warning("Skill auto-creation failed for task %s (non-critical)", task.id, exc_info=True)
 
     async def _self_reflect(self, task: Task) -> None:
-        """Post-task reflection — adapted from Hermes' self-improvement loop.
+        """Post-task reflection — Gemini decides what is worth remembering.
 
-        Only stores reflection if it contains genuinely new, actionable information.
-        Skips trivial tasks entirely.
+        When ``gemini_full_control`` is on, Gemini judges novelty against
+        existing lessons instead of the heuristic Jaccard overlap.
         """
-        # Skip reflection for trivial tasks
-        if _is_trivial(task):
+        from agent.config import settings as _s
+
+        if _s.gemini_full_control and _s.gemini_api_key:
+            # Let Gemini decide triviality itself via the prompt; no early exit
+            pass
+        elif _is_trivial(task):
             return
 
         from agent.core.gemini_client import generate_content

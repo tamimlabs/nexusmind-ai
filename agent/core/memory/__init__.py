@@ -324,6 +324,54 @@ class MemoryStore:
                 break
         return stored
 
+    async def gemini_extract_and_store(self, text: str) -> int:
+        """Gemini-controlled extraction — backend AI decides what is durable.
+
+        Falls back to regex extract_and_store when Gemini unavailable or empty.
+        """
+        if not text or len(text.strip()) < 10:
+            return 0
+        from agent.config import settings as _s
+
+        if not _s.gemini_full_control or not _s.gemini_api_key:
+            return self.extract_and_store(text)
+        try:
+            from agent.core.gemini_client import generate_content
+
+            prompt = (
+                f"User text: {text[:500]}\n\n"
+                "Decide what durable facts to store:\n"
+                "- 'user_pref' : a lasting preference (I prefer/like/use ...)\n"
+                "- 'project' : a project decision (we decided / project uses ...)\n"
+                "- 'none' : nothing durable\n"
+                "Reply as JSON: {\"category\": \"user_pref\"|\"project\"|\"none\", \"fact\": \"<short fact>\"} "
+                "or {\"category\":\"none\"} if nothing."
+            )
+            raw = await generate_content(
+                system="You are a memory extractor. Return only JSON.",
+                user=prompt,
+                temperature=0.1,
+                max_tokens=128,
+            )
+            import json as _json
+
+            # Extract JSON object span
+            start, end = raw.find("{"), raw.rfind("}")
+            if start != -1 and end > start:
+                data = _json.loads(raw[start : end + 1])
+                cat = str(data.get("category", "none")).strip().lower()
+                fact = str(data.get("fact", "")).strip()
+                if cat in {"user_pref", "project"} and fact:
+                    if self.add(MemoryEntry(content=fact[:400], category=cat)):
+                        return 1
+                if cat == "none":
+                    return 0
+            # Fallback to regex if Gemini unclear
+            return self.extract_and_store(text)
+        except Exception:
+            logger.debug("gemini_extract_and_store failed, falling back", exc_info=True)
+            return self.extract_and_store(text)
+
     # ------------------------------------------------------------------
     # Trust feedback + compositional queries
     # ------------------------------------------------------------------

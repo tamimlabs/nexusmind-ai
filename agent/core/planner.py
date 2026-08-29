@@ -21,12 +21,17 @@ from agent.models import Task, TaskStep
 
 logger = logging.getLogger(__name__)
 
-PLANNER_SYSTEM_PROMPT = """You are NexusMind — an autonomous AI agent with REAL execution capabilities.
+PLANNER_SYSTEM_PROMPT = """You are NexusMind — an autonomous AI agent with REAL execution capabilities. Backend AI (Gemini) is the CONTROLLER for all decisions: tool selection, file naming, and memory — you must decide these explicitly.
 
 YOU ARE NOT A CHATBOT. You have direct access to tools that execute real actions:
 - You can run shell commands and Python code
 - You can read/write files
 - You can call APIs and take real actions
+
+GEMINI CONTROL RULES:
+- YOU decide which tools to use — choose the minimal set that directly fulfills the goal.
+- YOU decide exact file paths for every write_file / execute_code output (use projects/<kebab-name>/... for multi-file builds, output/... for single artifacts). Never leave path empty.
+- Prefer explicit, goal-derived kebab-case names; use relative paths.
 
 AVAILABLE TOOLS:
 - web_search: Search the web. Args: {"query": "...", "num_results": 5}
@@ -73,12 +78,16 @@ RULES:
    inside tool_args — instead use execute_code with Python that WRITES the
    file programmatically, or keep embedded content under ~30 lines
 6. MULTI-FILE PROJECTS: for websites / apps / full-stack builds create ONE
-   project folder per task — projects/<short-name>/ — and write EVERY file
-   into it via separate steps: index.html, css/styles.css, js/app.js,
-   backend file (e.g. server.py) when relevant, and README.md.
-   Files must link each other with RELATIVE paths (e.g. css/styles.css).
-   NEVER cram a whole multi-file project into a single HTML file.
-   Small one-artifact mockups may still go to output/.
+    project folder per task and write EVERY file into it via separate steps:
+    index.html, css/styles.css, js/app.js, backend file (e.g. server.py)
+    when relevant, and README.md. Files must link with RELATIVE paths.
+    CRITICAL: if the user specifies an explicit path like projects/portfolio/
+    or projects/my-site/ you MUST use that exact path verbatim - never invent
+    your own slug or truncate it. Only when NO path is given, derive a short
+    kebab-case name from the goal.
+    NEVER use hardcoded HTML/CSS/JS templates - always generate original,
+    goal-specific content via LLM. NEVER cram a whole multi-file project into
+    a single HTML file. Small one-artifact mockups may still go to output/.
 7. Return ONLY valid JSON array
 
 OUTPUT FORMAT (JSON array):
@@ -201,297 +210,6 @@ _FULLSTACK_HINT_PATTERN = re.compile(
     r"django|fastapi|mongodb|postgres|mysql|supabase|firebase)\b",
     re.IGNORECASE,
 )
-
-_FEED_HINT_PATTERN = re.compile(
-    r"\b(video|youtube|gallery|photos?|portfolio|shop|store|netflix|"
-    r"instagram|feed|grid|catalog(?:ue)?)\b",
-    re.IGNORECASE,
-)
-_DASHBOARD_HINT_PATTERN = re.compile(
-    r"\b(dashboard|admin|analytics|monitor(?:ing)?|metrics|crm|stats)\b",
-    re.IGNORECASE,
-)
-
-# Shared base styles; each template appends its component styles.
-_SCAFFOLD_BASE_CSS = (
-    "*{box-sizing:border-box;margin:0;padding:0}\n"
-    "body{background:#0f0f17;color:#e8e8f0;font-family:system-ui,sans-serif;min-height:100vh}\n"
-    "a{color:inherit;text-decoration:none}\n"
-)
-
-# ── Template: LANDING (product / startup / marketing pages) ──────────
-_SCAFFOLD_LANDING = {
-    "body": (
-        "<nav><div class=logo>N</div><div class=links>"
-        "<a href=#features>Features</a><a href=#pricing>Pricing</a>"
-        "<a href=#contact>Contact</a></div></nav>\n"
-        "<section class=hero>\n"
-        "<h1>NEXUSMIND_HEADLINE</h1>\n"
-        "<p>A conversion-focused landing experience, generated for your goal.</p>\n"
-        "<div class=cta><button class=primary>Get started</button>"
-        "<button class=ghost>Learn more</button></div></section>\n"
-        "<section id=features class=features>\n"
-        "<div class=card><h3>&#9889; Fast setup</h3><p>From zero to live in minutes.</p></div>\n"
-        "<div class=card><h3>&#127919; Built to convert</h3><p>Clear CTAs and focused sections.</p></div>\n"
-        "<div class=card><h3>&#128241; Responsive</h3><p>Looks right on every screen.</p></div>\n"
-        "</section>\n"
-        "<footer id=contact>Made with NexusMind AI &#8226; <span id=year></span></footer>\n"
-    ),
-    "css": (
-        _SCAFFOLD_BASE_CSS
-        + "nav{display:flex;align-items:center;gap:20px;padding:18px 32px;"
-        "position:sticky;top:0;background:rgba(15,15,23,.92);backdrop-filter:blur(8px)}\n"
-        ".logo{width:34px;height:34px;border-radius:9px;background:#ff3d5a;display:grid;"
-        "place-items:center;font-weight:700}\n"
-        ".links{margin-left:auto;display:flex;gap:22px;color:#9a9ab0;font-size:14px}\n"
-        ".hero{text-align:center;padding:96px 24px 72px;max-width:820px;margin:0 auto}\n"
-        ".hero h1{font-size:clamp(30px,5vw,54px);line-height:1.12;"
-        "background:linear-gradient(90deg,#fff,#ff3d5a);-webkit-background-clip:text;"
-        "background-clip:text;color:transparent}\n"
-        ".hero p{margin:18px 0 30px;color:#9a9ab0;font-size:17px}\n"
-        ".cta{display:flex;gap:12px;justify-content:center}\n"
-        "button{padding:12px 26px;border-radius:999px;border:0;font-size:15px;cursor:pointer}\n"
-        ".primary{background:#ff3d5a;color:#fff}.ghost{background:#181827;color:#e8e8f0}\n"
-        ".features{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));"
-        "gap:18px;padding:20px 32px 70px;max-width:1000px;margin:0 auto}\n"
-        ".card{background:#181827;border-radius:16px;padding:26px}\n"
-        ".card h3{margin-bottom:10px}.card p{color:#9a9ab0;font-size:14px;line-height:1.5}\n"
-        "footer{text-align:center;color:#9a9ab0;padding:28px;font-size:13px}\n"
-    ),
-    "js": (
-        "document.getElementById('year').textContent = new Date().getFullYear();\n"
-        "document.querySelectorAll('a[href^=\"#\"]').forEach(a => a.addEventListener(\n"
-        "  'click', e => { e.preventDefault(); document.querySelector(a.hash)?.scrollIntoView({behavior:'smooth'}); }\n"
-        "));\n"
-    ),
-}
-
-# ── Template: DASHBOARD (admin / analytics / metrics) ────────────────
-_SCAFFOLD_DASHBOARD = {
-    "body": (
-        "<aside><div class=logo>D</div><a class=active>Overview</a><a>Reports</a>"
-        "<a>Customers</a><a>Settings</a></aside>\n"
-        "<main><header><h1>NEXUSMIND_HEADLINE</h1></header>\n"
-        "<div class=kpis>\n"
-        "<div class=kpi><span>Revenue</span><strong>$48.2K</strong></div>\n"
-        "<div class=kpi><span>Users</span><strong>12,480</strong></div>\n"
-        "<div class=kpi><span>Uptime</span><strong>99.98%</strong></div>\n"
-        "<div class=kpi><span>Errors</span><strong>3</strong></div></div>\n"
-        "<section class=panel><h2>Traffic (7 days)</h2><div id=bars class=bars></div></section>\n"
-        "</main>\n"
-    ),
-    "css": (
-        _SCAFFOLD_BASE_CSS
-        + "aside{position:fixed;inset:0 auto 0 0;width:210px;background:#14141f;"
-        "padding:22px 16px;display:flex;flex-direction:column;gap:6px}\n"
-        ".logo{width:36px;height:36px;border-radius:9px;background:#ff3d5a;display:grid;"
-        "place-items:center;font-weight:700;margin-bottom:18px}\n"
-        "aside a{padding:10px 14px;border-radius:10px;color:#9a9ab0;font-size:14px;cursor:pointer}\n"
-        "aside a.active,aside a:hover{background:#1f1f30;color:#fff}\n"
-        "main{margin-left:210px;padding:26px 32px}\n"
-        "header h1{font-size:24px;margin-bottom:22px}\n"
-        ".kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:22px}\n"
-        ".kpi{background:#181827;border-radius:14px;padding:18px}\n"
-        ".kpi span{font-size:12px;color:#9a9ab0}.kpi strong{display:block;margin-top:6px;font-size:22px}\n"
-        ".panel{background:#181827;border-radius:14px;padding:20px}\n"
-        ".panel h2{font-size:15px;margin-bottom:16px}\n"
-        ".bars{display:flex;align-items:flex-end;gap:10px;height:180px}\n"
-        ".bars div{flex:1;background:linear-gradient(180deg,#ff3d5a,#7a2038);border-radius:6px 6px 0 0}\n"
-    ),
-    "js": (
-        "const vals = Array.from({length: 7}, (_, i) => 30 + ((i * 37) % 65));\n"
-        "document.getElementById('bars').innerHTML =\n"
-        "  vals.map(v => `<div style=\"height:${v}%\" title=\"${v}\"></div>`).join('');\n"
-    ),
-}
-
-# ── Template: FEED/GRID (video / gallery / portfolio / shop) ─────────
-_SCAFFOLD_FEED = {
-    "body": (
-        "<header><div class=logo>&#9654;</div><input placeholder='Search'>"
-        "<div class=s>NexusMind &#10022;</div></header>\n"
-        "<div class=chipbar id=chips></div>\n"
-        "<div class=grid id=grid></div>\n"
-    ),
-    "css": (
-        _SCAFFOLD_BASE_CSS
-        + "header{display:flex;align-items:center;gap:16px;padding:16px 28px;"
-        "position:sticky;top:0;background:rgba(15,15,23,.92);backdrop-filter:blur(8px);z-index:10}\n"
-        ".logo{width:38px;height:26px;border-radius:7px;background:#ff3d5a;display:grid;"
-        "place-items:center;font-size:13px;color:#fff}\n"
-        "input{flex:1;max-width:520px;padding:10px 18px;border-radius:999px;border:1px solid #2c2c40;"
-        "background:#181827;color:#e8e8f0;outline:none}\n"
-        ".s{color:#9a9ab0}\n"
-        ".chipbar{display:flex;gap:10px;padding:14px 28px;overflow-x:auto}\n"
-        ".chip{padding:7px 15px;border-radius:999px;background:#181827;font-size:13px;"
-        "cursor:pointer;white-space:nowrap;border:1px solid transparent}\n"
-        ".chip:hover,.chip.active{background:#ff3d5a;color:#fff}\n"
-        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;padding:6px 28px 40px}\n"
-        ".thumb{aspect-ratio:16/9;border-radius:14px;position:relative;overflow:hidden;"
-        "background:linear-gradient(135deg,#23233a,#151524)}\n"
-        ".thumb::after{content:'';position:absolute;inset:0;background:"
-        "radial-gradient(circle at 70% 30%,rgba(255,61,90,.35),transparent 55%)}\n"
-        ".badge{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,.8);"
-        "font-size:11px;padding:2px 7px;border-radius:5px;z-index:1}\n"
-        ".meta{display:flex;gap:12px;margin-top:11px}\n"
-        ".avatar{width:36px;height:36px;border-radius:50%;background:#26263c;flex-shrink:0}\n"
-        ".t{font-size:14.5px;font-weight:600;line-height:1.35;margin-bottom:4px}\n"
-        ".s2{font-size:12.5px;color:#9a9ab0}\n"
-    ),
-    "js": (
-        "const chips=['All','Featured','New','Trending','Collections','Live'];\n"
-        "chips.forEach((c,i)=>{const d=document.createElement('div');d.className='chip'+(i?'':' active');\n"
-        "d.textContent=c;d.onclick=()=>document.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'))||d.classList.add('active');\n"
-        "document.getElementById('chips').appendChild(d)});\n"
-        "const titles=['Concept one - hero card','Concept two - immersive tile',\n"
-        "'Concept three - ambient view','Concept four - focus item','Concept five - gesture nav'];\n"
-        "for(let i=0;i<12;i++){const t=titles[i%titles.length];\n"
-        "document.getElementById('grid').insertAdjacentHTML('beforeend',\n"
-        "`<div><div class=thumb><span class=badge>${(i+3)*2}:${i%6}0</span></div>\n"
-        "<div class=meta><div class=avatar></div><div><div class=t>${i+1}. ${t}</div>\n"
-        "<div class=s2>NexusMind Labs &#8226; ${(i+1)*11}K views</div></div></div></div>`)};\n"
-    ),
-}
-
-_SCAFFOLD_TEMPLATES = {
-    "landing": _SCAFFOLD_LANDING,
-    "dashboard": _SCAFFOLD_DASHBOARD,
-    "feed": _SCAFFOLD_FEED,
-}
-
-
-def _artifact_kind(goal: str) -> str:
-    """Pick a scaffold layout matching what the goal actually describes."""
-    if _DASHBOARD_HINT_PATTERN.search(goal):
-        return "dashboard"
-    if _FEED_HINT_PATTERN.search(goal):
-        return "feed"
-    return "landing"
-
-
-_HEADLINE_STOPWORDS = {
-    "the", "a", "an", "that", "can", "for", "with", "make", "build", "create",
-    "design", "redesign", "generate", "prototype", "mockup", "craft", "full",
-    "stack", "website", "page", "site", "app", "please", "my", "our", "us",
-}
-_KIND_FALLBACK_SUB = {
-    "landing": "A conversion-focused landing experience.",
-    "dashboard": "Every metric that matters, at a glance.",
-    "feed": "Discover, browse, and collect in one immersive grid.",
-}
-
-
-def _headline_from_goal(goal: str, kind: str) -> tuple[str, str]:
-    """Derive (headline, subtitle) from the goal so scaffolds differ per task."""
-    words = [
-        w for w in re.findall(r"[a-zA-Z0-9']+", goal)
-        if w.lower() not in _HEADLINE_STOPWORDS
-    ][:8]
-    headline = " ".join(words).strip()
-    headline = headline[:64] or ("Live metrics overview" if kind == "dashboard" else "Build something remarkable")
-    sub = _KIND_FALLBACK_SUB[kind]
-    return headline, sub
-
-
-def _creative_pipeline(task: Task) -> list[TaskStep]:
-    """Deterministic build plan for creative goals — no LLM dependency.
-
-    Generates a complete project FOLDER under ``projects/<slug>/`` whose
-    layout MATCHES THE GOAL (landing page vs dashboard vs feed/gallery),
-    plus a stdlib ``server.py`` for full-stack goals — so a failed or
-    rate-limited planner still ships a real, relevant multi-file artifact.
-    """
-    words = re.findall(r"[a-z0-9]+", task.goal.lower())
-    slug = (
-        "-".join(w for w in words if w not in {"the", "a", "an", "that", "can", "for", "with"})[:40]
-        or "artifact"
-    )
-    title = (task.goal.strip()[:80] or "NexusMind Artifact").replace('"', "'")
-    fullstack = _is_fullstack_goal(task.goal)
-    kind = _artifact_kind(task.goal)
-    headline, sub = _headline_from_goal(task.goal, kind)
-    tpl = _SCAFFOLD_TEMPLATES[kind]
-
-    body = tpl["body"].replace("NEXUSMIND_HEADLINE", headline).replace(
-        "NEXUSMIND_SUB", sub
-    )
-    index_html = (
-        "<!DOCTYPE html>\n"
-        '<html lang="en"><head><meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>{title}</title>\n"
-        '<link rel="stylesheet" href="css/styles.css">\n'
-        f"</head><body>\n{body}<script src=\"js/app.js\"></script>\n</body></html>"
-    )
-    structure = ["index.html - entry page", "css/styles.css - design system", "js/app.js - interactions"]
-    files: dict[str, str] = {
-        "index.html": index_html,
-        "css/styles.css": tpl["css"],
-        "js/app.js": tpl["js"],
-    }
-    server_py = ''
-    if fullstack:
-        server_py = (
-            '"""Tiny stdlib dev server: static files + JSON API stub."""\n'
-            "import http.server\nimport json\nimport pathlib\nimport socketserver\n\n"
-            "ROOT = pathlib.Path(__file__).parent\n\n\n"
-            "class Handler(http.server.SimpleHTTPRequestHandler):\n"
-            "    def __init__(self, *args, **kwargs):\n"
-            "        super().__init__(*args, directory=str(ROOT), **kwargs)\n\n"
-            "    def do_GET(self):\n"
-            "        if self.path.startswith('/api/'):\n"
-            "            body = json.dumps({'ok': True, 'endpoint': self.path}).encode()\n"
-            "            self.send_response(200)\n"
-            "            self.send_header('Content-Type', 'application/json')\n"
-            "            self.send_header('Content-Length', str(len(body)))\n"
-            "            self.end_headers()\n"
-            "            self.wfile.write(body)\n"
-            "        else:\n"
-            "            super().do_GET()\n\n\n"
-            "if __name__ == '__main__':\n"
-            "    with socketserver.TCPServer(('', 8000), Handler) as httpd:\n"
-            "        print('Serving on http://localhost:8000')\n"
-            "        httpd.serve_forever()\n"
-        )
-        files["server.py"] = server_py
-        structure.append("server.py - stdlib dev server (python server.py)")
-    files["README.md"] = (
-        f"# {title}\n\nGenerated by NexusMind AI ({kind} layout).\n\n## Structure\n"
-        + "\n".join(f"- {line}" for line in structure)
-        + "\n"
-    )
-
-    # The generated script just materializes plan-time content — no fragile
-    # string embedding, everything travels as one JSON payload.
-    generator = (
-        "from pathlib import Path\n"
-        "import json\n\n"
-        f"root = Path('projects') / json.loads({json.dumps(json.dumps(slug))})\n"
-        "files = json.loads(r'''" + json.dumps(files) + "''')\n"
-        "for rel, content in files.items():\n"
-        "    p = root / rel\n"
-        "    p.parent.mkdir(parents=True, exist_ok=True)\n"
-        "    p.write_text(content, encoding='utf-8')\n"
-        "print('Project scaffold written to', root.resolve())\n"
-    )
-
-    logger.info(
-        "Deterministic creative plan (projects/%s/, %s layout%s) for task %s",
-        slug, kind, "+server.py" if fullstack else "", task.id,
-    )
-    extra = ", server.py" if fullstack else ""
-    return [
-        TaskStep(
-            task_id=task.id,
-            description=(
-                f"Scaffold {kind} project: projects/{slug}/ "
-                f"(index.html, css/styles.css, js/app.js, README.md{extra})"
-            ),
-            tool_name="execute_code",
-            tool_args={"code": generator},
-            order=0,
-        ),
-    ]
 
 
 def _extract_pr_numbers(goal: str) -> list[int]:
@@ -680,8 +398,12 @@ async def plan_task(
 ) -> list[TaskStep]:
     """Decompose a task into ordered steps.
 
-    GitHub/repository/PR goals bypass Gemini entirely and get a deterministic
-    pipeline — this guarantees they never degrade into web searches.
+    When ``settings.gemini_full_control`` is True (default), Gemini decides
+    tool selection, file naming and memory hints for ALL goals. The deterministic
+    GitHub pipeline is kept only as a validator/fallback — if Gemini returns
+    a plan that mis-routes a GitHub goal to web_search, we fall back to the
+    pipeline.  When full_control is False, GitHub goals still fast-path through
+    the deterministic pipeline (legacy behaviour).
 
     Args:
         task: The task to plan.
@@ -697,6 +419,9 @@ async def plan_task(
         Ordered list of TaskStep objects.
 
     """
+    # GitHub goals ALWAYS use deterministic pipeline — this guarantees they
+    # never degrade into web_search, even when gemini_full_control is on.
+    # Gemini still controls file naming, memory, and non-GitHub tool selection.
     if _is_github_goal(task.goal):
         return _github_pipeline(task)
 
@@ -778,15 +503,31 @@ Return ONLY the JSON array."""
         if not steps:
             raise ValueError("Plan contained no steps with valid tools")
 
+        # Gemini full-control validator: if goal is GitHub but Gemini avoided
+        # github_* tools (e.g. hallucinated web_search), fall back to deterministic
+        # pipeline rather than executing a wrong plan. This keeps Gemini in control
+        # for correct plans, but guarantees correctness on mis-routing.
+        if settings.gemini_full_control and _is_github_goal(task.goal):
+            tool_names = {s.tool_name for s in steps}
+            has_github = any(t.startswith("github_") for t in tool_names)
+            has_websearch_only = tool_names == {"web_search"}
+            if not has_github or has_websearch_only:
+                logger.warning(
+                    "Gemini plan for GitHub goal %s avoided github tools (%s); "
+                    "falling back to deterministic GitHub pipeline", task.id, tool_names
+                )
+                return _github_pipeline(task)
+
         logger.info("Planned %d steps for task %s", len(steps), task.id)
         return steps
 
     except Exception:
         logger.exception("Planning failed for task %s", task.id)
-        # Hermes/OpenClaw ladder: deterministic pipeline first (zero API calls),
-        # then LLM tool-selection, then honest last resort.
-        if _is_creative_goal(task.goal):
-            return _creative_pipeline(task)
+        # For GitHub goals, deterministic pipeline is the safest fallback even
+        # under full_control — it guarantees github_* tools without web_search.
+        if _is_github_goal(task.goal):
+            logger.info("Falling back to deterministic GitHub pipeline for %s", task.id)
+            return _github_pipeline(task)
         return await _fallback_plan(task)
 
 

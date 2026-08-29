@@ -158,8 +158,20 @@ def is_dangerous_code(code: str) -> bool:
     return any(re.search(pattern, code) for pattern in _DANGEROUS_CODE_PATTERNS)
 
 
+def _normalize_mode(raw: str) -> str:
+    """Normalize approval_mode aliases to canonical 'always'/'smart'/'never'."""
+    m = (raw or "smart").strip().lower().replace(" ", "_").replace("-", "_")
+    if m in {"always", "ask", "ask_everytime", "everytime", "ask_every_time", "always_ask"}:
+        return "always"
+    if m in {"never", "none", "no_ask", "disabled", "off"}:
+        return "never"
+    return "smart"
+
+
 def needs_approval(tool_name: str, tool_args: dict[str, Any]) -> bool:
     """Determine if a tool call needs human approval based on approval mode.
+
+    Supports aliases: 'always' == 'ask_everytime' == 'everytime'.
 
     Returns:
         True if approval is needed, False if auto-approved.
@@ -167,7 +179,7 @@ def needs_approval(tool_name: str, tool_args: dict[str, Any]) -> bool:
     """
     from agent.config import settings
 
-    mode = settings.approval_mode
+    mode = _normalize_mode(settings.approval_mode)
 
     # "never" mode — auto-approve everything
     if mode == "never":
@@ -216,7 +228,7 @@ def needs_approval(tool_name: str, tool_args: dict[str, Any]) -> bool:
 
 # ── Human-in-the-Loop ─────────────────────────────────────────────
 
-async def request_approval(step_id: str, description: str, tool_name: str, tool_args: dict[str, Any] | None = None, task_goal: str = "") -> dict[str, Any]:
+async def request_approval(step_id: str, description: str, tool_name: str, tool_args: dict[str, Any] | None = None, task_goal: str = "", task_id: str = "") -> dict[str, Any]:
     """Request human approval for a high-risk action.
 
     Tries Telegram first (remote), falls back to dashboard (local).
@@ -233,7 +245,17 @@ async def request_approval(step_id: str, description: str, tool_name: str, tool_
     from agent.telegram import is_configured, request_approval_via_telegram
 
     telegram_status = "not_configured"
+    # _task_context is keyed by task_id, not step_id — resolve correctly
+    resolved_goal = task_goal
+    if not resolved_goal and task_id and task_id in _task_context:
+        resolved_goal = _task_context[task_id]
+    elif not resolved_goal and _task_context:
+        # Fallback: if task_id not provided but context has single entry, use it
+        # or try step_id (legacy)
+        resolved_goal = _task_context.get(step_id, "") or next(iter(_task_context.values()), "")
+
     if is_configured():
+        logger.info("Telegram is_configured=True, sending approval for %s", step_id)
         extra_info = ""
         if tool_args:
             if "command" in tool_args:
@@ -243,14 +265,23 @@ async def request_approval(step_id: str, description: str, tool_name: str, tool_
             elif "url" in tool_args:
                 extra_info = f"URL: {tool_args['url']}"
 
-        result = await request_approval_via_telegram(
-            step_id=step_id,
-            tool_name=tool_name,
-            description=description,
-            task_goal=task_goal or _task_context.get(step_id, ""),
-            extra_info=extra_info,
-        )
-        telegram_status = result.get("status", "failed")
+        try:
+            result = await request_approval_via_telegram(
+                step_id=step_id,
+                tool_name=tool_name,
+                description=description,
+                task_goal=resolved_goal,
+                extra_info=extra_info,
+            )
+            telegram_status = result.get("status", "failed")
+            logger.info("Telegram approval send for %s -> %s", step_id[:8], telegram_status)
+            if telegram_status == "failed":
+                logger.warning("Telegram send failed for %s (check TELEGRAM_BOT_TOKEN/CHAT_ID)", step_id[:8])
+        except Exception as exc:
+            logger.exception("Telegram approval exception for %s: %s", step_id[:8], exc)
+            telegram_status = "exception"
+    else:
+        logger.warning("Telegram not configured (is_configured=False) for approval %s — dashboard only", step_id[:8])
 
     return {
         "status": "pending_approval",
@@ -274,11 +305,18 @@ async def wait_for_approval(step_id: str, timeout: float = 300) -> bool:
     """Wait for human approval with timeout. Returns True if approved."""
     if step_id not in _pending_approvals:
         return True
+    ev = _pending_approvals[step_id]
+    logger.debug("Waiting %ss for approval %s", timeout, step_id[:8])
     try:
-        await asyncio.wait_for(_pending_approvals[step_id].wait(), timeout=timeout)
-        return _approval_results.get(step_id, False)
+        await asyncio.wait_for(ev.wait(), timeout=timeout)
+        result = _approval_results.get(step_id, False)
+        logger.info("Approval %s resolved -> %s", step_id[:8], result)
+        return result
     except TimeoutError:
         logger.warning("Approval timed out for step %s", step_id)
+        return False
+    except asyncio.TimeoutError:
+        logger.warning("Approval timed out (asyncio) for step %s", step_id)
         return False
 
 
@@ -386,10 +424,14 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
     # Smart approval: check if this specific call needs approval
     if needs_approval(step.tool_name, step.tool_args or {}):
         # Send approval request (Telegram + dashboard)
+        # context uses keys task_id/task_goal (see orchestrator.py:220)
+        ctx_task_id = context.get("task_id", "") if context else ""
+        ctx_task_goal = context.get("task_goal", "") or context.get("goal", "") if context else ""
         await request_approval(
             step.id, step.description, step.tool_name,
             tool_args=step.tool_args,
-            task_goal=context.get("goal", "") if context else "",
+            task_goal=ctx_task_goal,
+            task_id=ctx_task_id,
         )
         granted = await wait_for_approval(step.id)
         if not granted:
@@ -418,7 +460,7 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
     # still missing instead of crashing the step with a TypeError.
     _apply_arg_aliases(resolved_args)
     if step.tool_name == "write_file" and not resolved_args.get("path"):
-        resolved_args["path"] = _derive_write_path(step.description or "", context)
+        resolved_args["path"] = await _gemini_derive_write_path(step.description or "", context)
     current_args = dict(resolved_args)
     last_error = ""
     original_tool = step.tool_name
@@ -492,11 +534,7 @@ def _apply_arg_aliases(args: dict[str, Any]) -> None:
 
 
 def _derive_write_path(description: str, context: dict[str, Any] | None) -> str:
-    """Guess a sensible target path when a write_file step lacks one.
-
-    Uses the description to pick a conventional filename (HTML/CSS/JS/README)
-    and parks it inside the task's project folder when a goal slug exists.
-    """
+    """Deterministic fallback for write_file path (used when Gemini unavailable)."""
     d = (description or "").lower()
     goal = str((context or {}).get("task_goal") or "")
     goal_slug = "-".join(
@@ -513,6 +551,49 @@ def _derive_write_path(description: str, context: dict[str, Any] | None) -> str:
         if re.search(pattern, d):
             return f"{base}/{name}"
     return f"output/generated_{uuid.uuid4().hex[:8]}.txt"
+
+
+async def _gemini_derive_write_path(description: str, context: dict[str, Any] | None) -> str:
+    """Ask Gemini to choose the file path; fallback to deterministic.
+
+    When ``gemini_full_control`` is True, file naming is controlled by the
+    backend AI. We prompt Gemini with the goal + step description and ask for
+    a single relative path. The result is validated to stay inside allowed
+    roots; on any failure we return the deterministic fallback.
+    """
+    from agent.config import settings
+
+    if not settings.gemini_full_control or not settings.gemini_api_key:
+        return _derive_write_path(description, context)
+    try:
+        from agent.core.gemini_client import generate_content
+
+        goal = str((context or {}).get("task_goal") or "")
+        prompt = (
+            f"Goal: {goal}\nStep description: {description}\n\n"
+            "Choose ONE relative file path for write_file. Rules:\n"
+            "- Must start with 'output/' for single artifacts or 'projects/<kebab-name>/' for multi-file projects.\n"
+            "- Use kebab-case folder derived from the GOAL, not random names.\n"
+            "- File extension must match content type (.html, .css, .js, .md, .py, .txt, etc.).\n"
+            "- Return ONLY the path, nothing else. Example: projects/my-site/index.html"
+        )
+        raw = await generate_content(
+            system="You are a file naming assistant. Return only a file path.",
+            user=prompt,
+            temperature=0.2,
+            max_tokens=64,
+        )
+        candidate = raw.strip().splitlines()[0].strip().strip("'\"` ")
+        # Basic validation: must be relative and inside allowed roots
+        if candidate and not candidate.startswith("/") and not candidate.startswith(".."):
+            if candidate.startswith(("output/", "projects/")):
+                # sanitize — no absolute, no traversal
+                if ".." not in candidate and candidate.count("/") >= 1:
+                    return candidate
+        logger.warning("Gemini file path invalid (%r), using deterministic fallback", candidate)
+    except Exception:
+        logger.debug("Gemini file naming failed, using fallback", exc_info=True)
+    return _derive_write_path(description, context)
 
 
 # ── Built-in Tools ────────────────────────────────────────────────

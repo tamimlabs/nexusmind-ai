@@ -112,13 +112,22 @@ async def start_telegram_polling():
                         params={"offset": offset, "timeout": 10},
                     )
                     data = resp.json()
-                    if data.get("ok") and data.get("result"):
-                        for update in data["result"]:
-                            offset = update["update_id"] + 1
-                            try:
-                                await process_update(update)
-                            except Exception:
-                                logger.exception("Error processing Telegram update")
+                    if data.get("ok"):
+                        if data.get("result"):
+                            for update in data["result"]:
+                                offset = update["update_id"] + 1
+                                try:
+                                    await process_update(update)
+                                except Exception:
+                                    logger.exception("Error processing Telegram update")
+                    else:
+                        # 409 Conflict = another getUpdates instance; back off
+                        err = data.get("description", "")
+                        if "409" in str(data) or "Conflict" in err:
+                            logger.warning("Telegram polling 409 Conflict (another instance), backing off 5s")
+                            await asyncio.sleep(5)
+                        else:
+                            logger.warning("Telegram getUpdates not ok: %s", data)
             except asyncio.CancelledError:
                 logger.info("Telegram polling stopped")
                 break
@@ -606,16 +615,32 @@ async def get_approval_mode():
 
 
 class ApprovalModeRequest(BaseModel):
-    mode: str  # "always", "smart", "never"
+    mode: str  # "always" | "ask_everytime" | "smart" | "never" (aliases accepted)
+
+
+def _canonical_approval_mode(raw: str) -> str:
+    m = (raw or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if m in {"always", "ask", "ask_everytime", "everytime", "ask_every_time", "always_ask"}:
+        return "always"
+    if m in {"never", "none", "no_ask", "disabled", "off"}:
+        return "never"
+    if m in {"smart", "auto", "intelligent"}:
+        return "smart"
+    return ""
 
 
 @app.post("/api/approval-mode")
 async def set_approval_mode(req: ApprovalModeRequest):
-    """Set approval mode (always/smart/never) and persist to .env."""
-    if req.mode not in ("always", "smart", "never"):
-        raise HTTPException(status_code=400, detail="Mode must be 'always', 'smart', or 'never'")
-    # Update runtime setting
-    _cfg.settings.approval_mode = req.mode
+    """Set approval mode (always/smart/never) and persist to .env.
+
+    Accepts aliases: 'ask_everytime', 'ask everytime', 'everytime' -> 'always'.
+    """
+    canonical = _canonical_approval_mode(req.mode)
+    if not canonical:
+        raise HTTPException(status_code=400, detail="Mode must be 'always' (or 'ask_everytime'), 'smart', or 'never'")
+    # Update runtime setting (canonical)
+    _cfg.settings.approval_mode = canonical
+    req_mode = canonical
     # Persist to .env so refresh/restart keeps the choice
     try:
         env_file = pathlib.Path(".env")
@@ -624,18 +649,18 @@ async def set_approval_mode(req: ApprovalModeRequest):
         new_lines: list[str] = []
         for line in lines:
             if line.strip().startswith("APPROVAL_MODE="):
-                new_lines.append(f"APPROVAL_MODE={req.mode}")
+                new_lines.append(f"APPROVAL_MODE={req_mode}")
                 found = True
             else:
                 new_lines.append(line)
         if not found:
-            new_lines.append(f"APPROVAL_MODE={req.mode}")
+            new_lines.append(f"APPROVAL_MODE={req_mode}")
         env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         import os
-        os.environ["APPROVAL_MODE"] = req.mode
+        os.environ["APPROVAL_MODE"] = req_mode
     except Exception:
         logger.debug("Failed to persist APPROVAL_MODE to .env", exc_info=True)
-    return {"mode": req.mode, "message": f"Approval mode set to {req.mode}"}
+    return {"mode": req_mode, "message": f"Approval mode set to {req_mode}"}
 
 
 # ── Telegram Webhook ──────────────────────────────────────────────

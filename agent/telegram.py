@@ -141,18 +141,19 @@ async def request_approval_via_telegram(
     msg_text = "\n".join(line for line in msg_lines if line is not None)
 
     # Inline keyboard with approve/deny buttons
-    # Telegram callback_data max is 64 bytes — use short format
-    short_id = step_id[:8]
+    # Telegram callback_data max 64 bytes — full UUID (36) fits (44 with prefix)
     reply_markup = {
         "inline_keyboard": [
             [
-                {"text": "✅ Approve", "callback_data": f"approve:{short_id}"},
-                {"text": "❌ Deny", "callback_data": f"deny:{short_id}"},
+                {"text": "✅ Approve", "callback_data": f"approve:{step_id}"},
+                {"text": "❌ Deny", "callback_data": f"deny:{step_id}"},
             ]
         ]
     }
 
+    logger.info("Telegram sending approval for %s to chat %s", step_id[:8], _get_chat_id())
     result = await send_message(msg_text, reply_markup)
+    logger.info("Telegram send result for %s: %s", step_id[:8], "sent" if result else "failed")
 
     if result:
         _telegram_approvals[step_id] = {
@@ -170,31 +171,36 @@ async def request_approval_via_telegram(
 
 async def handle_callback_query(callback_query: dict[str, Any]) -> None:
     """Handle a Telegram callback query (approve/deny button pressed)."""
+    logger.debug("Telegram callback received: %s", callback_query)
     callback_id = callback_query.get("id", "")
     data_str = callback_query.get("data", "")
 
-    # Parse short format: "approve:short_id" or "deny:short_id"
+    # Parse format: "approve:full_step_id" (new) or "approve:short_id" (legacy 8-char)
     if ":" not in data_str:
         await answer_callback(callback_id, "Invalid action")
         return
 
-    action, short_id = data_str.split(":", 1)
+    action, id_part = data_str.split(":", 1)
 
     if action not in ("approve", "deny"):
         await answer_callback(callback_id, "Invalid action")
         return
 
-    # Find the full step_id by matching the short prefix
+    # Resolve full step_id: exact match first, then legacy 8-char prefix fallback
     from agent.core.executor import _pending_approvals
 
     step_id = None
-    for sid in list(_pending_approvals.keys()):
-        if sid[:8] == short_id:
-            step_id = sid
-            break
+    if id_part in _pending_approvals:
+        step_id = id_part
+    else:
+        for sid in list(_pending_approvals.keys()):
+            if sid[:8] == id_part[:8]:
+                step_id = sid
+                break
 
     if not step_id:
         await answer_callback(callback_id, "Approval not found (may have expired)")
+        logger.debug("Telegram callback id_part %s not found in pending %s", id_part[:12], list(_pending_approvals.keys())[:2])
         return
 
     # Resolve the approval
