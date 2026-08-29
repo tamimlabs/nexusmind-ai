@@ -19,6 +19,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from agent.core.agent_loop import AdaptiveOutcome, decide_next_step, run_adaptive_loop
 from agent.core.executor import execute_step, list_tools, set_task_context
 from agent.core.memory import memory_store
 from agent.core.planner import plan_task
@@ -29,16 +30,35 @@ logger = logging.getLogger(__name__)
 
 # Trivial tasks that don't need memory storage
 _TRIVIAL_PATTERNS = [
-    "what is", "what are", "who is", "tell me about",
-    "hello", "hi", "hey", "thanks", "ok", "yes", "no",
+    "what is",
+    "what are",
+    "who is",
+    "tell me about",
+    "hello",
+    "hi",
+    "hey",
+    "thanks",
+    "ok",
+    "yes",
+    "no",
 ]
 
 # Phrases that mark a goal as a STANDING INSTRUCTION (future policy) rather
 # than an immediate command. Stored in memory; the watcher enforces them later.
 _INSTRUCTION_TRIGGERS = (
-    "when you", "whenever", "every time", "each time", "from now on",
-    "in future", "in the future", "always ", "by default", "next time",
-    "if a new ", "if any new ", "going forward",
+    "when you",
+    "whenever",
+    "every time",
+    "each time",
+    "from now on",
+    "in future",
+    "in the future",
+    "always ",
+    "by default",
+    "next time",
+    "if a new ",
+    "if any new ",
+    "going forward",
 )
 
 
@@ -164,7 +184,18 @@ async def _gemini_should_store(task: Task, is_failure: bool = False) -> bool:
 _CREDENTIAL_HINTS: list[tuple[tuple[str, ...], str]] = [
     (("github", "ghp_", "api.github.com", "bad credentials"), "GITHUB_TOKEN"),
     (("utterances", "issue comment", "pull_request", "pull request"), "GITHUB_TOKEN"),
-    (("customsearch", "googlesearch", "google search", "gcloud", "google", "quotaexceeded", "serp"), "GOOGLE_SEARCH_API_KEY / GOOGLE_SEARCH_CX / GEMINI_API_KEY"),
+    (
+        (
+            "customsearch",
+            "googlesearch",
+            "google search",
+            "gcloud",
+            "google",
+            "quotaexceeded",
+            "serp",
+        ),
+        "GOOGLE_SEARCH_API_KEY / GOOGLE_SEARCH_CX / GEMINI_API_KEY",
+    ),
     (("slack", "app.slack.com"), "SLACK_BOT_TOKEN"),
     (("discord", "discord.com"), "DISCORD_BOT_TOKEN"),
     (("gitlab", "gitlab.com"), "GITLAB_TOKEN / GITLAB_BASE_URL"),
@@ -201,7 +232,7 @@ def _credential_hint(error_text: str) -> str:
     )
 
 
-def _compose_failure_error(task: Task) -> str:
+def _compose_failure_error(task: Task, extra: str = "") -> str:
     """Build an actionable error message when every planned step failed."""
     errors = [
         (s.error or s.description or f"step {s.order}").strip()
@@ -211,9 +242,12 @@ def _compose_failure_error(task: Task) -> str:
     detail = "; ".join(dict.fromkeys(e.strip() for e in errors))[:800] or (
         "All planned steps failed with no recorded error message."
     )
+    if extra and (extra[:200] not in detail):
+        detail = extra + " " + detail
     hint = _credential_hint("\n".join(errors))
     message = (
-        f"The task could not be completed — {len(task.steps)} planned step(s) ran but none succeeded.\n" + detail
+        f"The task could not be completed — {len(task.steps)} planned step(s) ran but none succeeded.\n"
+        + detail
     )
     if hint:
         message += "\n\n" + hint
@@ -269,6 +303,7 @@ class Orchestrator:
 
         # Notify via Telegram
         from agent.telegram import is_configured, notify_task_started
+
         if is_configured():
             await notify_task_started(task.id, task.goal)
 
@@ -295,114 +330,156 @@ class Orchestrator:
             # when the task completes successfully.
             skill_context, matched_skills = self.skills.plan_context(task.goal)
             if skill_context:
-                logger.info(
-                    "Injected skill context (%d matched procedure(s))", len(matched_skills)
-                )
+                logger.info("Injected skill context (%d matched procedure(s))", len(matched_skills))
 
             # Get available skills
             available_skills = [
-                e.metadata.get("skill_name", "")
-                for e in self.memory.get_by_category("skill")
+                e.metadata.get("skill_name", "") for e in self.memory.get_by_category("skill")
             ]
 
-            # Plan with lessons + recalled memory + procedural skills
-            task.steps = await plan_task(
-                task,
-                available_skills or None,
-                lessons or None,
-                memory_context or None,
-                skill_context or None,
-            )
-            task.status = TaskStatus.EXECUTING
+            # Best-effort initial roadmap (may fail; failure is NOT fatal).
+            # The adaptive loop below reasons ONE action at a time with full
+            # result feedback, so a rough or even missing roadmap still
+            # produces the goal step by step.
+            roadmap: list = []
+            try:
+                roadmap = await plan_task(
+                    task,
+                    available_skills or None,
+                    lessons or None,
+                    memory_context or None,
+                    skill_context or None,
+                )
+                logger.info("Roadmap ready (%d suggested steps) for task %s", len(roadmap), task.id)
+            except Exception:
+                logger.exception(
+                    "Initial roadmap failed for %s; the adaptive loop will work step-by-step from scratch",
+                    task.id,
+                )
 
-            # Execute steps
+            task.status = TaskStatus.EXECUTING
+            task.updated_at = datetime.now(UTC)
+
+            # STEP-BY-STEP EXECUTION (adaptive): the model decides the next
+            # action, we execute THAT ONE action, and its real result
+            # (including errors) is fed back into the very next decision.
+            # Steps are appended to task.steps live, so the dashboard shows
+            # progress in real time, and the loop keeps working — correcting
+            # and verifying — until the model is satisfied or a safety budget
+            # forces a stop. No content is ever fabricated here: every action
+            # comes from the model, goal and live results.
             context: dict[str, Any] = {"task_id": task.id, "task_goal": task.goal}
-            for step in task.steps:
-                logger.info("Executing step %d: %s", step.order, step.description[:80])
-                result = await execute_step(step, context)
-                # Store with BOTH 0-indexed and 1-indexed keys so templates always resolve
-                context[f"step_{step.order}_result"] = result.output
-                context[f"step_{step.order + 1}_result"] = result.output
-                if not result.success:
-                    logger.warning("Step %d failed: %s — skipping and continuing", step.order, result.error)
-                    context[f"step_{step.order}_result"] = f"[Step skipped: {result.error}]"
-                    context[f"step_{step.order + 1}_result"] = f"[Step skipped: {result.error}]"
-                    continue
+            outcome: AdaptiveOutcome = await run_adaptive_loop(
+                task,
+                context,
+                memory_context=memory_context or "",
+                lessons=lessons or [],
+                skill_context=skill_context or "",
+                roadmap=roadmap,
+                execute_fn=execute_step,
+                decide_fn=decide_next_step,
+            )
 
             task.status = TaskStatus.COMPLETED
-            # If EVERY planned step failed (e.g. required credentials missing,
-            # sandbox blocked, plan guessed wrong), the task did NOT succeed.
-            # Previously this was silently reported as "completed" — surface it
-            # as a FAILURE with actionable guidance instead.
+            task.updated_at = datetime.now(UTC)
+            # If EVERY executed step failed (required credentials missing,
+            # sandbox blocked, the model picked a wrong route and could not
+            # self-correct), or the loop could not even start, the task did NOT
+            # succeed. Previously this was silently reported as "completed" —
+            # surface it as a FAILURE with actionable guidance instead.
             failed = [s for s in task.steps if s.status != StepStatus.SUCCESS]
             successful = [s for s in task.steps if s.status == StepStatus.SUCCESS]
-            if task.steps and not successful:
+            if (task.steps and not successful) or (
+                not task.steps and outcome.aborted_reason and not outcome.summary
+            ):
                 task.status = TaskStatus.FAILED
-                task.error = _compose_failure_error(task)
+                task.error = _compose_failure_error(task, extra=outcome.aborted_reason)
                 task.result = ""
                 if not _is_trivial(task):
                     self.memory.save_task_outcome(task.goal, task.error[:200], success=False)
                 from agent.telegram import is_configured, notify_task_failed
+
                 if is_configured():
                     await notify_task_failed(task.id, task.goal, task.error[:300])
                 task.updated_at = datetime.now(UTC)
                 logger.error("Task [%s] FAILED: %s", task.id, task.error[:200])
                 return task
 
-            # Use the most meaningful result (prefer summarize/extract over write_file)
+            # Use the most meaningful result (prefer the model's DONE summary
+            # over raw tool output).
+            best_result = None
             if task.steps:
-                best_result = None
                 for s in reversed(task.steps):
                     if s.status == StepStatus.SUCCESS and s.result:
-                        if not any(kw in (s.tool_name or "") for kw in ["write_file", "read_file", "list_directory"]):
+                        if not any(
+                            kw in (s.tool_name or "")
+                            for kw in ["write_file", "read_file", "list_directory"]
+                        ):
                             best_result = s
                             break
                         if best_result is None:
                             best_result = s
-                task.result = (best_result.result if best_result else task.steps[-1].result) or "Task completed"
-                # Always append saved file locations so user knows where output went
-                saved = []
-                for s in task.steps:
-                    if s.status == StepStatus.SUCCESS and s.result and s.tool_name in ("write_file", "execute_code", "run_command"):
-                        # write_file: "Written X chars to output/..." , execute_code scaffold: "Project scaffold written to ..."
-                        m = s.result.strip()
-                        if "Written" in m and " to " in m:
-                            # extract path after " to "
-                            try:
-                                path = m.split(" to ", 1)[1].splitlines()[0].strip().strip("'\"")
-                                saved.append(path)
-                            except Exception:
-                                pass
-                        elif "Project scaffold written to" in m:
-                            try:
-                                path = m.split("Project scaffold written to", 1)[1].splitlines()[0].strip().strip("'\"")
-                                saved.append(path)
-                            except Exception:
-                                pass
-                        elif "written to" in m.lower() and ("output/" in m or "projects/" in m):
-                            saved.append(m.splitlines()[0][:120].strip())
-                if saved:
-                    uniq = []
-                    for p in saved:
-                        if p not in uniq:
-                            uniq.append(p)
-                    task.result = task.result.rstrip() + "\n\n📁 Saved to:\n" + "\n".join(f"- {p}" for p in uniq)
-                # Partial failure: surface skipped steps instead of hiding them
-                if failed:
-                    notes = []
-                    for s in failed[:5]:
-                        label = (s.error or "unknown error").strip()[:120]
-                        notes.append(f"- Step {s.order}: {label}")
-                    partial = (
-                        f"\n\n⚠️ {len(failed)} of {len(task.steps)} step(s) failed and were skipped:\n"
-                        + "\n".join(notes)
-                    )
-                    hint = _credential_hint("\n".join(s.error or "" for s in failed))
-                    if hint:
-                        partial += "\n\n" + hint
-                    task.result = task.result.rstrip() + partial
+            if outcome.summary:
+                task.result = outcome.summary
+            elif best_result:
+                task.result = best_result.result
+            elif task.steps:
+                task.result = task.steps[-1].result or "Task completed"
             else:
-                task.result = context.get("step_0_result", "Task completed")
+                task.result = "Task completed"
+
+            # Always append saved file locations so user knows where output went
+            saved = []
+            for s in task.steps:
+                if (
+                    s.status == StepStatus.SUCCESS
+                    and s.result
+                    and s.tool_name in ("write_file", "execute_code", "run_command")
+                ):
+                    # write_file: "Written X chars to output/..." , execute_code scaffold: "Project scaffold written to ..."
+                    m = s.result.strip()
+                    if "Written" in m and " to " in m:
+                        # extract path after " to "
+                        try:
+                            path = m.split(" to ", 1)[1].splitlines()[0].strip().strip("'\"")
+                            saved.append(path)
+                        except Exception:
+                            pass
+                    elif "Project scaffold written to" in m:
+                        try:
+                            path = (
+                                m.split("Project scaffold written to", 1)[1]
+                                .splitlines()[0]
+                                .strip()
+                                .strip("'\"")
+                            )
+                            saved.append(path)
+                        except Exception:
+                            pass
+                    elif "written to" in m.lower() and ("output/" in m or "projects/" in m):
+                        saved.append(m.splitlines()[0][:120].strip())
+            if saved:
+                uniq = []
+                for p in saved:
+                    if p not in uniq:
+                        uniq.append(p)
+                task.result = (
+                    task.result.rstrip() + "\n\n📁 Saved to:\n" + "\n".join(f"- {p}" for p in uniq)
+                )
+            # Partial failure: surface skipped steps instead of hiding them
+            if failed:
+                notes = []
+                for s in failed[:5]:
+                    label = (s.error or "unknown error").strip()[:120]
+                    notes.append(f"- Step {s.order}: {label}")
+                partial = (
+                    f"\n\n⚠️ {len(failed)} of {len(task.steps)} step(s) failed and were skipped:\n"
+                    + "\n".join(notes)
+                )
+                hint = _credential_hint("\n".join(s.error or "" for s in failed))
+                if hint:
+                    partial += "\n\n" + hint
+                task.result = task.result.rstrip() + partial
             task.updated_at = datetime.now(UTC)
 
             # Memory policy: when gemini_full_control is True, Gemini decides
@@ -419,14 +496,20 @@ class Orchestrator:
                 try:
                     extracted = await self.memory.gemini_extract_and_store(task.goal)
                 except Exception:
-                    logger.debug("Gemini memory extraction failed, falling back to regex", exc_info=True)
+                    logger.debug(
+                        "Gemini memory extraction failed, falling back to regex", exc_info=True
+                    )
                     extracted = self.memory.extract_and_store(task.goal)
                 if extracted:
-                    logger.info("Gemini auto-extracted %d durable fact(s) from task goal", extracted)
+                    logger.info(
+                        "Gemini auto-extracted %d durable fact(s) from task goal", extracted
+                    )
             else:
                 # Legacy deterministic policy
                 if not _is_trivial(task) and len(task.steps) > 1:
-                    successful = [s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name]
+                    successful = [
+                        s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name
+                    ]
                     distinct = {s.tool_name for s in successful}
                     if len(successful) >= 2 and len(distinct) >= 2:
                         self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
@@ -445,6 +528,7 @@ class Orchestrator:
 
             # Notify via Telegram
             from agent.telegram import is_configured, notify_task_completed
+
             if is_configured():
                 await notify_task_completed(task.id, task.goal, task.result[:300])
 
@@ -456,6 +540,7 @@ class Orchestrator:
             task.status = TaskStatus.FAILED
             task.error = str(exc)
             from agent.config import settings as _fail_settings
+
             if _fail_settings.gemini_full_control and _fail_settings.gemini_api_key:
                 try:
                     if await _gemini_should_store(task, is_failure=True):
@@ -470,6 +555,7 @@ class Orchestrator:
 
             # Notify via Telegram
             from agent.telegram import is_configured, notify_task_failed
+
             if is_configured():
                 await notify_task_failed(task.id, task.goal, str(exc)[:300])
 
@@ -519,7 +605,7 @@ Goal: {task.goal}
 Steps executed:
 {steps_summary}
 
-Final result: {(task.result or '')[:400]}
+Final result: {(task.result or "")[:400]}
 
 RULES:
 - Skills must encode a REPEATABLE WORKFLOW (trigger + steps + pitfalls), NOT task-specific facts.
@@ -576,7 +662,9 @@ execute_code, read_file, write_file, github_*>
             )
             logger.info("Auto-created skill '%s' from task %s", name, task.id)
         except Exception:
-            logger.warning("Skill auto-creation failed for task %s (non-critical)", task.id, exc_info=True)
+            logger.warning(
+                "Skill auto-creation failed for task %s (non-critical)", task.id, exc_info=True
+            )
 
     async def _self_reflect(self, task: Task) -> None:
         """Post-task reflection — Gemini decides what is worth remembering.
@@ -593,12 +681,13 @@ execute_code, read_file, write_file, github_*>
             return
 
         from agent.core.gemini_client import generate_content
+
         success = task.status == TaskStatus.COMPLETED
         reflection_prompt = f"""You just completed a task. Extract ONLY genuinely new, actionable lessons.
 
 Goal: {task.goal}
 Success: {success}
-Result: {(task.result or task.error or 'N/A')[:500]}
+Result: {(task.result or task.error or "N/A")[:500]}
 Steps taken: {len(task.steps)}
 
 RULES:

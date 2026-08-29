@@ -61,7 +61,9 @@ class TestSettingsReload:
 class TestExecutorEnvSnapshot:
     def test_snapshot_reads_project_env_not_cwd(self, monkeypatch, tmp_path):
         fake_env = tmp_path / ".env"
-        fake_env.write_text('GITHUB_TOKEN="ghp_fake"\nNUMBER=42\n# comment\ngarbage\n', encoding="utf-8")
+        fake_env.write_text(
+            'GITHUB_TOKEN="ghp_fake"\nNUMBER=42\n# comment\ngarbage\n', encoding="utf-8"
+        )
         monkeypatch.setattr(config_mod, "_ENV_FILE", fake_env)
 
         import agent.core.executor as ex
@@ -87,7 +89,7 @@ class TestCredentialHint:
 
 
 class TestAllFailedMarksFailed:
-    async def _run_task(self, monkeypatch, steps: list[TaskStep], realize=(None, [])):
+    async def _run_task(self, monkeypatch, steps: list[TaskStep]):
         async def fake_execute_step(step: TaskStep, context: dict[str, Any]) -> ToolResult:
             res = _STEP_RESULTS[step.order]
             if res.success:
@@ -98,8 +100,28 @@ class TestAllFailedMarksFailed:
                 step.error = res.error
             return res
 
-        fake_plan = async_plan(realize[0] if realize[0] is not None else steps)
-        monkeypatch.setattr(orch, "plan_task", fake_plan)
+        # The adaptive loop decides one step at a time; script the decisions to
+        # mirror the deterministic fixture steps, then DONE.
+        cursor = {"i": 0}
+
+        async def fake_decide(state: dict[str, Any]) -> dict[str, Any]:
+            i = cursor["i"]
+            if i < len(steps):
+                cursor["i"] = i + 1
+                s = steps[i]
+                return {
+                    "kind": "step",
+                    "description": s.description,
+                    "tool_name": s.tool_name,
+                    "tool_args": s.tool_args,
+                }
+            return {"done": True, "result": "mock summary"}
+
+        async def empty_plan(*a, **k):
+            return []
+
+        monkeypatch.setattr(orch, "plan_task", empty_plan)
+        monkeypatch.setattr(orch, "decide_next_step", fake_decide)
         monkeypatch.setattr(orch, "execute_step", fake_execute_step)
         monkeypatch.setattr(memory_store, "save_task_outcome", lambda *a, **k: None)
         monkeypatch.setattr(memory_store, "prefetch", lambda *a, **k: "")
@@ -116,14 +138,16 @@ class TestAllFailedMarksFailed:
         monkeypatch.setattr(config_mod.settings, "telegram_chat_id", "")
         orch_inst = orch.Orchestrator()
         orch_inst.memory = memory_store
-        return await orch_inst.handle_task(Task(goal="Build a market research report using premium data sources"))
+        return await orch_inst.handle_task(
+            Task(goal="Build a market research report using premium data sources")
+        )
 
     @pytest.mark.asyncio
     async def test_zero_successes_becomes_failed_with_hint(self, monkeypatch):
         global _STEP_RESULTS
         _STEP_RESULTS = {
-            1: ToolResult(success=False, output="", error="The API key is invalid"),
-            2: ToolResult(success=False, output="", error="Python 3.13 not available"),
+            0: ToolResult(success=False, output="", error="The API key is invalid"),
+            1: ToolResult(success=False, output="", error="Python 3.13 not available"),
         }
         steps = _make_steps(2)
         task = await self._run_task(monkeypatch, steps)
@@ -137,8 +161,8 @@ class TestAllFailedMarksFailed:
     async def test_partial_failure_still_completed_but_transparent(self, monkeypatch):
         global _STEP_RESULTS
         _STEP_RESULTS = {
-            1: ToolResult(success=True, output="Report drafted."),
-            2: ToolResult(success=False, output="", error="GitHub API 403 forbidden"),
+            0: ToolResult(success=True, output="Report drafted."),
+            1: ToolResult(success=False, output="", error="GitHub API 403 forbidden"),
         }
         steps = _make_steps(2)
         task = await self._run_task(monkeypatch, steps)
@@ -176,7 +200,9 @@ class TestTelegramEscaping:
                 payload = dict(kwargs.get("data", {}))
                 sent_payloads.append(payload)
                 if "parse_mode" in payload:
-                    return FakeResp(False, "Bad Request: can't parse entities: Unsupported start tag <!DOCTYPE>")
+                    return FakeResp(
+                        False, "Bad Request: can't parse entities: Unsupported start tag <!DOCTYPE>"
+                    )
                 assert "text" in payload
                 return FakeResp(True)
 
@@ -205,13 +231,6 @@ def _make_steps(n: int) -> list[TaskStep]:
 
 
 _STEP_RESULTS: dict[int, ToolResult] = {}
-
-
-def async_plan(steps):
-    async def _plan(*a, **k):
-        return [s.model_copy(deep=True) for s in steps]
-
-    return _plan
 
 
 async def async_noop(*a, **k):

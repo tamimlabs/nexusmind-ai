@@ -75,16 +75,18 @@ RULES:
 3. NEVER search the web when you can just DO the action
 4. Keep plans SHORT — 3-6 steps maximum
 5. NEVER inline large content (HTML pages, long code bodies, full documents)
-    inside tool_args — instead use execute_code with Python that WRITES the
-    file programmatically (pathlib + write_text), or keep embedded content under ~30 lines.
-    This avoids JSON truncation. One execute_code step can write MULTIPLE files.
-6. MULTI-FILE PROJECTS: for websites / apps / full-stack builds create ONE
-     project folder per task and write EVERY file into it. Prefer a SINGLE
-     execute_code step that creates all directories and writes all files via
-     pathlib (most resilient, no truncation). If you use write_file, do separate
-     steps: index.html, css/styles.css, js/app.js, and README.md. Files must link
-     with RELATIVE paths. NEVER use run_command mkdir/mkdir -p — use execute_code
-     pathlib.Path(...).mkdir(parents=True, exist_ok=True) instead (Windows-safe).
+    inside tool_args. If one step is huge, the plan gets cut off mid-JSON and
+    only the earlier complete steps survive — so keep EVERY step small. Never
+    embed an entire website inside execute_code's code string.
+6. MULTI-FILE PROJECTS (websites / apps / full-stack builds):
+     Step 1: a tiny execute_code that ONLY creates the folder(s) via pathlib
+        (e.g. pathlib.Path('projects/portfolio').mkdir(parents=True, exist_ok=True)).
+     Then: ONE write_file step PER FILE, in dependency order — index.html,
+        css/styles.css, js/main.js, README.md — each file fully authored by you
+        from the goal (NO templates, NO props or filler content). Files must link
+        with RELATIVE paths. Do not merge files, and keep the design focused so
+        every step stays small.
+     NEVER use run_command mkdir/mkdir -p — use execute_code pathlib ... instead (Windows-safe).
      CRITICAL: if the user specifies an explicit path like projects/portfolio/
      or projects/my-site/ you MUST use that exact path verbatim - never invent
      your own slug or truncate it. Only when NO path is given, derive a short
@@ -198,9 +200,11 @@ def _extract_pr_numbers(goal: str) -> list[int]:
     return numbers
 
 
-# Planner output budget: ambitious goals make Gemini inline large tool_args,
-# and hitting the default 4096 cap truncates the JSON array mid-step.
-_PLANNER_MAX_TOKENS = 8192
+# Planner output budget. Ambitious multi-file goals produce large plans, and a
+# cap lower than what the plan needs truncates the JSON mid-step (lost builds).
+# Raised to give whole plans headroom; each step stays small so a rare
+# truncation still salvages every earlier complete step.
+_PLANNER_MAX_TOKENS = 16384
 
 
 def _make_step(task_id: str, order: int, description: str, tool_name: str, tool_args: dict[str, Any]) -> TaskStep:
