@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -18,7 +19,13 @@ import agent.core.executor as ex
 import agent.core.gemini_client as gc
 import agent.core.planner as planner_mod
 import agent.skills.file_management.skill as fm_mod
-from agent.core.gemini_client import OutputTruncatedError, QuotaExhaustedError, rotator
+from agent.config import RATE_LIMIT_PRESETS
+from agent.core.gemini_client import (
+    OutputTruncatedError,
+    QuotaExhaustedError,
+    RateThrottle,
+    rotator,
+)
 from agent.models import Task, TaskStep
 
 
@@ -170,7 +177,13 @@ class _FakeModels:
         self.calls: list[dict[str, Any]] = []
 
     def generate_content(self, *, model=None, contents=None, config=None):
-        self.calls.append({"model": model, "max_output_tokens": config.max_output_tokens})
+        user_text = ""
+        if contents:
+            last = contents[-1]
+            user_text = getattr(getattr(last, "parts", [24, None])[-1], "text", "") or ""
+        self.calls.append(
+            {"model": model, "max_output_tokens": config.max_output_tokens, "user": user_text}
+        )
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -180,6 +193,36 @@ class _FakeModels:
 class _FakeClient:
     def __init__(self, responses: list[Any]):
         self.models = _FakeModels(responses)
+
+
+class _FakeRotator:
+    """Multi-key rotator mirroring KeyRotator's cooldown-skipping behavior."""
+
+    def __init__(self, key_clients: dict[str, _FakeClient]):
+        self._keys = list(key_clients)
+        self._clients = dict(key_clients)
+        self._cooldowns: dict[str, float] = {}
+        self._current_index = 0
+        self.key_count = len(self._keys)
+
+    def get_client(self) -> tuple[_FakeClient, str]:
+        now = time.time()
+        for _ in range(len(self._keys) * 2):
+            key = self._keys[self._current_index % len(self._keys)]
+            self._current_index += 1
+            if now >= self._cooldowns.get(key, 0):
+                return self._clients[key], key
+        key = self._keys[self._current_index % len(self._keys)]
+        self._current_index += 1
+        return self._clients[key], key
+
+    def mark_rate_limited(self, key: str, retry_after: float) -> None:
+        self._cooldowns[key] = time.time() + retry_after
+
+    @property
+    def active_keys(self) -> int:
+        now = time.time()
+        return sum(1 for k in self._keys if now >= self._cooldowns.get(k, 0))
 
 
 @pytest.fixture()
@@ -803,13 +846,21 @@ class TestPerTaskApprovalTrust:
 
 class TestQuotaSurvival:
     """Free-tier quota / API rate limits (429 RESOURCE_EXHAUSTED) must not
-    crash the agent: it retries on the fallback model (separate quota bucket),
-    waits through the server retry window, and only then parks with
-    QuotaExhaustedError so the task aborts gracefully."""
+    crash the agent:
+    - RPS/RPM-class limits (per minute/second): the agent WAITS and retries
+      (same key, same model) — a burst is never fatal.
+    - Daily per-key caps (free tier 20 req/day): the spent key is parked for
+      the day and the request is handed to the NEXT API key (each key has its
+      own daily bucket). QuotaExhaustedError only surfaces when every key is
+      spent, so the task parks gracefully instead of dying."""
 
     QUOTA_ERR = RuntimeError(
         "429 RESOURCE_EXHAUSTED quota exceeded free_tier limit "
         "{'retryDelay': '2s'} requests per day per project per model"
+    )
+    RATE_ERR = RuntimeError(
+        "429 Too Many Requests throughput exceeded for api.generate_content "
+        "{'retryDelay': '1s'} requests per minute"
     )
 
     @pytest.fixture()
@@ -820,23 +871,83 @@ class TestQuotaSurvival:
         monkeypatch.setattr(gc.asyncio, "sleep", _noop)
 
     @pytest.mark.asyncio
-    async def test_quota_switches_to_pro_model_then_succeeds(self, fake_rotator, no_sleep):
-        client = _FakeClient([self.QUOTA_ERR, _resp("quota survivor", FinishReason.STOP)])
-        fake_rotator._clients["kfake"] = client
+    async def test_daily_cap_switches_api_key_not_model(self, monkeypatch, no_sleep):
+        rot = _FakeRotator(
+            {
+                "k1": _FakeClient([self.QUOTA_ERR, self.QUOTA_ERR]),  # spent for the day
+                "k2": _FakeClient([_resp("key survivor", FinishReason.STOP)]),
+            }
+        )
+        monkeypatch.setattr(gc, "rotator", rot)
 
-        out = await gc.generate_content(model="gemini-3.5-flash", user="x", max_tokens=1024)
-        assert out == "quota survivor"
-        assert [c["model"] for c in client.models.calls] == ["gemini-3.5-flash", "gemini-3.5-pro"]
+        out = await gc.generate_content(
+            model="gemini-3.5-flash", user="build me a landing page", max_tokens=1024
+        )
+        assert out == "key survivor"
+        # The model STAYS the primary — only the API key moved (fresh daily
+        # bucket). And k1 is parked until its daily reset.
+        assert [c["model"] for c in rot._clients["k1"].models.calls] == ["gemini-3.5-flash"]
+        assert rot._clients["k2"].models.calls[0]["model"] == "gemini-3.5-flash"
+        assert rot._cooldowns["k1"] > time.time() + 3600
+        # The new key is told this is a CONTINUATION: the original prompt is
+        # intact (so it knows what is going on) plus a note that the previous
+        # key was retired for the day.
+        k2_user = rot._clients["k2"].models.calls[0]["user"]
+        assert "build me a landing page" in k2_user
+        assert gc.RETRY_CONTEXT_MARKER in k2_user
+        assert "per-day" in k2_user
 
     @pytest.mark.asyncio
-    async def test_quota_exhausted_raises_quota_error(self, fake_rotator, no_sleep, monkeypatch):
-        fake_rotator._clients["kfake"] = _FakeClient([self.QUOTA_ERR, self.QUOTA_ERR])
-        gc.settings.gemini_model_pro = ""  # no fallback bucket left
-        monkeypatch.setattr(gc, "_QUOTA_MAX_ATTEMPTS", 2)
+    async def test_rate_limit_polls_until_reset_then_succeeds(self, monkeypatch, no_sleep):
+        client = _FakeClient(
+            [
+                self.RATE_ERR,
+                self.RATE_ERR,
+                self.RATE_ERR,
+                self.RATE_ERR,
+                _resp("finally through", FinishReason.STOP),
+            ]
+        )
+        rot = _FakeRotator({"k1": client})
+        monkeypatch.setattr(gc, "rotator", rot)
+
+        out = await gc.generate_content(model="gemini-3.5-flash", user="poll me", max_tokens=1024)
+        assert out == "finally through"
+        calls = client.models.calls
+        assert len(calls) == 5  # 4 polled retries + the successful one
+        assert all(c["model"] == "gemini-3.5-flash" for c in calls)  # no model switch
+        # A rate burst is waited out, never abandoned: same key, same prompt,
+        # and the final attempt carries the continuation note.
+        assert calls[0]["user"] == "poll me"
+        assert gc.RETRY_CONTEXT_MARKER in calls[-1]["user"]
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_waits_then_succeeds_same_key_same_model(self, monkeypatch, no_sleep):
+        client = _FakeClient([self.RATE_ERR, _resp("waited it out", FinishReason.STOP)])
+        rot = _FakeRotator({"k1": client})
+        monkeypatch.setattr(gc, "rotator", rot)
+
+        out = await gc.generate_content(model="gemini-3.5-flash", user="x", max_tokens=1024)
+        assert out == "waited it out"
+        calls = client.models.calls
+        assert len(calls) == 2
+        assert all(c["model"] == "gemini-3.5-flash" for c in calls)  # no model switch
+        assert rot._cooldowns.get("k1", 0) >= time.time()  # short key backoff set
+        assert gc.RETRY_CONTEXT_MARKER in calls[1]["user"]  # continuation note added
+
+    @pytest.mark.asyncio
+    async def test_all_keys_daily_spent_raises_quota_error(self, monkeypatch, no_sleep):
+        rot = _FakeRotator(
+            {
+                "k1": _FakeClient([self.QUOTA_ERR]),
+                "k2": _FakeClient([self.QUOTA_ERR]),
+            }
+        )
+        monkeypatch.setattr(gc, "rotator", rot)
 
         with pytest.raises(QuotaExhaustedError) as excinfo:
             await gc.generate_content(model="gemini-3.5-flash", user="x")
-        assert excinfo.value.retry_after > 0
+        assert excinfo.value.retry_after == gc._DAILY_KEY_PARK_SECONDS
 
     @pytest.mark.asyncio
     async def test_run_adaptive_loop_aborts_on_quota_with_guidance(self):
@@ -851,3 +962,68 @@ class TestQuotaSurvival:
         assert task.steps == []
         assert "quota" in (outcome.aborted_reason or "").lower()
         assert "free-tier" in (outcome.aborted_reason or "")
+
+
+class TestRateLimitThrottle:
+    """Client-side RPS/RPM gate: the agent self-throttles to its tier so its
+    own bursty loop never trips the server's rate limits mid-task."""
+
+    def test_interval_matches_the_tighter_bound(self):
+        assert RateThrottle._interval(10, 0) == pytest.approx(0.1)
+        assert RateThrottle._interval(0, 20) == pytest.approx(3.0)
+        assert RateThrottle._interval(1, 15) == pytest.approx(4.0)  # free tier: rpm tighter
+        assert RateThrottle._interval(5, 5) == pytest.approx(12.0)
+        assert RateThrottle._interval(0, 0) == 0.0  # unlimited -> no gate
+
+    @pytest.mark.asyncio
+    async def test_unlimited_never_waits(self, monkeypatch):
+        monkeypatch.setattr(gc.settings, "gemini_rps", 0)
+        monkeypatch.setattr(gc.settings, "gemini_rpm", 0)
+        throttle = RateThrottle()
+        t0 = time.monotonic()
+        await throttle.acquire()
+        await throttle.acquire()
+        assert time.monotonic() - t0 < 0.2
+
+    @pytest.mark.asyncio
+    async def test_rpm_bound_paces_requests(self, monkeypatch):
+        monkeypatch.setattr(gc.settings, "gemini_rps", 0)
+        monkeypatch.setattr(gc.settings, "gemini_rpm", 300)  # one slot every 0.2s
+        throttle = RateThrottle()
+        await throttle.acquire()
+        t0 = time.monotonic()
+        await throttle.acquire()
+        elapsed = time.monotonic() - t0
+        assert elapsed >= 0.15
+        assert elapsed < 2.0
+
+    @pytest.mark.asyncio
+    async def test_rps_bound_is_effective(self, monkeypatch):
+        monkeypatch.setattr(gc.settings, "gemini_rps", 5)  # one slot every 0.2s
+        monkeypatch.setattr(gc.settings, "gemini_rpm", 0)
+        throttle = RateThrottle()
+        await throttle.acquire()
+        t0 = time.monotonic()
+        await throttle.acquire()
+        assert time.monotonic() - t0 >= 0.15
+
+
+class TestRateLimitConfig:
+    def test_presets_exist_and_are_sane(self):
+        from agent.config import RATE_LIMIT_PRESETS
+
+        assert RATE_LIMIT_PRESETS["free"] == {"rps": 1, "rpm": 15}
+        assert RATE_LIMIT_PRESETS["standard"]["rps"] > 1
+        assert RATE_LIMIT_PRESETS["unlimited"]["rps"] == 0
+        assert RATE_LIMIT_PRESETS["unlimited"]["rpm"] == 0
+
+    def test_settings_clamp_bounds(self):
+        from agent.config import Settings
+
+        s = Settings(gemini_rps=999, gemini_rpm=-5)
+        assert s.gemini_rps == 100.0
+        assert s.gemini_rpm == 0
+        s2 = Settings(gemini_rps="0", gemini_rpm="0")
+        assert s2.gemini_rps == 0.0
+        assert s2.gemini_rpm == 0
+        assert s2.gemini_rps == RATE_LIMIT_PRESETS["unlimited"]["rps"]

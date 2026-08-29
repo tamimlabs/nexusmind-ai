@@ -393,13 +393,50 @@ function renderSettingsPage(c){
   h+='<button class="btn btn-g btn-sm" onclick="testTelegram()">Test Connection</button>';
   h+='</div></div>';
 
+  h+='<div class="input-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div class="detail-label" style="margin:0">Gemini Rate Limit</div><span id="rateLimitStatus" style="font-size:11px;color:var(--t4)">Loading...</span></div>';
+  h+='<div style="display:flex;gap:8px;margin-bottom:12px">';
+  h+='<button class="btn btn-g btn-sm" id="rlFree" onclick="setRateLimit(\'free\')">Free (1/s · 15/min)</button>';
+  h+='<button class="btn btn-g btn-sm" id="rlStandard" onclick="setRateLimit(\'standard\')">Standard (10/s · 100/min)</button>';
+  h+='<button class="btn btn-g btn-sm" id="rlUnlimited" onclick="setRateLimit(\'unlimited\')">Unlimited</button>';
+  h+='</div>';
+  h+='<div class="setting-row"><div><div class="setting-label">Custom RPS</div><div class="setting-desc">Requests / second (0 = off)</div></div><input id="rlRps" type="number" min="0" max="100" step="0.5" value="1" style="width:70px;background:var(--bg2);border:1px solid var(--line);border-radius:6px;color:var(--t1);padding:6px 8px"></div>';
+  h+='<div class="setting-row"><div><div class="setting-label">Custom RPM</div><div class="setting-desc">Requests / minute (0 = off)</div></div><input id="rlRpm" type="number" min="0" max="10000" step="1" value="15" style="width:70px;background:var(--bg2);border:1px solid var(--line);border-radius:6px;color:var(--t1);padding:6px 8px"></div>';
+  h+='<div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveCustomRateLimit()">Apply Custom</button></div>';
+  h+='<div style="font-size:11px;color:var(--t4);line-height:1.5;margin-top:10px">The agent self-limits its requests to your chosen tier so burst 429s don\'t kill tasks. The free-tier 20-req/day cap is handled separately: on exhaustion it auto-switches to the Pro model (separate quota).</div>';
+  h+='</div>';
+
   h+='<div class="input-card"><div class="setting-row"><div><div class="setting-label">Auto Refresh</div><div class="setting-desc">Poll agent status every 10 seconds</div></div><button class="toggle'+(S.autoRefresh?' on':'')+'" onclick="toggleAutoRefresh()"></button></div><div class="setting-row"><div><div class="setting-label">API Status</div><div class="setting-desc" id="apiStatus">Checking...</div></div><div style="display:flex;align-items:center;gap:6px"><div class="sdot on" id="apiDot"></div><span style="font-size:12px;color:var(--t3)" id="apiText">Connected</span></div></div><div class="setting-row"><div><div class="setting-label">Model</div><div class="setting-desc" id="settingModel">--</div></div></div></div>';
   h+='<div class="input-card"><div class="detail-label" style="margin-bottom:12px">Registered Tools</div><div id="toolsList"></div></div>';
   c.innerHTML=h;document.getElementById('settingModel').textContent=S.agentStatus?S.agentStatus.model:'--';
   const tl=document.getElementById('toolsList');if(S.agentStatus&&S.agentStatus.tools){tl.innerHTML=S.agentStatus.tools.map(t=>'<div class="tool-item"><span class="tool-name">'+esc(t.name)+'</span><span class="tool-risk '+t.risk+'">'+t.risk+'</span></div>').join('')}
   loadApprovalMode();
   loadTelegramStatus();
+  loadRateLimit();
 }
+
+async function loadRateLimit(){
+  try{const res=await fetch('/api/rate-limit');const d=await res.json();
+  const presets=[['free','rlFree'],['standard','rlStandard'],['unlimited','rlUnlimited']];
+  presets.forEach(([k,id])=>{const el=document.getElementById(id);const p=d.presets[k]||{};
+    const active=Math.abs(d.rps-p.rps)<1e-9&&d.rpm===p.rpm;
+    if(el)el.className='btn btn-sm '+(active?'btn-p':'btn-g');});
+  const rps=document.getElementById('rlRps'),rpm=document.getElementById('rlRpm');
+  if(rps)rps.value=d.rps;if(rpm)rpm.value=d.rpm;
+  const eff=(d.rps||d.rpm)?(`Current: ${d.rps} req/s · ${d.rpm} req/min`):'Current: unlimited';
+  const st=document.getElementById('rateLimitStatus');if(st)st.textContent=eff;
+  }catch(e){const st=document.getElementById('rateLimitStatus');if(st)st.textContent='Failed to load'}}
+
+async function setRateLimit(preset){
+  try{const res=await fetch('/api/rate-limit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preset})});
+  const d=await res.json();if(!d.message)throw new Error(d.detail||'Failed');
+  loadRateLimit();modalAlert('Rate Limit',d.message)}catch(e){modalAlert('Error',e.message,'error')}}
+
+async function saveCustomRateLimit(){
+  try{const rps=parseFloat(document.getElementById('rlRps').value)||0;
+  const rpm=parseInt(document.getElementById('rlRpm').value,10)||0;
+  const res=await fetch('/api/rate-limit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rps,rpm})});
+  const d=await res.json();if(!d.message)throw new Error(d.detail||'Failed');
+  loadRateLimit();modalAlert('Rate Limit',d.message)}catch(e){modalAlert('Error',e.message,'error')}}
 
 async function loadApprovalMode(){
   try{const res=await fetch('/api/approval-mode');const d=await res.json();

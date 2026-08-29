@@ -69,6 +69,7 @@ async def restore_watchers_on_startup():
     """Restore persisted watchers on startup so the agent stays always-awake."""
     try:
         from agent.watchers.manager import restore_watchers
+
         result = await restore_watchers()
         logger.info("Watcher restoration complete: %s", result)
     except ImportError:
@@ -81,12 +82,16 @@ async def restore_watchers_on_startup():
 async def check_storage_backend():
     """Log which storage backend is active and verify Firestore connectivity."""
     from agent.config import settings
+
     backend = settings.database_backend.lower()
     if backend == "firestore":
         try:
             from cloud.firestore.client import _is_available
+
             if _is_available():
-                logger.info("Storage backend: Firestore (project=%s)", settings.google_cloud_project)
+                logger.info(
+                    "Storage backend: Firestore (project=%s)", settings.google_cloud_project
+                )
             else:
                 logger.warning(
                     "DATABASE_BACKEND=firestore but Firestore not configured. "
@@ -132,7 +137,9 @@ async def start_telegram_polling():
                         # 409 Conflict = another getUpdates instance; back off
                         err = data.get("description", "")
                         if "409" in str(data) or "Conflict" in err:
-                            logger.warning("Telegram polling 409 Conflict (another instance), backing off 5s")
+                            logger.warning(
+                                "Telegram polling 409 Conflict (another instance), backing off 5s"
+                            )
                             await asyncio.sleep(5)
                         else:
                             logger.warning("Telegram getUpdates not ok: %s", data)
@@ -145,7 +152,9 @@ async def start_telegram_polling():
 
     task = asyncio.create_task(_poll_loop())
     import atexit
+
     atexit.register(lambda: task.cancel())
+
 
 # Serve docs folder for logos
 docs_path = pathlib.Path(__file__).parent.parent / "docs"
@@ -179,12 +188,14 @@ def _emit(task_id: str, event_type: str, message: str, detail: str = "") -> None
     """Emit a live event for the dashboard thinking panel."""
     if task_id not in _live_events:
         _live_events[task_id] = []
-    _live_events[task_id].append({
-        "type": event_type,
-        "message": message,
-        "detail": detail[:500],
-        "time": time.time(),
-    })
+    _live_events[task_id].append(
+        {
+            "type": event_type,
+            "message": message,
+            "detail": detail[:500],
+            "time": time.time(),
+        }
+    )
 
 
 def _update_task_status(task_id: str, status: str, **extra) -> None:
@@ -198,13 +209,16 @@ def _update_task_status(task_id: str, status: str, **extra) -> None:
         _cleanup_stale_tasks()
 
 
-async def _register_watcher_unhandled(watcher_id: str, watcher_type: str, summary: str, event: dict[str, Any] | None = None) -> str:
+async def _register_watcher_unhandled(
+    watcher_id: str, watcher_type: str, summary: str, event: dict[str, Any] | None = None
+) -> str:
     """Create a visible Task Panel entry for a watcher event with no matching instruction.
 
     Called from BaseWatcher.notify_unhandled_event — ensures nothing is silent.
     Returns task_id. Deduplicates by watcher_id + external_id.
     """
     import hashlib
+
     event = event or {}
     external_id = event.get("external_id", "") or hashlib.md5(summary.encode()).hexdigest()[:8]
     task_id = f"watcher-{watcher_id}-{external_id}"
@@ -214,6 +228,7 @@ async def _register_watcher_unhandled(watcher_id: str, watcher_type: str, summar
     payload = event.get("payload", {}) if isinstance(event, dict) else {}
     # Detect wrong-type instruction hint
     from agent.core.memory import memory_store
+
     all_instructions = [e.content[:120] for e in memory_store.get_by_category("instruction")]
     hint = ""
     if all_instructions:
@@ -223,7 +238,7 @@ async def _register_watcher_unhandled(watcher_id: str, watcher_type: str, summar
         hint = "\n\nNo standing instruction found. Go to Memory -> add e.g.: 'when a pr arrives, review and merge or decline with comment'"
 
     goal = f"⚠️ Unhandled {watcher_type} event: {summary[:200]}"
-    detail = f"Watcher: {watcher_id} ({watcher_type})\nEvent: {event.get('event_type','unknown')}\nExternal ID: {external_id}\nPayload: {str(payload)[:400]}{hint}"
+    detail = f"Watcher: {watcher_id} ({watcher_type})\nEvent: {event.get('event_type', 'unknown')}\nExternal ID: {external_id}\nPayload: {str(payload)[:400]}{hint}"
 
     _live_tasks[task_id] = {
         "id": task_id,
@@ -241,11 +256,22 @@ async def _register_watcher_unhandled(watcher_id: str, watcher_type: str, summar
     }
     _live_tasks_created[task_id] = time.time()
     _live_events[task_id] = [
-        {"type": "received", "message": f"Watcher {watcher_id} detected: {summary[:120]}", "detail": detail[:500], "time": time.time()},
-        {"type": "error", "message": "No matching instruction — add one in Memory to auto-handle", "detail": hint[:500], "time": time.time()},
+        {
+            "type": "received",
+            "message": f"Watcher {watcher_id} detected: {summary[:120]}",
+            "detail": detail[:500],
+            "time": time.time(),
+        },
+        {
+            "type": "error",
+            "message": "No matching instruction — add one in Memory to auto-handle",
+            "detail": hint[:500],
+            "time": time.time(),
+        },
     ]
     # Also send lightweight trace so right panel shows something
     from agent.observability import create_trace
+
     trace = create_trace(task_id)
     trace.start_span("watcher_unhandled", kind="reasoning")
     trace.end_span("needs_instruction")
@@ -319,10 +345,7 @@ async def agent_status():
     return {
         "online": True,
         "model": _cfg.settings.gemini_model,
-        "tools": [
-            {"name": t, "risk": "high" if t in high_risk else "normal"}
-            for t in tools
-        ],
+        "tools": [{"name": t, "risk": "high" if t in high_risk else "normal"} for t in tools],
         "tools_count": len(tools),
         "memory_size": memory_store.size,
         "memory_categories": memory_store.categories(),
@@ -380,6 +403,7 @@ async def _run_task_background(task_id: str, task: Task) -> None:
             logger.debug("Live status refresh failed", exc_info=True)
 
     from agent.config import settings
+
     use_adk = settings.database_backend.lower() == "firestore"
 
     try:
@@ -392,6 +416,7 @@ async def _run_task_background(task_id: str, task: Task) -> None:
         if use_adk:
             # ADK Runner is the primary execution path on Cloud Run
             from cloud.vertex_ai.agent import run_task_via_adk
+
             result_text = await run_task_via_adk(task.goal, task_id)
             task.status = TaskStatus.COMPLETED
             task.result = result_text
@@ -401,6 +426,7 @@ async def _run_task_background(task_id: str, task: Task) -> None:
             # Orchestrator fallback for local development. Every step, todo
             # change and final verdict is streamed LIVE via the emit sink.
             from agent.orchestrator import orchestrator
+
             task = await orchestrator.handle_task(task, emit=_live_emit)
 
         # Final snapshot after the task settled (status, result, steps, todos).
@@ -431,30 +457,34 @@ async def _run_task_background(task_id: str, task: Task) -> None:
         # Persist completed/failed tasks to Firestore for crash recovery
         try:
             from agent.config import settings
+
             if settings.database_backend.lower() == "firestore":
                 from cloud.firestore.client import firestore_tasks
-                firestore_tasks.save_task({
-                    "id": task_id,
-                    "goal": task.goal,
-                    "status": task.status.value,
-                    "result": task.result,
-                    "error": task.error,
-                    "steps_count": len(task.steps),
-                    "steps": [
-                        {
-                            "id": s.id,
-                            "description": s.description,
-                            "tool_name": s.tool_name,
-                            "status": s.status.value,
-                            "result": s.result,
-                            "error": s.error,
-                            "order": s.order,
-                        }
-                        for s in task.steps
-                    ],
-                    "todos": _snapshot()["todos"],
-                    "created_at": _live_tasks_created.get(task_id, time.time()),
-                })
+
+                firestore_tasks.save_task(
+                    {
+                        "id": task_id,
+                        "goal": task.goal,
+                        "status": task.status.value,
+                        "result": task.result,
+                        "error": task.error,
+                        "steps_count": len(task.steps),
+                        "steps": [
+                            {
+                                "id": s.id,
+                                "description": s.description,
+                                "tool_name": s.tool_name,
+                                "status": s.status.value,
+                                "result": s.result,
+                                "error": s.error,
+                                "order": s.order,
+                            }
+                            for s in task.steps
+                        ],
+                        "todos": _snapshot()["todos"],
+                        "created_at": _live_tasks_created.get(task_id, time.time()),
+                    }
+                )
                 logger.debug("Persisted task %s to Firestore", task_id)
         except Exception:
             logger.debug("Firestore task write skipped (not configured)")
@@ -468,7 +498,11 @@ async def _run_task_background(task_id: str, task: Task) -> None:
 @app.post("/api/tasks")
 async def submit_task(req: SubmitTaskRequest):
     """Submit a new task — returns immediately, runs in background."""
-    priority = TaskPriority(req.priority) if req.priority in [p.value for p in TaskPriority] else TaskPriority.MEDIUM
+    priority = (
+        TaskPriority(req.priority)
+        if req.priority in [p.value for p in TaskPriority]
+        else TaskPriority.MEDIUM
+    )
     task = Task(goal=req.goal, priority=priority, context=req.context)
 
     trace = create_trace(task.id)
@@ -526,21 +560,25 @@ async def list_tasks():
     """List recent tasks — merges live tasks + Firestore."""
     live = []
     for tid, data in _live_tasks.items():
-        live.append(TaskResponse(
-            id=tid,
-            goal=data.get("goal", ""),
-            status=data.get("status", "unknown"),
-            result=data.get("result"),
-            error=data.get("error"),
-            steps_count=data.get("steps_count", 0),
-            steps=data.get("steps", []),
-            todos=data.get("todos", []),
-        ))
+        live.append(
+            TaskResponse(
+                id=tid,
+                goal=data.get("goal", ""),
+                status=data.get("status", "unknown"),
+                result=data.get("result"),
+                error=data.get("error"),
+                steps_count=data.get("steps_count", 0),
+                steps=data.get("steps", []),
+                todos=data.get("todos", []),
+            )
+        )
 
     try:
         from agent.config import settings
+
         if settings.database_backend.lower() == "firestore":
             from cloud.firestore.client import firestore_tasks
+
             fs_tasks = firestore_tasks.list_tasks(limit=20)
             live_ids = {lt.id for lt in live}
             for t in fs_tasks:
@@ -579,8 +617,10 @@ async def get_task(task_id: str):
     trace = get_trace(task_id)
     try:
         from agent.config import settings
+
         if settings.database_backend.lower() == "firestore":
             from cloud.firestore.client import firestore_tasks
+
             task_data = firestore_tasks.get_task(task_id)
             if task_data:
                 return TaskResponse(
@@ -611,6 +651,7 @@ async def delete_task(task_id: str):
     _live_tasks.pop(task_id, None)
     _live_events.pop(task_id, None)
     from agent.observability import _traces
+
     _traces.pop(task_id, None)
     return {"deleted": True, "task_id": task_id}
 
@@ -665,6 +706,7 @@ async def set_task_trust(task_id: str, req: TaskTrustRequest):
 async def get_approval_mode():
     """Get current approval mode and Telegram status."""
     from agent.telegram import get_config_status
+
     return {
         "mode": _cfg.settings.approval_mode,
         "telegram": get_config_status(),
@@ -694,7 +736,10 @@ async def set_approval_mode(req: ApprovalModeRequest):
     """
     canonical = _canonical_approval_mode(req.mode)
     if not canonical:
-        raise HTTPException(status_code=400, detail="Mode must be 'always' (or 'ask_everytime'), 'smart', or 'never'")
+        raise HTTPException(
+            status_code=400,
+            detail="Mode must be 'always' (or 'ask_everytime'), 'smart', or 'never'",
+        )
     # Update runtime setting (canonical)
     _cfg.settings.approval_mode = canonical
     req_mode = canonical
@@ -714,10 +759,76 @@ async def set_approval_mode(req: ApprovalModeRequest):
             new_lines.append(f"APPROVAL_MODE={req_mode}")
         env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         import os
+
         os.environ["APPROVAL_MODE"] = req_mode
     except Exception:
         logger.debug("Failed to persist APPROVAL_MODE to .env", exc_info=True)
     return {"mode": req_mode, "message": f"Approval mode set to {req_mode}"}
+
+
+# ── Gemini Rate Limit ─────────────────────────────────────────────
+
+
+@app.get("/api/rate-limit")
+async def get_rate_limit():
+    """Get the client-side Gemini request throttle (RPS/RPM) and tier presets."""
+    return {
+        "rps": _cfg.settings.gemini_rps,
+        "rpm": _cfg.settings.gemini_rpm,
+        "presets": _cfg.RATE_LIMIT_PRESETS,
+    }
+
+
+class RateLimitRequest(BaseModel):
+    preset: str | None = None  # "free" | "standard" | "unlimited"
+    rps: float | None = None  # when preset is omitted
+    rpm: int | None = None  # when preset is omitted
+
+
+def _persist_env_rate_limit(rps: float, rpm: int) -> None:
+    """Persist GEMINI_RPS/GEMINI_RPM to .env so a restart keeps the choice."""
+    try:
+        env_file = _cfg._ENV_FILE
+        lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+        values = {"GEMINI_RPS": str(rps), "GEMINI_RPM": str(rpm)}
+        kept: list[str] = []
+        for line in lines:
+            key = line.split("=", 1)[0].strip() if "=" in line else ""
+            kept.append(f"{key}={values[key]}" if key in values else line)
+        for key, value in values.items():
+            if not any(k.split("=", 1)[0].strip() == key for k in kept):
+                kept.append(f"{key}={value}")
+        env_file.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    except Exception:
+        logger.debug("Failed to persist rate limit to .env", exc_info=True)
+
+
+@app.post("/api/rate-limit")
+async def set_rate_limit(req: RateLimitRequest):
+    """Set the client-side Gemini request throttle and persist to .env.
+
+    Accepts a tier preset ('free' | 'standard' | 'unlimited') or explicit
+    rps/rpm values (0 = unlimited for that bound). Takes effect on the very
+    next Gemini call — no restart needed.
+    """
+    preset_values = _cfg.RATE_LIMIT_PRESETS.get((req.preset or "").strip().lower())
+    if req.preset and preset_values is None:
+        raise HTTPException(status_code=400, detail=f"Unknown rate-limit preset '{req.preset}'")
+    rps = float(req.rps) if req.rps is not None else float(preset_values.get("rps", 0))
+    rpm = int(req.rpm) if req.rpm is not None else int(preset_values.get("rpm", 0))
+    rps = min(max(rps, 0.0), 100.0)
+    rpm = min(max(rpm, 0), 10000)
+
+    _cfg.settings.gemini_rps = rps
+    _cfg.settings.gemini_rpm = rpm
+    _persist_env_rate_limit(rps, rpm)
+    import os
+
+    os.environ["GEMINI_RPS"] = str(rps)
+    os.environ["GEMINI_RPM"] = str(rpm)
+
+    effective = "unlimited" if (rps or rpm) == 0 else f"{rps} req/s, {rpm} req/min"
+    return {"rps": rps, "rpm": rpm, "message": f"Rate limit set to {effective}"}
 
 
 # ── Telegram Webhook ──────────────────────────────────────────────
@@ -733,6 +844,7 @@ async def telegram_webhook(request: Request):
     try:
         body = await request.json()
         from agent.telegram import process_update
+
         await process_update(body)
         return {"ok": True}
     except Exception as exc:
@@ -751,7 +863,9 @@ async def setup_telegram_webhook():
         raise HTTPException(status_code=400, detail="Telegram bot token not configured")
 
     # Determine webhook URL from request
-    webhook_url = f"https://nexusmind-ai-{_cfg.settings.google_cloud_project}.a.run.app/api/telegram/webhook"
+    webhook_url = (
+        f"https://nexusmind-ai-{_cfg.settings.google_cloud_project}.a.run.app/api/telegram/webhook"
+    )
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -763,15 +877,20 @@ async def setup_telegram_webhook():
             if data.get("ok"):
                 return {"status": "webhook_set", "url": webhook_url}
             else:
-                raise HTTPException(status_code=500, detail=data.get("description", "Failed to set webhook"))
+                raise HTTPException(
+                    status_code=500, detail=data.get("description", "Failed to set webhook")
+                )
     except httpx.RequestError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to connect to Telegram: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"Failed to connect to Telegram: {exc}"
+        ) from exc
 
 
 @app.get("/api/telegram/status")
 async def telegram_status():
     """Get Telegram bot connection status."""
     from agent.telegram import get_config_status, is_configured
+
     status = get_config_status()
     status["connected"] = is_configured()
     return status
@@ -906,9 +1025,7 @@ async def memory_feedback(entry_id: str, req: MemoryFeedbackRequest):
     try:
         result = memory_store.record_feedback(entry_id, helpful=req.helpful)
     except KeyError:
-        raise HTTPException(
-            status_code=404, detail=f"Memory entry not found: {entry_id}"
-        ) from None
+        raise HTTPException(status_code=404, detail=f"Memory entry not found: {entry_id}") from None
     return result
 
 
@@ -1014,8 +1131,7 @@ async def create_skill(req: CreateSkillRequest):
             f"name: {req.name.strip().lower()}\n"
             f'description: "{description[:1024]}"\n'
             "version: 1.0.0\n"
-            "---\n\n"
-            + content
+            "---\n\n" + content
         )
     try:
         name = _skill_library.create(name=req.name, content=content, actor="user")
@@ -1098,6 +1214,7 @@ async def restore_watchers_endpoint():
     """Manually restore persisted watchers (also runs automatically on startup)."""
     try:
         from agent.watchers.manager import restore_watchers
+
         result = await restore_watchers()
         payload = result if isinstance(result, dict) else {"result": result}
         return {"status": "restored", **payload}
@@ -1127,4 +1244,5 @@ async def receive_webhook(req: WebhookPayload):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host=_cfg.settings.api_host, port=_cfg.settings.api_port)

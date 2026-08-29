@@ -40,6 +40,18 @@ def _load_dotenv() -> None:
 
 _load_dotenv()
 
+# Selectable Gemini request-rate tiers shown in the dashboard "Rate Limit"
+# card. Each key maps to the client-side RPS/RPM the agent throttles itself
+# to (a value of 0 disables that bound). "free" matches the Gemini free tier.
+RATE_LIMIT_PRESETS: dict[str, dict[str, float | int]] = {
+    # Gemini free tier: 1 request/sec, 15 requests/min (burst-safe).
+    "free": {"rps": 1, "rpm": 15},
+    # Paid standard tier: comfortable headroom without melting the bill.
+    "standard": {"rps": 10, "rpm": 100},
+    # No client-side throttling — trust the paid tier's own limits.
+    "unlimited": {"rps": 0, "rpm": 0},
+}
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -68,6 +80,31 @@ class Settings(BaseSettings):
     # When True, Gemini controls tool selection, file naming and memory policy.
     # Deterministic heuristics remain only as fallback/validator.
     gemini_full_control: bool = True
+
+    # Client-side request-rate gate: the agent self-limits to your Gemini
+    # tier's RPS/RPM so the free tier's request-per-minute limits are never
+    # exceeded by its own bursty loop (tasks would otherwise 429 mid-run).
+    # A value of 0 disables that bound. Changeable live from the dashboard.
+    gemini_rps: float = 1.0
+    gemini_rpm: int = 15
+
+    @field_validator("gemini_rps", mode="before")
+    @classmethod
+    def _clamp_rps(cls, v: object) -> float:
+        try:
+            val = float(v)
+        except (TypeError, ValueError):
+            return 1.0
+        return min(max(val, 0.0), 100.0)
+
+    @field_validator("gemini_rpm", mode="before")
+    @classmethod
+    def _clamp_rpm(cls, v: object) -> int:
+        try:
+            val = int(v)
+        except (TypeError, ValueError):
+            return 15
+        return min(max(val, 0), 10000)
 
     # --- Firestore ---
     firestore_collection_tasks: str = "tasks"
