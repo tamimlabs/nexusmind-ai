@@ -66,6 +66,26 @@ _SIMILAR_DEFAULT_THRESHOLD = 0.3  # dedup gate (stemmed tokens)
 _ARCHIVE_TS_SUFFIX = re.compile(r"-\d{8}-\d{6}$")
 
 
+def _requires_tools(meta: dict[str, Any]) -> list[str]:
+    """Extract ``metadata.conditions.requires_tools`` from SKILL.md frontmatter
+    (Hermes tool-binding pattern)."""
+    conditions = (meta.get("metadata") or {}).get("conditions") or {}
+    raw = conditions.get("requires_tools") or conditions.get("requires_toolsets") or []
+    if isinstance(raw, list):
+        return [str(t) for t in raw if str(t).strip()]
+    if raw:
+        return [str(raw)]
+    return []
+
+
+def _needs_missing_tools(skill: dict[str, Any], available_tools: set[str]) -> bool:
+    """True when the skill declares required tools the session lacks."""
+    required = skill.get("requires_tools") or []
+    if not required:
+        return False
+    return not set(required).issubset(available_tools)
+
+
 class SkillError(ValueError):
     """Raised when a skill operation violates validation gates."""
 
@@ -74,7 +94,7 @@ def slugify(text: str, max_length: int = MAX_NAME_LENGTH) -> str:
     """Convert free text into a valid skill name (kebab-case slug)."""
     slug = re.sub(r"[^a-z0-9._-]+", "-", text.lower().strip())
     slug = re.sub(r"-{2,}", "-", slug).strip("-.")
-    return (slug[:max_length].rstrip("-.") or "skill")
+    return slug[:max_length].rstrip("-.") or "skill"
 
 
 def _sha256(text: str) -> str:
@@ -135,7 +155,7 @@ class SkillLibrary:
         if end == -1:
             raise SkillError("Frontmatter block is not closed with '---'")
         raw = text[3:end].strip()
-        body = text[end + 4:].lstrip("\n")
+        body = text[end + 4 :].lstrip("\n")
         try:
             meta: Any = yaml.safe_load(raw)
         except yaml.YAMLError as exc:
@@ -187,7 +207,8 @@ class SkillLibrary:
         if direct.exists():
             return direct
         candidates = [
-            p for p in sorted(self.dir.glob("*/*/SKILL.md"))
+            p
+            for p in sorted(self.dir.glob("*/*/SKILL.md"))
             if p.parent.name == name and not self._in_hidden_dir(p)
         ]
         return candidates[0] if candidates else direct
@@ -215,9 +236,10 @@ class SkillLibrary:
         return parent.name
 
     @staticmethod
-    def _render_header(meta: dict[str, Any], *, created_by: str, origin_task: str | None,
-                       created_at: str) -> str:
-        return (
+    def _render_header(
+        meta: dict[str, Any], *, created_by: str, origin_task: str | None, created_at: str
+    ) -> str:
+        header = (
             "---\n"
             f"name: {meta['name']}\n"
             f'description: "{meta["description"]}"\n'
@@ -226,8 +248,14 @@ class SkillLibrary:
             f"created_by: {created_by}\n"
             f"origin_task: {origin_task or 'null'}\n"
             f"created_at: {created_at}\n"
-            "---\n\n"
         )
+        env = meta.get("metadata") or {}
+        if isinstance(env, dict) and env:
+            block = (
+                yaml.safe_dump(env, default_flow_style=False, sort_keys=False).strip().splitlines()
+            )
+            header += "metadata:\n" + "\n".join(f"  {line}" for line in block) + "\n"
+        return header + "---\n\n"
 
     # ------------------------------------------------------------------
     # Mutations (each gated by validation + ledger)
@@ -257,12 +285,15 @@ class SkillLibrary:
         normalized["name"] = name
         normalized["description"] = str(meta.get("description", "")).strip()
         _, body = self.split_frontmatter(content)
-        final_content = self._render_header(
-            normalized,
-            created_by=created_by,
-            origin_task=origin_task,
-            created_at=_now_iso(),
-        ) + body
+        final_content = (
+            self._render_header(
+                normalized,
+                created_by=created_by,
+                origin_task=origin_task,
+                created_at=_now_iso(),
+            )
+            + body
+        )
 
         target_dir = self.dir / name
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -273,24 +304,29 @@ class SkillLibrary:
                 raise SkillError(f"Skill '{name}' already exists")
             path.write_text(final_content, encoding="utf-8", newline="\n")
             record = self._usage_record(name)
-            record.update({
-                "created_by": created_by,
-                "state": STATE_ACTIVE,
-                "pinned": False,
-                "use_count": 0,
-                "patch_count": 0,
-                "created_at": now,
-                "last_used_at": None,
-                "last_patched_at": None,
-            })
+            record.update(
+                {
+                    "created_by": created_by,
+                    "state": STATE_ACTIVE,
+                    "pinned": False,
+                    "use_count": 0,
+                    "patch_count": 0,
+                    "created_at": now,
+                    "last_used_at": None,
+                    "last_patched_at": None,
+                }
+            )
             self._save_usage()
-        self._append_ledger({
-            "action": "create",
-            "name": name,
-            "actor": actor,
-            "after_sha256": _sha256(final_content),
-        })
+        self._append_ledger(
+            {
+                "action": "create",
+                "name": name,
+                "actor": actor,
+                "after_sha256": _sha256(final_content),
+            }
+        )
         logger.info("Skill created (%s/%s): %s", created_by, actor, name)
+        self._emit_lifecycle("create", name, created_by=created_by)
         return name
 
     def patch(self, name: str, new_content: str, actor: str = "user") -> None:
@@ -302,7 +338,8 @@ class SkillLibrary:
         try:
             new_meta, body = self.split_frontmatter(new_content)
             self.validate_content(
-                new_content, new=False,
+                new_content,
+                new=False,
                 created_by=str(old_meta.get("created_by") or "user"),
             )
             description = str(new_meta.get("description") or old_meta.get("description"))
@@ -321,28 +358,35 @@ class SkillLibrary:
             pass
         normalized["version"] = version
 
-        final_content = self._render_header(
-            normalized,
-            created_by=str(old_meta.get("created_by") or "user"),
-            origin_task=str(old_meta["origin_task"]) if old_meta.get("origin_task") else None,
-            created_at=str(old_meta.get("created_at") or _now_iso()),
-        ) + body
+        final_content = (
+            self._render_header(
+                normalized,
+                created_by=str(old_meta.get("created_by") or "user"),
+                origin_task=str(old_meta["origin_task"]) if old_meta.get("origin_task") else None,
+                created_at=str(old_meta.get("created_at") or _now_iso()),
+            )
+            + body
+        )
 
         before = path.read_text(encoding="utf-8")
         with self._lock:
             path.write_text(final_content, encoding="utf-8", newline="\n")
             record = self._usage_record(name)
             record["patch_count"] = int(record.get("patch_count", 0)) + 1
+            record["patch_generation"] = int(record.get("patch_generation", 0)) + 1
             record["last_patched_at"] = _now_iso()
             self._save_usage()
-        self._append_ledger({
-            "action": "patch",
-            "name": name,
-            "actor": actor,
-            "before_sha256": _sha256(before),
-            "after_sha256": _sha256(final_content),
-            "before_content": before[:MAX_LEDGER_BEFORE_CHARS],
-        })
+        self._append_ledger(
+            {
+                "action": "patch",
+                "name": name,
+                "actor": actor,
+                "before_sha256": _sha256(before),
+                "after_sha256": _sha256(final_content),
+                "before_content": before[:MAX_LEDGER_BEFORE_CHARS],
+            }
+        )
+        self._emit_lifecycle("patch", name, patch_generation=record["patch_generation"])
 
     def archive(self, name: str, actor: str = "user") -> bool:
         """Move a skill into .archive/ (recoverable soft delete)."""
@@ -361,6 +405,7 @@ class SkillLibrary:
             self._save_usage()
         self._append_ledger({"action": "archive", "name": name, "actor": actor})
         logger.info("Skill archived: %s -> %s", name, dest.name)
+        self._emit_lifecycle("archive", name, actor=actor)
         return True
 
     def restore(self, name: str, actor: str = "user") -> bool:
@@ -381,6 +426,7 @@ class SkillLibrary:
             record["state"] = STATE_ACTIVE
             self._save_usage()
         self._append_ledger({"action": "restore", "name": name, "actor": actor})
+        self._emit_lifecycle("restore", name, actor=actor)
         return True
 
     def delete(self, name: str, actor: str = "user") -> bool:
@@ -393,13 +439,16 @@ class SkillLibrary:
             shutil.rmtree(path.parent)
             self._usage().pop(name, None)
             self._save_usage()
-        self._append_ledger({
-            "action": "delete",
-            "name": name,
-            "actor": actor,
-            "before_sha256": _sha256(before),
-            "before_content": before[:MAX_LEDGER_BEFORE_CHARS],
-        })
+        self._append_ledger(
+            {
+                "action": "delete",
+                "name": name,
+                "actor": actor,
+                "before_sha256": _sha256(before),
+                "before_content": before[:MAX_LEDGER_BEFORE_CHARS],
+            }
+        )
+        self._emit_lifecycle("delete", name, actor=actor)
         return True
 
     # ------------------------------------------------------------------
@@ -418,16 +467,21 @@ class SkillLibrary:
         return self._usage_cache
 
     def _usage_record(self, name: str) -> dict[str, Any]:
-        return self._usage().setdefault(name, {
-            "created_by": None,
-            "state": STATE_ACTIVE,
-            "pinned": False,
-            "use_count": 0,
-            "patch_count": 0,
-            "created_at": _now_iso(),
-            "last_used_at": None,
-            "last_patched_at": None,
-        })
+        return self._usage().setdefault(
+            name,
+            {
+                "created_by": None,
+                "state": STATE_ACTIVE,
+                "pinned": False,
+                "use_count": 0,
+                "patch_count": 0,
+                "patch_generation": 0,
+                "last_reused_patch_generation": 0,
+                "created_at": _now_iso(),
+                "last_used_at": None,
+                "last_patched_at": None,
+            },
+        )
 
     def _save_usage(self) -> None:
         cache = self._usage_cache or {}
@@ -435,15 +489,45 @@ class SkillLibrary:
         tmp.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
         tmp.replace(self.usage_path)
 
+    def set_hook(self, callback: Any) -> None:
+        """Register a live ``on_skill_lifecycle`` hook (Hermes pattern).
+
+        The callback receives ``(action, name)`` plus extra keyword args
+        (e.g. ``use_count``, ``reused_after_patch``). Errors are swallowed so
+        telemetry can never break skill operations.
+        """
+        self._hook = callback
+
+    def _emit_lifecycle(self, action: str, name: str, **extra: Any) -> None:
+        hook = getattr(self, "_hook", None)
+        if hook is None:
+            return
+        try:
+            hook(action, name, **extra)
+        except Exception:
+            logger.debug("Skill lifecycle hook failed", exc_info=True)
+
     def record_use(self, name: str) -> None:
-        """Bump use_count on successful reuse (observability + staleness anchor)."""
+        """Bump use_count on successful reuse, tracking reuse-after-patch."""
         with self._lock:
             record = self._usage_record(name)
             record["use_count"] = int(record.get("use_count", 0)) + 1
             record["last_used_at"] = _now_iso()
+            generation = int(record.get("patch_generation", 0))
+            reused = int(record.get("last_reused_patch_generation", 0))
+            if generation > reused:
+                record["last_reused_patch_generation"] = generation
             if record.get("state") == STATE_STALE:
                 record["state"] = STATE_ACTIVE
             self._save_usage()
+        self._emit_lifecycle(
+            "use",
+            name,
+            use_count=record["use_count"],
+            patch_generation=generation,
+            reused_after_patch=generation > 0
+            and generation == record["last_reused_patch_generation"],
+        )
 
     def usage_of(self, name: str) -> dict[str, Any]:
         return dict(self._usage_record(name))
@@ -518,12 +602,15 @@ class SkillLibrary:
                     "archived": root == self.archive_dir,
                     "chars": len(body),
                     "path": str(path),
+                    "requires_tools": _requires_tools(meta),
                 }
                 entry.update(self._usage_record(name))
                 results.append(entry)
         return results
 
-    def find_similar(self, text: str, threshold: float = _SIMILAR_DEFAULT_THRESHOLD) -> list[dict[str, Any]]:
+    def find_similar(
+        self, text: str, threshold: float = _SIMILAR_DEFAULT_THRESHOLD
+    ) -> list[dict[str, Any]]:
         """Skills whose name+description overlap heavily with text (dedup gate)."""
         probe = _tokens(text)
         similar: list[dict[str, Any]] = []
@@ -534,23 +621,39 @@ class SkillLibrary:
                 similar.append({"name": skill["name"], "score": round(score, 3)})
         return sorted(similar, key=lambda item: -float(item["score"]))
 
-    def match(self, goal: str, top_k: int = 3) -> list[tuple[str, float]]:
-        """Rank skills against a goal by lexical overlap (index-router signal)."""
+    def match(
+        self,
+        goal: str,
+        top_k: int = 3,
+        available_tools: set[str] | None = None,
+    ) -> list[tuple[str, float]]:
+        """Rank skills against a goal by lexical overlap (index-router signal).
+
+        ``available_tools`` gates out skills whose ``requires_tools`` are not
+        all available in the current session (Hermes conditional activation).
+        """
         probe = _tokens(goal)
         scored: list[tuple[str, float]] = []
         for skill in self.list_skills():
             if skill.get("archived"):
+                continue
+            if available_tools is not None and _needs_missing_tools(skill, available_tools):
                 continue
             signature = _tokens(skill["name"].replace("-", " ") + " " + skill["description"])
             scored.append((str(skill["name"]), _jaccard(probe, signature)))
         scored.sort(key=lambda pair: -pair[1])
         return [(n, round(s, 3)) for n, s in scored[:top_k]]
 
-    def render_index(self) -> str:
-        """Compact ``<available-skills>`` catalog for the planner prompt."""
+    def render_index(self, available_tools: set[str] | None = None) -> str:
+        """Compact ``<available-skills>`` catalog for the planner prompt.
+
+        Skills whose recorded ``requires_tools`` are unavailable are hidden.
+        """
         categories: dict[str, list[dict[str, Any]]] = {}
         for skill in self.list_skills():
             if skill.get("archived"):
+                continue
+            if available_tools is not None and _needs_missing_tools(skill, available_tools):
                 continue
             categories.setdefault(skill["category"] or "general", []).append(skill)
         lines: list[str] = []
@@ -562,13 +665,19 @@ class SkillLibrary:
                 lines.append(f"    - {skill['name']}: {desc}")
         return "\n".join(lines)
 
-    def plan_context(self, goal: str) -> tuple[str, list[str]]:
+    def plan_context(
+        self,
+        goal: str,
+        available_tools: set[str] | None = None,
+    ) -> tuple[str, list[str]]:
         """Build the fenced skill-context block for planning.
 
         Returns ``(context_text, matched_names)`` where matched_names are the
         skills whose FULL procedure body was embedded (for use-tracking later).
+        Skills requiring tools the session lacks are filtered out
+        (``available_tools``).
         """
-        index = self.render_index()
+        index = self.render_index(available_tools=available_tools)
         if not index.strip():
             return "", []
         parts = [
@@ -580,7 +689,7 @@ class SkillLibrary:
             "",
         ]
         matched: list[str] = []
-        for name, score in self.match(goal, top_k=1):
+        for name, score in self.match(goal, top_k=1, available_tools=available_tools):
             if score < _MATCH_THRESHOLD:
                 continue
             try:
@@ -589,7 +698,7 @@ class SkillLibrary:
                 continue
             parts += [
                 f'<skill-procedure name="{name}" relevance="{score}">',
-                f'Description: {meta.get("description", "")}',
+                f"Description: {meta.get('description', '')}",
                 "",
                 body.strip(),
                 "</skill-procedure>",

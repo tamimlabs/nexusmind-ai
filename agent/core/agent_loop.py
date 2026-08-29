@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
 
 from agent.core.executor import execute_step
 from agent.core.planner import canonical_tool_names, repair_tool_name
-from agent.models import Task, TaskStep, TaskTodo, TodoStatus
+from agent.models import StepStatus, Task, TaskStep, TaskTodo, TodoStatus
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +284,62 @@ def _next_open_todo(task: Task) -> TaskTodo | None:
     return None
 
 
+# ── Project collision guard ───────────────────────────────────────
+# The agent must NEVER silently replace an existing project of the same
+# name. These helpers let the loop deterministically block writes into a
+# project folder that existed BEFORE this task started, unless the agent
+# has already READ one of its files (proof of intent to update in place).
+
+_WRITE_ROOTS = ("projects", "output")
+_ROOT_RE = re.compile(r"\b(projects|output)/([A-Za-z0-9._@\- ]+?)(?=/|['\")`,;\s]|$)")
+
+
+def _step_target_roots(step: TaskStep) -> set[str]:
+    """Project roots (e.g. ``projects/my-site``) a step would touch."""
+    roots: set[str] = set()
+    pool: list[str] = [str(step.description or "")]
+    for value in (step.tool_args or {}).values():
+        if isinstance(value, str):
+            pool.append(value)
+        elif isinstance(value, (list, tuple)):
+            pool.extend(x for x in value if isinstance(x, str))
+    for text in pool:
+        norm = text.replace("\\", "/")
+        for root in _ROOT_RE.findall(norm):
+            name = root[1].strip(" '\"")
+            if name:
+                roots.add(f"{root[0]}/{name}")
+    return roots
+
+
+def _preexisting_project_roots() -> set[str]:
+    """Non-empty project folders that existed before this task began."""
+    from agent.config import _PROJECT_ROOT
+
+    existing: set[str] = set()
+    for root in _WRITE_ROOTS:
+        base = _PROJECT_ROOT / root
+        if not base.exists():
+            continue
+        for child in base.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                if any(p.is_file() for p in child.rglob("*")):
+                    existing.add(f"{root}/{child.name}")
+            except OSError:
+                pass
+    return existing
+
+
+_BLOCK_TEMPLATE = (
+    'BLOCKED: "{root}" is an EXISTING project with content — do NOT overwrite or '
+    "replace it. If the GOAL is to UPDATE it, first read its files (read_file / "
+    "list_directory), then write. Otherwise choose a NEW project name (e.g. append "
+    '"-2" or "v2") so the existing project stays untouched.'
+)
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     """Extract the first balanced JSON object from a model reply."""
     decoder = json.JSONDecoder()
@@ -451,6 +508,8 @@ async def run_adaptive_loop(
         )
 
     _seed_todos(task, roadmap)
+    preexisting = _preexisting_project_roots()
+    read_roots: set[str] = set()
 
     for _round in range(max_steps):
         task.updated_at = datetime.now(UTC)
@@ -524,6 +583,36 @@ async def run_adaptive_loop(
         task.steps.append(step)
         task.updated_at = datetime.now(UTC)
         logger.info("Step %d: %s", step.order, step.description[:80])
+
+        # Collision guard: never overwrite a project that existed before this
+        # task, unless the agent already read one of its files (real update
+        # intent). Reads are always allowed — they are how intent is proven.
+        # Blocked steps are marked skipped and fed back to the model.
+        targets = _step_target_roots(step)
+        blocked_root = (
+            next(
+                (r for r in targets if r in preexisting and r not in read_roots),
+                None,
+            )
+            if step.tool_name in ("write_file", "write_directory")
+            else None
+        )
+        if blocked_root is not None:
+            block_msg = _BLOCK_TEMPLATE.replace("{root}", blocked_root)
+            step.status = StepStatus.SKIPPED
+            step.error = block_msg
+            context[f"step_{step.order}_result"] = block_msg
+            context[f"step_{step.order + 1}_result"] = block_msg
+            details.append(
+                f"step {step.order} [{step.tool_name}]: BLOCKED (existing {blocked_root})"
+            )
+            _emit(
+                "error",
+                f"Step {step.order} blocked",
+                f"{blocked_root} already exists — read its files first or pick a new name.",
+            )
+            continue
+
         _emit(
             "step_running",
             f"Step {step.order}: {_trim(step.description, 90)}",
@@ -538,6 +627,8 @@ async def run_adaptive_loop(
 
         if result.success:
             consecutive_failures = 0
+            if step.tool_name in ("read_file", "list_directory"):
+                read_roots.update(_step_target_roots(step))
             if active_todo is not None:
                 _set_todo_status(active_todo, TodoStatus.COMPLETED)
             _emit("done", f"Step {step.order} complete", _trim(result.output or result.error, 300))

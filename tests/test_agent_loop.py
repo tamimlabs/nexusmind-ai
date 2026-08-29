@@ -472,7 +472,9 @@ class TestTodoLifecycle:
         )
         assert len(task.todos) == 3
         assert [t.title for t in task.todos] == [
-            "Scaffold folder", "Write index.html", "Verify build",
+            "Scaffold folder",
+            "Write index.html",
+            "Verify build",
         ]
         assert all(t.status.value == "pending" for t in task.todos)
 
@@ -489,9 +491,17 @@ class TestTodoLifecycle:
 
         async def decide(state):
             if len(executed) == 0:
-                return {"description": "Scaffold folder", "tool_name": "list_directory", "tool_args": {}}
+                return {
+                    "description": "Scaffold folder",
+                    "tool_name": "list_directory",
+                    "tool_args": {},
+                }
             if len(executed) == 1:
-                return {"description": "Write index.html", "tool_name": "write_file", "tool_args": {}}
+                return {
+                    "description": "Write index.html",
+                    "tool_name": "write_file",
+                    "tool_args": {},
+                }
             return {"done": True, "result": "All good."}
 
         await run_adaptive_loop(
@@ -580,7 +590,11 @@ class TestTodoLifecycle:
         async def decide(state):
             calls["n"] += 1
             if calls["n"] == 1:
-                return {"description": "Scaffold folder", "tool_name": "list_directory", "tool_args": {}}
+                return {
+                    "description": "Scaffold folder",
+                    "tool_name": "list_directory",
+                    "tool_args": {},
+                }
             return {"done": True, "result": "Built and verified."}
 
         task = _task()
@@ -616,3 +630,115 @@ class TestTodoLifecycle:
             on_event=bad_sink,
         )
         assert outcome.done is True
+
+
+class TestProjectCollisionGuard:
+    """The agent must never silently replace an existing same-named project:
+    writes into a pre-existing folder are blocked unless the agent first read
+    one of its files (real update intent)."""
+
+    @pytest.fixture()
+    def existing_project(self, tmp_path, monkeypatch):
+        import agent.config as cfg
+
+        root = tmp_path / "wr"
+        (root / "projects" / "old-site").mkdir(parents=True)
+        (root / "projects" / "old-site" / "index.html").write_text("ORIGINAL", encoding="utf-8")
+        monkeypatch.setattr(cfg, "_PROJECT_ROOT", root)
+        return root
+
+    @pytest.mark.asyncio
+    async def test_write_into_preexisting_project_is_blocked(self, existing_project):
+        """A blind write to an existing project is skipped without executing;
+        the original content stays untouched and the model sees the reason."""
+        executed: list[str] = []
+
+        async def execute(step, context):
+            executed.append(step.tool_name)
+            return ToolResult(success=True, output="wrote")
+
+        async def decide(state):
+            if len(task.steps) < 2:
+                return {
+                    "description": "Overwrite the old project files",
+                    "tool_name": "write_file",
+                    "tool_args": {"path": "projects/old-site/index.html", "content": "NEW CONTENT"},
+                }
+            return {"done": True, "result": "Finished."}
+
+        task = _task()
+        await run_adaptive_loop(task, {}, decide_fn=decide, execute_fn=execute, max_steps=4)
+
+        assert len(task.steps) >= 1
+        assert task.steps[0].status == StepStatus.SKIPPED
+        assert "BLOCKED" in (task.steps[0].error or "")
+        assert executed == []  # the guard never ran the write
+        file = existing_project / "projects" / "old-site" / "index.html"
+        assert file.read_text(encoding="utf-8") == "ORIGINAL"
+
+    @pytest.mark.asyncio
+    async def test_read_first_then_write_is_allowed(self, existing_project):
+        """Updating an existing project is fine once the agent read its files."""
+        calls = {"n": 0}
+        executed: list[str] = []
+
+        async def decide(state):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "description": "Read existing index.html",
+                    "tool_name": "read_file",
+                    "tool_args": {"path": "projects/old-site/index.html"},
+                }
+            if calls["n"] == 2:
+                return {
+                    "description": "Update index.html in place",
+                    "tool_name": "write_file",
+                    "tool_args": {"path": "projects/old-site/index.html", "content": "NEW CONTENT"},
+                }
+            return {"done": True, "result": "Updated."}
+
+        async def execute(step, context):
+            executed.append(step.tool_name)
+            path = (step.tool_args or {}).get("path")
+            if step.tool_name == "write_file" and path:
+                target = existing_project / path.replace("\\", "/")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text((step.tool_args or {}).get("content", ""), encoding="utf-8")
+            return ToolResult(success=True, output="ok")
+
+        task = _task()
+        outcome = await run_adaptive_loop(
+            task, {}, decide_fn=decide, execute_fn=execute, max_steps=5
+        )
+
+        assert outcome.done is True
+        assert executed == ["read_file", "write_file"]
+        file = existing_project / "projects" / "old-site" / "index.html"
+        assert file.read_text(encoding="utf-8") == "NEW CONTENT"
+
+    @pytest.mark.asyncio
+    async def test_fresh_project_folder_on_same_name_uses_new_name(self, existing_project):
+        """The guard feedback should push the model to a NEW name; a write to a
+        non-existent folder is allowed and executes normally."""
+        executed: list[str] = []
+
+        async def decide(state):
+            if len(task.steps) < 1:
+                return {
+                    "description": "Create the new coffee-site project",
+                    "tool_name": "execute_code",
+                    "tool_args": {
+                        "code": "from pathlib import Path\nPath('projects/coffee-site-2').mkdir(exist_ok=True)"
+                    },
+                }
+            return {"done": True, "result": "Done."}
+
+        async def execute(step, context):
+            executed.append(step.tool_name)
+            return ToolResult(success=True, output="created")
+
+        task = _task()
+        await run_adaptive_loop(task, {}, decide_fn=decide, execute_fn=execute, max_steps=4)
+        assert [s.tool_name for s in task.steps] == ["execute_code"]
+        assert executed == ["execute_code"]

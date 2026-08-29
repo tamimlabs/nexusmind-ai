@@ -331,7 +331,9 @@ class Orchestrator:
             # Procedural skill index + best-matched procedure body (Hermes
             # description-as-router pattern). matched skills get use-credit
             # when the task completes successfully.
-            skill_context, matched_skills = self.skills.plan_context(task.goal)
+            skill_context, matched_skills = self.skills.plan_context(
+                task.goal, available_tools=set(list_tools())
+            )
             if skill_context:
                 logger.info("Injected skill context (%d matched procedure(s))", len(matched_skills))
 

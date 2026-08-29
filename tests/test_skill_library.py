@@ -30,13 +30,7 @@ def _skill_doc(
             "## Procedure\n1. web_search with the current year\n"
             "2. summarize_text the top stories\n\n## Pitfalls\n- old threads pollute results\n"
         )
-    return (
-        "---\n"
-        f"name: {name}\n"
-        f'description: "{description}"\n'
-        "version: 1.0.0\n"
-        "---\n\n" + body
-    )
+    return f'---\nname: {name}\ndescription: "{description}"\nversion: 1.0.0\n---\n\n' + body
 
 
 @pytest.fixture()
@@ -212,3 +206,114 @@ class TestSynthesisContract:
         lib.record_use("disk-check")
         data = json.loads(lib.usage_path.read_text(encoding="utf-8"))
         assert data["disk-check"]["use_count"] == 1
+
+
+class TestReuseAfterPatchTelemetry:
+    """Hermes 'patch_generation' feedback loop: a skill that is patched and then
+    reused again proves the patch mattered."""
+
+    def _body(self, text: str) -> str:
+        return "# Reuse\n\n## Procedure\n1. do the thing\n## Notes\n" + text
+
+    def test_patch_bumps_generation_and_reuse_locks_it(self, lib):
+        lib.create(name="reuse-skill", content=_skill_doc("reuse-skill", body=self._body("v1")))
+        usage = lib.usage_of("reuse-skill")
+        assert usage["patch_generation"] == 0
+        assert usage["last_reused_patch_generation"] == 0
+
+        lib.patch("reuse-skill", self._body("v2"))
+        assert lib.usage_of("reuse-skill")["patch_generation"] == 1
+
+        lib.record_use("reuse-skill")  # reuse after the patch
+        usage = lib.usage_of("reuse-skill")
+        assert usage["last_reused_patch_generation"] == 1
+        assert usage["use_count"] == 1
+
+    def test_patch_alone_is_not_counted_as_reuse(self, lib):
+        lib.create(name="reuse-only", content=_skill_doc("reuse-only", body=self._body("v1")))
+        lib.patch("reuse-only", self._body("v2"))
+        usage = lib.usage_of("reuse-only")
+        assert usage["patch_generation"] == 1
+        assert usage["last_reused_patch_generation"] == 0
+
+
+class TestLifecycleHook:
+    def test_hook_fires_for_mutations(self, lib):
+        calls: list[tuple[str, str]] = []
+        lib.set_hook(lambda action, name, **kw: calls.append((action, name)))
+        lib.create(name="hooked", content=_skill_doc("hooked", body="# X\n\n## Procedure\n1. x\n"))
+        lib.record_use("hooked")
+        lib.patch("hooked", "# X2\n\n## Procedure\n1. y\n")
+        lib.archive("hooked")
+        assert ("create", "hooked") in calls
+        assert ("use", "hooked") in calls
+        assert ("patch", "hooked") in calls
+        assert ("archive", "hooked") in calls
+
+    def test_broken_hook_never_breaks_skill_ops(self, lib):
+        def bad(action, name, **kw):
+            raise RuntimeError("telemetry down")
+
+        lib.set_hook(bad)
+        lib.create(
+            name="resilient", content=_skill_doc("resilient", body="# R\n\n## Procedure\n1. r\n")
+        )
+        assert lib.list_skills()[0]["name"] == "resilient"
+
+
+def _skill_with_tools(name: str, requires_tools: list[str]) -> str:
+    return (
+        "---\n"
+        f"name: {name}\n"
+        'description: "Use when the goal involves fakes for gating tests."\n'
+        "version: 1.0.0\n"
+        "metadata:\n"
+        "  conditions:\n"
+        "    requires_tools:\n"
+        f"      - {requires_tools[0]}\n"
+        + "".join(f"      - {t}\n" for t in requires_tools[1:])
+        + "---\n\n# Gated\n\n## Procedure\n1. act\n"
+    )
+
+
+class TestToolAwareGating:
+    """Skills requiring unavailable tools are hidden from index/match/plan."""
+
+    @pytest.fixture()
+    def gated_lib(self, tmp_path):
+        lib = sl.SkillLibrary(skills_dir=tmp_path / "skills")
+        lib.create(
+            name="needs-github", content=_skill_with_tools("needs-github", ["github_get_repo"])
+        )
+        lib.create(name="plain-skill", content=_skill_doc("plain-skill"))
+        return lib
+
+    def test_index_hides_skill_when_tool_missing(self, gated_lib):
+        idx = gated_lib.render_index(available_tools={"web_search", "write_file"})
+        assert "needs-github" not in idx
+        assert "plain-skill" in idx
+        idx_all = gated_lib.render_index(available_tools={"github_get_repo", "web_search"})
+        assert "needs-github" in idx_all
+
+    def test_index_unfiltered_when_available_tools_omitted(self, gated_lib):
+        idx = gated_lib.render_index()
+        assert "needs-github" in idx
+
+    def test_match_skips_unavailable_skills(self, gated_lib):
+        ranked = gated_lib.match("help with fakes gating tests", top_k=5)
+        assert ranked[0][0] == "needs-github"
+        ranked_tooled = gated_lib.match(
+            "help with fakes gating tests", top_k=5, available_tools={"web_search"}
+        )
+        assert all(name != "needs-github" for name, _ in ranked_tooled)
+
+    def test_plan_context_respects_tools(self, gated_lib):
+        ctx, matched = gated_lib.plan_context(
+            "help with fakes gating tests", available_tools={"web_search"}
+        )
+        assert "needs-github" not in ctx
+        assert matched == [] or all(m != "needs-github" for m in matched)
+
+    def test_list_skills_exposes_requires_tools(self, gated_lib):
+        entry = next(s for s in gated_lib.list_skills() if s["name"] == "needs-github")
+        assert entry["requires_tools"] == ["github_get_repo"]

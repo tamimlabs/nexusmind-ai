@@ -152,12 +152,10 @@ async def _after_agent(ctx: Context) -> types.Content | None:
             return None
 
         # Save as a memory entry (lightweight reflection)
-        from agent.core.memory import memory_store
+        from agent.core.memory import MemoryEntry, memory_store
 
         memory_store.add(
-            content=f"Task completed: {output[:200]}",
-            category="reflection",
-            source="adk_agent",
+            MemoryEntry(content=f"Task completed: {output[:200]}", category="reflection", source="adk_agent")
         )
         logger.info("ADK callback: saved post-task reflection")
     except Exception:
