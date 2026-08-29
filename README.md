@@ -603,28 +603,6 @@ All **250+ tests** covering models, memory (hybrid retrieval, HRR, trust scoring
 
 ---
 
-## 🎬 Demo — Watch Before You Read
-
-<div align="center">
-
-### ▶️ 4-Minute Demo — Autonomous Agent End-to-End
-
-[![NexusMind AI — Full Demo (4 min)](https://img.youtube.com/vi/woSOCuzfabg/maxresdefault.jpg)](https://www.youtube.com/watch?v=woSOCuzfabg)
-
-**[▶️ CLICK TO WATCH ON YOUTUBE](https://www.youtube.com/watch?v=woSOCuzfabg)**
-
-*Goal → Gemini plans steps → Tools execute with live traces → Risky command triggers Telegram approval → Agent reflects & learns*
-
-| Resource | Link |
-|----------|------|
-| **🎬 Demo Video (4 min)** | **[▶️ Watch on YouTube](https://www.youtube.com/watch?v=woSOCuzfabg)** |
-| Live dashboard (Cloud Run) | _Coming with final submission_ |
-| Architecture walkthrough | [docs/capabilities.md](docs/capabilities.md) |
-
-</div>
-
----
-
 ## License
 
 [MIT](https://opensource.org/licenses/MIT)
