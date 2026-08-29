@@ -421,6 +421,32 @@ class TestValidation:
         assert len(text) <= 20000
         assert "step 59" in text  # newest kept
 
+    def test_old_steps_collapsed_into_recap_not_dropped(self):
+        task = _task()
+        for i in range(60):
+            task.steps.append(
+                TaskStep(
+                    order=i,
+                    description=f"step number {i}",
+                    tool_name="execute_code",
+                    status=StepStatus.SUCCESS,
+                    result="x" * 5,
+                )
+            )
+        text = _build_transcript(task)
+        assert "EARLIER PROGRESS" in text  # compressed recap present
+        assert "0 [execute_code] ok:" in text  # oldest still visible (collapsed)
+        assert "[execute_code]" in text and "step number 59" in text  # newest verbatim
+        assert len(text) <= 14000  # recap + bounded recent stays compact
+
+    def test_small_runs_have_no_recap(self):
+        task = _task()
+        for i in range(3):
+            task.steps.append(TaskStep(order=i, description=f"tiny {i}", tool_name="read_file"))
+        text = _build_transcript(task)
+        assert "EARLIER PROGRESS" not in text  # nothing collapsed yet
+        assert "tiny 2" in text
+
 
 class TestNoFabrication:
     @pytest.mark.asyncio

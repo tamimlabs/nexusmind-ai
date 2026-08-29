@@ -18,7 +18,7 @@ import agent.core.executor as ex
 import agent.core.gemini_client as gc
 import agent.core.planner as planner_mod
 import agent.skills.file_management.skill as fm_mod
-from agent.core.gemini_client import OutputTruncatedError, rotator
+from agent.core.gemini_client import OutputTruncatedError, QuotaExhaustedError, rotator
 from agent.models import Task, TaskStep
 
 
@@ -799,3 +799,55 @@ class TestPerTaskApprovalTrust:
             ex.untrust_task("t-approve-ask")
             ex._tool_registry.pop("trust_test_risky_tool2", None)
             ex._high_risk_tools.discard("trust_test_risky_tool2")
+
+
+class TestQuotaSurvival:
+    """Free-tier quota / API rate limits (429 RESOURCE_EXHAUSTED) must not
+    crash the agent: it retries on the fallback model (separate quota bucket),
+    waits through the server retry window, and only then parks with
+    QuotaExhaustedError so the task aborts gracefully."""
+
+    QUOTA_ERR = RuntimeError(
+        "429 RESOURCE_EXHAUSTED quota exceeded free_tier limit "
+        "{'retryDelay': '2s'} requests per day per project per model"
+    )
+
+    @pytest.fixture()
+    def no_sleep(self, monkeypatch):
+        async def _noop(*_a, **_k) -> None:
+            return None
+
+        monkeypatch.setattr(gc.asyncio, "sleep", _noop)
+
+    @pytest.mark.asyncio
+    async def test_quota_switches_to_pro_model_then_succeeds(self, fake_rotator, no_sleep):
+        client = _FakeClient([self.QUOTA_ERR, _resp("quota survivor", FinishReason.STOP)])
+        fake_rotator._clients["kfake"] = client
+
+        out = await gc.generate_content(model="gemini-3.5-flash", user="x", max_tokens=1024)
+        assert out == "quota survivor"
+        assert [c["model"] for c in client.models.calls] == ["gemini-3.5-flash", "gemini-3.5-pro"]
+
+    @pytest.mark.asyncio
+    async def test_quota_exhausted_raises_quota_error(self, fake_rotator, no_sleep, monkeypatch):
+        fake_rotator._clients["kfake"] = _FakeClient([self.QUOTA_ERR, self.QUOTA_ERR])
+        gc.settings.gemini_model_pro = ""  # no fallback bucket left
+        monkeypatch.setattr(gc, "_QUOTA_MAX_ATTEMPTS", 2)
+
+        with pytest.raises(QuotaExhaustedError) as excinfo:
+            await gc.generate_content(model="gemini-3.5-flash", user="x")
+        assert excinfo.value.retry_after > 0
+
+    @pytest.mark.asyncio
+    async def test_run_adaptive_loop_aborts_on_quota_with_guidance(self):
+        from agent.core.agent_loop import run_adaptive_loop
+
+        async def quoting(state):
+            raise QuotaExhaustedError(retry_after=30)
+
+        task = Task(goal="build a site step by step")
+        outcome = await run_adaptive_loop(task, {}, decide_fn=quoting)
+        assert outcome.done is False
+        assert task.steps == []
+        assert "quota" in (outcome.aborted_reason or "").lower()
+        assert "free-tier" in (outcome.aborted_reason or "")

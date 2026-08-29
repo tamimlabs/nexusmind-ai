@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 # enough for an agent to finish the step; the Pro model supports far more.
 _FALLBACK_TOKEN_CEILING = 65536
 
+# Quota/rate-limit survival: keep retrying within a short window (free-tier
+# daily limits, transient 429s) before giving up and surfacing the error.
+_QUOTA_RETRY_WINDOW = 25  # seconds of total patience
+_QUOTA_MAX_ATTEMPTS = 12
+
 
 class OutputTruncatedError(RuntimeError):
     """The model hit its ``max_output_tokens`` limit mid-reply.
@@ -32,6 +37,37 @@ class OutputTruncatedError(RuntimeError):
     def __init__(self, partial: str = "") -> None:
         super().__init__("model reply was truncated (max output tokens reached)")
         self.partial = partial or ""
+
+
+class QuotaExhaustedError(RuntimeError):
+    """Every model/key hit a rate limit or quota (429 / RESOURCE_EXHAUSTED).
+
+    ``retry_after`` says when a retry is likely to succeed. Callers (the
+    orchestrator) can park the task for later instead of failing it.
+    """
+
+    def __init__(self, retry_after: float = 60.0) -> None:
+        super().__init__(f"Gemini quota/rate limit exhausted; try again in ~{retry_after:.0f}s")
+        self.retry_after = retry_after
+
+
+def _is_quota_error(error_str: str) -> bool:
+    return (
+        "429" in error_str
+        or "quota" in error_str
+        or "resource_exhausted" in error_str
+        or "rate" in error_str
+        or "503" in error_str
+        or "unavailable" in error_str
+    )
+
+
+def _extract_retry_delay(exc: Exception) -> float:
+    """Pull the server's ``retryDelay`` (e.g. ``'2.6s'``) out of a 429 body."""
+    import re as _re
+
+    match = _re.search(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", str(exc))
+    return float(match.group(1)) if match else 0.0
 
 
 def _was_truncated(response: Any) -> bool:
@@ -173,10 +209,13 @@ async def generate_content(
     model_name = primary_model
     active_max = max_tokens
     used_fallback = False
-    last_error: Exception | None = None
     fallback_rounds = 1 if (fallback_model and fallback_model != primary_model) else 0
 
-    for attempt in range(rotator.key_count + fallback_rounds):
+    deadline = time.time() + _QUOTA_RETRY_WINDOW
+    attempts = 0
+    while attempts < _QUOTA_MAX_ATTEMPTS:
+        attempts += 1
+        active_model = model_name
         client, key_used = rotator.get_client()
 
         # If all keys in cooldown, async wait before trying
@@ -185,7 +224,7 @@ async def generate_content(
             if shortest > 0:
                 await asyncio.sleep(min(shortest, 5))
 
-        def _call(client=client, model=model_name, max_out=active_max) -> str:
+        def _call(client=client, model=active_model, max_out=active_max) -> str:
             contents = []
             if system:
                 contents.append(
@@ -236,31 +275,40 @@ async def generate_content(
             continue
 
         except Exception as exc:
-            last_error = exc
             error_str = str(exc).lower()
-
-            if (
-                "rate" in error_str
-                or "429" in error_str
-                or "quota" in error_str
-                or "503" in error_str
-                or "unavailable" in error_str
-            ):
-                rotator.mark_rate_limited(key_used, retry_after=15 + attempt * 15)
-                logger.warning(
-                    "Rate limited/unavailable on key ...%s (attempt %d), rotating",
-                    key_used[-6:],
-                    attempt + 1,
-                )
-                continue
-            elif "invalid" in error_str and "key" in error_str:
+            if "invalid" in error_str and "key" in error_str:
                 rotator.mark_rate_limited(key_used, retry_after=86400)
                 logger.error("Invalid API key ...%s, removing from rotation", key_used[-6:])
                 continue
-            else:
+
+            if not _is_quota_error(error_str):
                 raise
 
-    raise RuntimeError(f"Gemini generation failed after {rotator.key_count} attempts: {last_error}")
+            delay = _extract_retry_delay(exc)
+            rotator.mark_rate_limited(key_used, retry_after=max(delay, 10 + attempts * 5))
+            logger.warning(
+                "Quota/rate-limit on key ...%s (attempt %d), model %s",
+                key_used[-6:],
+                attempts,
+                active_model,
+            )
+            if not used_fallback and fallback_rounds:
+                used_fallback = True
+                logger.warning(
+                    "Quota on %s; switching to %s (separate quota bucket)",
+                    active_model,
+                    fallback_model,
+                )
+                model_name = fallback_model
+                active_max = fallback_max_tokens or min(max_tokens * 2, _FALLBACK_TOKEN_CEILING)
+                continue
+
+            remaining = deadline - time.time()
+            if remaining <= 0 or attempts >= _QUOTA_MAX_ATTEMPTS:
+                raise QuotaExhaustedError(retry_after=max(delay, 5.0)) from exc
+            await asyncio.sleep(min(delay, remaining) if delay else min(remaining, 2.0))
+
+    raise QuotaExhaustedError(retry_after=60.0)
 
 
 async def generate_structured(

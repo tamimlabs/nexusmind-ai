@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 from agent.core.executor import execute_step
+from agent.core.gemini_client import QuotaExhaustedError
 from agent.core.planner import canonical_tool_names, repair_tool_name
 from agent.models import StepStatus, Task, TaskStep, TaskTodo, TodoStatus
 
@@ -169,10 +170,54 @@ def _snapshot_workspace() -> str:
     return "\n".join(lines) if lines else "_No projects/ or output/ yet._"
 
 
+def _compressed_history(task: Task, budget: int) -> str:
+    """One-line-per-step recap of steps too old for the raw transcript window.
+
+    Instead of dropping them (which loses "where the task stands" on long
+    runs), the oldest steps are compressed into short status lines the model
+    still reads — the recent ones stay verbatim below.
+    """
+    if len(task.steps) <= _TRANSCRIPT_MAX_ENTRIES:
+        return ""
+    older = task.steps[:-_TRANSCRIPT_MAX_ENTRIES]
+    lines: list[str] = []
+    total = 0
+    for s in older:
+        if s.status == StepStatus.SUCCESS:
+            mark = "ok"
+        elif s.status == StepStatus.SKIPPED:
+            mark = "skipped"
+        elif s.status == StepStatus.FAILED:
+            mark = "FAILED"
+        else:
+            mark = "ran"
+        line = f"{s.order} [{s.tool_name}] {mark}: {_trim(s.description, 60)}"
+        total += len(line) + 1
+        if total > budget and lines:
+            lines.append(f"{len(older) - len(lines)} earlier step(s) — details collapsed")
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _build_transcript(task: Task) -> str:
-    """Compact, bounded transcript of executed steps (newest last)."""
+    """Compact, bounded transcript of executed steps (newest last).
+
+    Steps older than the raw window are NOT silently dropped: the oldest ones
+    appear as a one-line-per-step compressed recap ("EARLIER PROGRESS"), and
+    the most recent steps stay verbatim with their RESULT/ERROR — so the model
+    keeps working knowledge of everything done on very long runs.
+    """
     if not task.steps:
         return "_None yet — this is the first action._"
+
+    recap = _compressed_history(task, _TRANSCRIPT_TOTAL_MAX_CHARS // 3)
+    recap_block = (
+        f"EARLIER PROGRESS (collapsed to save space — recent steps below are verbatim):\n{recap}"
+        if recap
+        else ""
+    )
+
     entries: list[str] = []
     for s in task.steps[-_TRANSCRIPT_MAX_ENTRIES:]:
         line = f"[{s.status.value}] {s.order} {s.tool_name}: {_trim(s.description, 80)}"
@@ -190,7 +235,8 @@ def _build_transcript(task: Task) -> str:
             break
         kept.append(line)
     kept.reverse()
-    return "\n".join(kept)
+    recent_block = "\n".join(kept)
+    return "\n".join(p for p in (recap_block, recent_block) if p)
 
 
 def _todo_state(task: Task) -> str:
@@ -417,7 +463,11 @@ async def decide_next_step(state: dict[str, Any]) -> dict[str, Any]:
     the original text for diagnostics.
     """
     from agent.config import settings
-    from agent.core.gemini_client import OutputTruncatedError, generate_content
+    from agent.core.gemini_client import (
+        OutputTruncatedError,
+        QuotaExhaustedError,
+        generate_content,
+    )
 
     user = _DECISION_USER_TEMPLATE.format(
         goal=state.get("goal", ""),
@@ -452,6 +502,9 @@ async def decide_next_step(state: dict[str, Any]) -> dict[str, Any]:
             ),
             "_raw": getattr(exc, "partial", ""),
         }
+    except QuotaExhaustedError:
+        # Propagate so run_adaptive_loop can abort the task with guidance.
+        raise
     obj = _extract_json_object(raw) or {}
     obj = dict(obj)
     obj["_raw"] = raw
@@ -544,7 +597,18 @@ async def run_adaptive_loop(
 
         decision: dict[str, Any] | None = None
         for _attempt in range(1, _MAX_DECISION_PARSE_RETRIES + 1):
-            decision = await _call_decide(decide_fn, state)
+            try:
+                decision = await _call_decide(decide_fn, state)
+            except QuotaExhaustedError as exc:
+                # Every key AND the fallback model are rate-limited/quota-gone
+                # (free-tier daily limit is the usual suspect). Halt cleanly
+                # with actionable guidance — never a raw API crash.
+                return _abort(
+                    "Gemini quota/rate limit reached for all models and keys "
+                    f"(retry in ~{exc.retry_after:.0f}s). This is usually the "
+                    "free-tier daily request cap — retry later, add more "
+                    "GEMINI_API_KEYs, or upgrade to a paid tier."
+                )
             if decision is None:
                 decision = {"_error": "SYSTEM NOTE: the decision brain returned nothing."}
             if decision.get("done"):
