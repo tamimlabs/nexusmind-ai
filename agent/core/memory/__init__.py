@@ -361,9 +361,8 @@ class MemoryStore:
                 data = _json.loads(raw[start : end + 1])
                 cat = str(data.get("category", "none")).strip().lower()
                 fact = str(data.get("fact", "")).strip()
-                if cat in {"user_pref", "project"} and fact:
-                    if self.add(MemoryEntry(content=fact[:400], category=cat)):
-                        return 1
+                if cat in {"user_pref", "project"} and fact and self.add(MemoryEntry(content=fact[:400], category=cat)):
+                    return 1
                 if cat == "none":
                     return 0
             # Fallback to regex if Gemini unclear

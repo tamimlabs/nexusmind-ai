@@ -37,6 +37,7 @@ _high_risk_tools: set[str] = {"send_email", "execute_code", "run_command", "depl
 # Pending approvals — keyed by step ID
 _pending_approvals: dict[str, asyncio.Event] = {}
 _approval_results: dict[str, bool] = {}
+_approval_timed_out: set[str] = set()
 _approval_metadata: dict[str, dict[str, str]] = {}
 
 # Task context for Telegram messages (goal, etc.)
@@ -75,7 +76,6 @@ _SAFE_COMMANDS = {
     "git status", "git log", "git diff", "git show", "git branch",
     "git remote", "git config --list",
     "pip list", "pip show", "pip freeze",
-    "python --version", "python -c", "python -V",
     "node --version", "npm --version",
     "docker ps", "docker images", "docker logs",
     "ps aux", "top", "df", "du", "free", "uptime",
@@ -109,10 +109,19 @@ _DANGEROUS_PATTERNS = [
     r"pkill",             # pkill
     r"curl.*\|\s*bash",   # curl pipe to bash
     r"wget.*\|\s*sh",     # wget pipe to sh
+r"find\s+.*-delete\b(?:\s|$)",  # silent recursive delete
+    r"find\s+.*-exec\b",          # arbitrary command execution
+    r"git\s+branch\s+-[dD]\b",       # delete/force-delete a branch
     r"transfer_funds",    # financial transfers
     r"deploy",            # deployments
     r"send_email",        # emails (potentially spam)
 ]
+
+# Shell constructs that turn a "safe-looking" read into a write or compound
+# command (redirections, pipelines, chaining, command substitution). Commands
+# containing these are never auto-approved via the safe-prefix whitelist even
+# when they START with a documented safe word (e.g. `echo x >> /etc/crontab`).
+_SHELL_SIDE_EFFECT_RE = re.compile(r"[;|`>]|&&|\|\||\$\(")
 
 # Dangerous patterns in code
 _DANGEROUS_CODE_PATTERNS = [
@@ -141,15 +150,27 @@ def is_safe_command(command: str) -> bool:
         # Only allow relative paths with no traversal
         return True
 
+    # Any redirection/pipe/compound/chaining construct is a side effect —
+    # never auto-approve it, even if the command STARTs with a safe word
+    # (e.g. `echo x >> /etc/crontab` or `ls; rm -rf`). Those get evaluated
+    # against the dangerous patterns above and then require approval.
+    if _SHELL_SIDE_EFFECT_RE.search(cmd):
+        return False
+
     # Check exact matches and prefix matches
     for safe in _SAFE_COMMANDS:
         if cmd == safe or cmd.startswith(safe + " "):
             return True
 
-    # Check if it's just a Python script execution (read-only)
-    return cmd.startswith("python ") and not any(
-        d in cmd for d in ["open(", "os.", "shutil.", "subprocess"]
-    )
+    # Check if it's just a read-only Python script execution. Anything that
+    # touches os/subprocess/shutil/filesystem/exec is a side effect.
+    if cmd.startswith("python "):
+        payload = cmd[len("python ") :]
+        return not any(
+            d in payload for d in ["os.", "subprocess", "shutil", "exec(", "eval(", "open(", "__import__"]
+        )
+
+    return False
 
 
 def is_dangerous_command(command: str) -> bool:
@@ -202,12 +223,12 @@ def needs_approval(tool_name: str, tool_args: dict[str, Any]) -> bool:
         # Check command safety
         if tool_name == "run_command":
             command = tool_args.get("command", "")
-            if is_safe_command(command):
-                logger.info("Auto-approving safe command: %s", command[:100])
-                return False
             if is_dangerous_command(command):
                 logger.warning("Dangerous command detected: %s", command[:100])
                 return True
+            if is_safe_command(command):
+                logger.info("Auto-approving safe command: %s", command[:100])
+                return False
             # Unknown command — ask for approval (safe default)
             return True
 
@@ -328,6 +349,7 @@ async def wait_for_approval(step_id: str, timeout: float = 300) -> bool:
         return result
     except TimeoutError:
         logger.warning("Approval timed out for step %s", step_id)
+        _approval_timed_out.add(step_id)
         return False
 
 
@@ -447,6 +469,9 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
         granted = await wait_for_approval(step.id)
         if not granted:
             step.status = StepStatus.FAILED
+            if step.id in _approval_timed_out:
+                step.error = "Approval timed out (5 minutes)"
+                return ToolResult(success=False, output="", error="Approval timed out (5 minutes)")
             step.error = "Human denied approval"
             return ToolResult(success=False, output="", error="Denied by human")
 

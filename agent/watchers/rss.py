@@ -45,9 +45,9 @@ class RSSWatcher(BaseWatcher):
 
             # Use defusedxml if available to prevent XXE / entity expansion
             try:
-                import defusedxml.ElementTree as DET  # type: ignore
+                import defusedxml.ElementTree
 
-                root = DET.fromstring(content)
+                root = defusedxml.ElementTree.fromstring(content)
             except ImportError:
                 root = ET.fromstring(content)
 

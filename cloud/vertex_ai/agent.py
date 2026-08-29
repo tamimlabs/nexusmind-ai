@@ -11,16 +11,18 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from google.adk import Agent, Runner
-from google.adk.agents.context import Context
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools import FunctionTool
 from google.genai import types
 
 from agent.config import settings
 from agent.core.executor import get_tool, list_tools
+
+if TYPE_CHECKING:
+    from google.adk.agents.context import Context
 
 logger = logging.getLogger(__name__)
 
@@ -239,8 +241,8 @@ async def run_task_via_adk(goal: str, task_id: str | None = None) -> str:
 
     except Exception as exc:
         logger.warning("ADK execution failed, falling back to orchestrator: %s", exc)
-        from agent.orchestrator import orchestrator
         from agent.models import Task, TaskStatus
+        from agent.orchestrator import orchestrator
 
         task = Task(id=task_id, goal=goal, status=TaskStatus.PENDING)
         task = await orchestrator.handle_task(task)

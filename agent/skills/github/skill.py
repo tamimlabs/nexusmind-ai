@@ -472,13 +472,12 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
     Clones/fetches the PR head, checks out, detects test runner (pytest / npm test / make test),
     runs it, and returns pass/fail. Used before merge/reject decisions.
     """
-    import tempfile
     import os
+    import tempfile
     from pathlib import Path as _Path
 
-    # Determine repo URL and temp dir
+    # Determine temp dir
     token = _token()
-    auth_url = f"https://{token}@github.com/{repo}.git" if token else f"https://github.com/{repo}.git"
     tmpdir = _Path(tempfile.gettempdir()) / f"nexusmind_pr_{pr_number}_{os.getpid()}"
     try:
         # Fetch PR head via git if repo already cloned locally, else shallow clone
@@ -512,7 +511,9 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
                 clone_url = clone_url.replace("https://", f"https://{token}@")
             branch = pr_data.get("head", {}).get("ref", "")
             if tmpdir.exists():
-                import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
+                import shutil
+
+                shutil.rmtree(tmpdir, ignore_errors=True)
             tmpdir.mkdir(parents=True, exist_ok=True)
             clone_cmd = f"git clone --depth 1 --branch {branch} {clone_url} {tmpdir} 2>&1"
             proc3 = await asyncio.create_subprocess_shell(
@@ -547,7 +548,9 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
                 passed = proc4.returncode == 0
                 # Cleanup temp dir if we cloned
                 if str(workdir) == str(tmpdir) and tmpdir.exists():
-                    import shutil; shutil.rmtree(tmpdir, ignore_errors=True)
+                    import shutil
+
+                    shutil.rmtree(tmpdir, ignore_errors=True)
                 # Try to return to original branch if we checked out PR
                 if local_root:
                     await asyncio.create_subprocess_shell("git checkout - 2>&1 || git checkout main 2>&1 || true", cwd=local_root)
@@ -555,7 +558,7 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
                     return ToolResult(success=True, output=f"PR #{pr_number} local tests PASSED:\n{test_out[:1000]}", metadata={"pr": pr_number, "passed": True})
                 else:
                     return ToolResult(success=True, output=f"PR #{pr_number} local tests FAILED (will not auto-merge):\n{test_out[:1000]}", metadata={"pr": pr_number, "passed": False})
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return ToolResult(success=True, output=f"PR #{pr_number} local tests TIMEOUT after 120s — treat as failed", metadata={"pr": pr_number, "passed": False})
 
         return ToolResult(success=True, output=f"PR #{pr_number} no tests found — skipped local verification", metadata={"pr": pr_number, "passed": None})

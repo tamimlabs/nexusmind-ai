@@ -248,10 +248,7 @@ def _creative_pipeline(task: Task) -> list[TaskStep]:
     Never uses run_command mkdir or large inline write_file content.
     """
     explicit = _extract_explicit_path(task.goal)
-    if explicit:
-        base = explicit
-    else:
-        base = f"projects/{_derive_project_slug(task.goal)}"
+    base = explicit or f"projects/{_derive_project_slug(task.goal)}"
 
     # Goal-adaptive title
     goal_lower = task.goal.lower()
@@ -269,6 +266,16 @@ def _creative_pipeline(task: Task) -> list[TaskStep]:
         title = topic
         hero_h1 = f"Welcome to {topic}"
         hero_p = task.goal[:80]
+
+    # README body built with normal (non-f) strings so newlines never appear as
+    # backslash escapes inside the outer f-string (invalid on Python 3.11).
+    readme_content = (
+        "# "
+        + title
+        + "\nBuilt by NexusMind AI\nGoal: "
+        + task.goal[:120].replace("\n", " ")
+        + "\n"
+    )
 
     # Escape for Python triple-quoted strings — avoid breaking the outer f-string
     # Use repr-safe encoding: we build the scaffolding python code as a raw string,
@@ -307,7 +314,7 @@ def _creative_pipeline(task: Task) -> list[TaskStep]:
         "<footer>2025 Elena Vance</footer><script src=\"js/app.js\"></script></body></html>''', encoding='utf-8')\n"
         "(base / 'css' / 'styles.css').write_text(r''':root{--bg:#0f0f0f;--card:#1a1a1a;--accent:#c5a880;--text:#f5f5f5}*{margin:0;padding:0;box-sizing:border-box}body{background:var(--bg);color:var(--text);font-family:Inter,sans-serif;line-height:1.6}.header{position:fixed;top:0;width:100%;background:rgba(15,15,15,.9);padding:1rem 2rem;display:flex;justify-content:space-between;border-bottom:1px solid #222}.hero{height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(rgba(0,0,0,.5),rgba(0,0,0,.5)),url(https://images.unsplash.com/photo-1452587925148-ce544e77e70d?w=1920) center/cover;text-align:center}.btn{background:var(--accent);color:#000;padding:.8rem 2rem;border-radius:4px;text-decoration:none}.gallery{padding:4rem 2rem;max-width:1200px;margin:auto}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1.5rem}.item{height:350px;overflow:hidden;border-radius:6px;position:relative}.item img{width:100%;height:100%;object-fit:cover}.item span{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.8));padding:1rem}.filters{display:flex;gap:1rem;justify-content:center;margin:1rem 0}.filters button.active{color:var(--accent);border-bottom:2px solid var(--accent)}@media(max-width:768px){.grid{grid-template-columns:1fr}}''', encoding='utf-8')\n"
         "(base / 'js' / 'app.js').write_text(r'''document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('.filters button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('active'));b.classList.add('active');const f=b.dataset.filter;document.querySelectorAll('.item').forEach(i=>{i.style.display=(f==='all'||i.dataset.cat===f)?'block':'none'})}));document.getElementById('contactForm')?.addEventListener('submit',e=>{e.preventDefault();alert('Message sent!');e.target.reset()})})''', encoding='utf-8')\n"
-        f"(base / 'README.md').write_text({repr('# ' + title + '\\nBuilt by NexusMind AI\\nGoal: ' + task.goal[:120].replace(chr(10), ' ') + '\\n')}, encoding='utf-8')\n"
+        f"(base / 'README.md').write_text({readme_content!r}, encoding='utf-8')\n"
         "print(f'Project scaffold written to {base.resolve()}')\n"
         "print('Files:', [str(p.relative_to(base)) for p in base.rglob('*') if p.is_file()])\n"
     )

@@ -9,11 +9,9 @@ These tests verify:
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── ADK Agent Tool Wrapping ────────────────────────────────────────────
 
@@ -196,7 +194,7 @@ class TestADKCallbacks:
         ctx.session.events[-1].content.parts = [MagicMock(text="Task completed: found 3 PRs")]
 
         with patch("agent.core.memory.memory_store") as mock_memory:
-            result = await _after_agent(ctx)
+            await _after_agent(ctx)
 
             mock_memory.add.assert_called_once()
             call_kwargs = mock_memory.add.call_args
@@ -214,7 +212,7 @@ class TestADKCallbacks:
         ctx.session.events[-1].content.parts = [MagicMock(text="NOTHING_TO_SAVE")]
 
         with patch("agent.core.memory.memory_store") as mock_memory:
-            result = await _after_agent(ctx)
+            await _after_agent(ctx)
             mock_memory.add.assert_not_called()
 
 

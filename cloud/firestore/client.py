@@ -126,8 +126,6 @@ class FirestoreMemoryStore:
 
     def search(self, query: str, top_k: int = 5, category: str | None = None) -> list:
         """Query memories — Firestore doesn't support full-text, so filter by category."""
-        from agent.models import MemoryEntry
-
         q = self._col()
         if category:
             q = q.where("category", "==", category)
@@ -145,8 +143,6 @@ class FirestoreMemoryStore:
 
     def get_recent(self, n: int = 10) -> list:
         """Most recently created entries."""
-        from agent.models import MemoryEntry
-
         results = []
         for doc in self._col().order_by("created_at", direction="DESCENDING").limit(n).stream():
             results.append(self._doc_to_entry(doc.to_dict()))
@@ -154,8 +150,6 @@ class FirestoreMemoryStore:
 
     def get_by_category(self, category: str) -> list:
         """All entries in a category."""
-        from agent.models import MemoryEntry
-
         results = []
         for doc in (
             self._col()
@@ -211,6 +205,7 @@ class FirestoreMemoryStore:
     def extract_and_store(self, text: str) -> int:
         """Auto-extract preferences/decisions from text."""
         import re
+
         from agent.models import MemoryEntry
 
         if not text or len(text.strip()) < 10:
