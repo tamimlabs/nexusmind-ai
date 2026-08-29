@@ -1,12 +1,13 @@
 """Tests for runtime fixes: execute_code temp-file handling (WinError 32),
 planner diagnostics, truncate-tolerant plan salvage, robust fallback JSON
-parsing, and the deterministic creative-goal pipeline.
+parsing, and the no-templates guarantee (every build is Gemini-authored).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
@@ -168,85 +169,88 @@ class TestFallbackSelectorParsing:
         assert steps[0].tool_args["code"] == "print(1)"
 
 
-class TestCreativePipeline:
-    def test_creative_goal_detected(self):
-        assert planner_mod._is_creative_goal("redesign the youtube homepage")
-        assert planner_mod._is_creative_goal("build a landing page for our startup")
+class TestNoTemplates:
+    """Build goals must NEVER be fabricated by deterministic templates.
 
-    def test_questions_and_non_build_goals_excluded(self):
-        assert not planner_mod._is_creative_goal("how do I create a website?")
-        assert not planner_mod._is_creative_goal("what did we create for homepage docs?")
-        assert not planner_mod._is_creative_goal("merge pr 5 into main")
+    Regression history: two different "build a website" tasks produced the
+    SAME site because a hardcoded fallback scaffold emitted a frozen site —
+    invented branding, fake services, and stock Unsplash photos. All of that
+    machinery is removed. Every build is authored by Gemini from the user's
+    exact command plus recalled memory; fallbacks only salvage Gemini's own
+    steps or report honestly.
+    """
 
-    def test_no_hardcoded_scaffold(self):
-        """Hardcoded templates removed - planner must not expose legacy scaffolds."""
-        assert not hasattr(planner_mod, "_SCAFFOLD_LANDING")
-        assert not hasattr(planner_mod, "_SCAFFOLD_DASHBOARD")
-        assert not hasattr(planner_mod, "_SCAFFOLD_FEED")
-        assert not hasattr(planner_mod, "_SCAFFOLD_TEMPLATES")
-        # _creative_pipeline is the resilient deterministic fallback for creative builds
-        # (replaces diagnostic banner when Gemini truncates); legacy artifact helpers removed
-        assert hasattr(planner_mod, "_creative_pipeline")
-        assert not hasattr(planner_mod, "_artifact_kind")
-        assert not hasattr(planner_mod, "_headline_from_goal")
+    def test_template_machinery_removed(self):
+        for attr in (
+            "_creative_pipeline",
+            "_THEME_DEFS",
+            "_THEME_KEYWORDS",
+            "_pick_theme",
+            "_topic_for",
+            "_goal_hash",
+            "_ACCENT_PALETTE",
+            "_SITE_BASE_CSS",
+            "_is_creative_goal",
+            "_is_fullstack_goal",
+        ):
+            assert not hasattr(planner_mod, attr), attr
+
+    def test_no_stock_images_or_fabricated_content_in_planner(self):
+        source = Path(planner_mod.__file__).read_text(encoding="utf-8").lower()
+        assert "unsplash" not in source
+        assert "images." not in source
 
     @pytest.mark.asyncio
-    async def test_dead_api_no_longer_ships_hardcoded_project(self, gemini):
-        """Planner down -> creative goals use resilient deterministic scaffold (not legacy templates)."""
+    async def test_planner_down_build_goal_never_fabricates_site(self, gemini):
+        """Gemini down -> a build goal yields an HONEST diagnostic step."""
         _calls, _ = gemini  # every call raises IndexError
         steps = await planner_mod.plan_task(
             Task(goal="redesign the youtube homepage that can shock the youtube")
         )
-        # Creative goals fall back to deterministic scaffold (pathlib) not legacy chipbar scaffold
         assert len(steps) == 1
-        assert steps[0].tool_name == "execute_code"
         code = str(steps[0].tool_args.get("code", "")) + str(steps[0].tool_args.get("content", ""))
-        assert "chipbar" not in code  # legacy template must not resurface
-        # Resilient scaffold uses pathlib + projects/ — not diagnostic banner
-        assert "pathlib" in code
-        assert "projects/" in code
+        assert "<html" not in code
+        assert "index.html" not in code
+        assert "write_text" not in code
+        assert "No reliable tool" in code
+
+
+class TestGoalAndMemoryDriveBuilds:
+    """The model (Gemini) + the user's exact command + memory author builds.
+
+    plan_task passes BOTH the goal and recalled memory to Gemini and returns
+    Gemini's own plan untouched — a template never replaces it.
+    """
 
     @pytest.mark.asyncio
-    async def test_fullstack_detection_still_works(self, gemini):
-        # _is_fullstack_goal helper retained for potential future use
-        assert planner_mod._is_fullstack_goal("build a full stack ecommerce site")
-
-
-class TestCreativePipelineDistinctness:
-    """The regression: two DIFFERENT website goals produced the SAME site.
-    Root cause was a hardcoded photographer template in the deterministic
-    fallback. The scaffold must now be goal-adaptive so different goals
-    (and even two vague goals) produce distinct builds."""
-
-    def test_different_creative_goals_yield_distinct_builds(self):
-        codes = {
-            goal: str(
-                planner_mod._creative_pipeline(Task(goal=goal))[0].tool_args["code"]
-            )
-            for goal in (
-                "make a coffee shop website",
-                "build a portfolio website for a photographer named Sara",
-                "build a landing page for a saas startup selling analytics",
-            )
-        }
-        assert len({c for c in codes.values()}) == 3
-        combined = " ".join(codes.values())
-        assert "Elena Vance" not in combined  # legacy template must be gone
-        coffee = codes["make a coffee shop website"]
-        portfolio = codes["build a portfolio website for a photographer named Sara"]
-        assert "Coffee Shop Table" in coffee
-        assert "Coffee Shop Table" not in portfolio
-        assert "Photographer Named Sara" in portfolio
-        assert "Coffee Shop" not in codes["build a landing page for a saas startup selling analytics"]
-
-    def test_vague_goals_still_render_distinct_builds(self):
-        a = str(planner_mod._creative_pipeline(Task(goal="make a website"))[0].tool_args["code"])
-        b = str(planner_mod._creative_pipeline(Task(goal="make another website"))[0].tool_args["code"])
-        assert a != b
+    async def test_memory_and_goal_reach_gemini_and_plan_is_kept(self, gemini):
+        calls, responses = gemini
+        html = "<html><body><h1>BlueBottle espresso bar</h1></body></html>"
+        responses[:] = [
+            json.dumps([
+                {"description": "Write page",
+                 "tool_name": "write_file",
+                 "tool_args": {"path": "projects/bluebottle/index.html", "content": html}},
+                {"description": "Write styles",
+                 "tool_name": "write_file",
+                 "tool_args": {"path": "projects/bluebottle/styles.css", "content": "body{}"}},
+            ])
+        ]
+        memory = "brand: BlueBottle, customer preference: espresso"
+        steps = await planner_mod.plan_task(
+            Task(goal="make a coffee shop website"),
+            memory_context=f"<memory-context>{memory}</memory-context>",
+        )
+        # Gemini's OWN plan is used verbatim — no template replaces it.
+        assert [s.tool_name for s in steps] == ["write_file", "write_file"]
+        assert "BlueBottle" in str(steps[0].tool_args.get("content", ""))
+        # Both the command and the memory reached the model.
+        assert "make a coffee shop website" in calls[0]["user"]
+        assert "BlueBottle" in calls[0]["user"]
 
     @pytest.mark.asyncio
-    async def test_ghost_mkdir_step_replaced_by_scaffold(self, gemini):
-        """A single 'mkdir' step is a truncated plan -> deterministic scaffold."""
+    async def test_single_mkdir_step_executed_as_planned(self, gemini):
+        """Ghost/truncated plans are kept as Gemini authored them — no swap."""
         _, responses = gemini
         responses[:] = [
             json.dumps([
@@ -256,8 +260,7 @@ class TestCreativePipelineDistinctness:
             ])
         ]
         steps = await planner_mod.plan_task(Task(goal="make a cool website"))
-        assert [s.tool_name for s in steps] == ["execute_code"]
-        assert "pathlib" in str(steps[0].tool_args.get("code", ""))
+        assert [s.tool_name for s in steps] == ["run_command"]
 
     @pytest.mark.asyncio
     async def test_substantive_single_write_file_is_kept(self, gemini):
@@ -273,28 +276,26 @@ class TestCreativePipelineDistinctness:
         ]
         steps = await planner_mod.plan_task(Task(goal="make a cool website"))
         assert [s.tool_name for s in steps] == ["write_file"]
-        assert "pathlib" not in str(steps[0].tool_args.get("code", ""))
 
     @pytest.mark.asyncio
-    async def test_html_only_plan_salvaged_to_scaffold(self, gemini):
-        """index.html without css OR js is a partial salvage -> scaffold."""
+    async def test_salvaged_partial_plan_is_kept_not_templated(self, gemini):
+        """Truncated JSON is salvaged (complete steps preserved), never templated."""
         _, responses = gemini
-        responses[:] = [
-            json.dumps([
-                {"description": "Write page",
-                 "tool_name": "write_file",
-                 "tool_args": {"path": "projects/foo/index.html", "content": "<html></html>"}},
-                {"description": "Write readme",
-                 "tool_name": "write_file",
-                 "tool_args": {"path": "projects/foo/README.md", "content": "# doc"}},
-            ])
+        data = [
+            {"description": "Write page",
+             "tool_name": "write_file",
+             "tool_args": {"path": "projects/foo/index.html", "content": "<html></html>"}},
+            {"description": "Write styles",
+             "tool_name": "write_file",
+             "tool_args": {"path": "projects/foo/styles.css", "content": "body{}"}},
         ]
+        responses[:] = [json.dumps(data)[:-1] + ', {"tool_name": "wri']
         steps = await planner_mod.plan_task(Task(goal="make a cool website"))
-        assert [s.tool_name for s in steps] == ["execute_code"]
+        assert [s.tool_name for s in steps] == ["write_file", "write_file"]
 
     @pytest.mark.asyncio
     async def test_html_and_css_plan_kept(self, gemini):
-        """html + css (no js) is plausibly complete -> NOT replaced by scaffold."""
+        """html + css (no js) is plausibly complete -> kept as-is."""
         _, responses = gemini
         responses[:] = [
             json.dumps([

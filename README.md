@@ -513,7 +513,7 @@ nexusmind-ai/
 | Self-evolving skill library | Hermes | Auto-synthesized SKILL.md packages from solved tasks, usage telemetry, stale/archive lifecycle, audit ledger |
 | Zero-cost command gate | Hermes + OpenClaw | `/commands` resolved deterministically before the LLM (Telegram + REST); unknown input falls through to the agent |
 | Hallucinated-tool repair ladder | Hermes | Planned tool names normalized/alias/fuzzy-matched against the live registry; one corrective re-plan with the valid-tool catalog |
-| Plan salvage + creative fallback | Hermes + OpenClaw | Truncated plans recovered step-by-step; build goals ship a full `projects/<name>/` scaffold (HTML+CSS+JS+README, stdlib server for full-stack) even when the planner is down |
+| Plan salvage + JSON repair | Hermes + OpenClaw | Truncated plans recovered step-by-step; **zero templates** — every site/app is authored by Gemini from the user's command + recalled memory, with no hardcoded scaffolds or stock imagery |
 | Self-improvement reflection | Hermes | Post-task Gemini reflection saves learnings |
 | Event-driven scheduling | Hermes | Cloud Pub/Sub replaces in-process cron |
 | Self-correcting retry loops | Custom | Error analysis -> Gemini -> parameter adjustment -> retry |
@@ -533,7 +533,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **223 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, API endpoints, and the ADK integration (agent creation, callbacks, Runner path, API routing).
+All **220 tests** covering models, memory (hybrid retrieval, HRR, trust scoring), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), executor, orchestrator, API endpoints, and the ADK integration (agent creation, callbacks, Runner path, API routing).
 
 ---
 
