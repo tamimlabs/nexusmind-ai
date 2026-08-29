@@ -43,6 +43,12 @@ _approval_metadata: dict[str, dict[str, str]] = {}
 # Task context for Telegram messages (goal, etc.)
 _task_context: dict[str, str] = {}
 
+# Tasks whose human granted at least one risky action: later risky steps in
+# the SAME task auto-approve ("one approval per task"). Prevents approval
+# fatigue when a goal legitimately needs several high-risk steps; unrelated
+# future tasks still ask as usual. Trust is pruned when the task finishes.
+_task_trusted: set[str] = set()
+
 
 def register_tool(name: str, high_risk: bool = False) -> Callable:
     """Decorator to register a tool. Set high_risk=True for tools needing approval."""
@@ -273,7 +279,7 @@ async def request_approval(step_id: str, description: str, tool_name: str, tool_
     """
     event = asyncio.Event()
     _pending_approvals[step_id] = event
-    _approval_metadata[step_id] = {"tool_name": tool_name, "description": description}
+    _approval_metadata[step_id] = {"tool_name": tool_name, "description": description, "task_id": task_id}
     logger.warning("APPROVAL REQUIRED: [%s] %s — %s", step_id, tool_name, description)
 
     # Try Telegram first
@@ -328,12 +334,22 @@ async def request_approval(step_id: str, description: str, tool_name: str, tool_
 
 
 def resolve_approval(step_id: str, approved: bool) -> None:
-    """Resolve a pending approval (called from API/UI or Telegram)."""
-    if step_id in _pending_approvals:
-        _approval_results[step_id] = approved
-        _pending_approvals[step_id].set()
-        _approval_metadata.pop(step_id, None)
-        logger.info("Approval %s for step %s", "granted" if approved else "denied", step_id)
+    """Resolve a pending approval (called from API/UI or Telegram).
+
+    A granted approval also "trusts" the rest of its task: subsequent risky
+    steps in the same task auto-approve (one approval per task). Denials never
+    trust the task.
+    """
+    if step_id not in _pending_approvals:
+        return
+    meta = _approval_metadata.get(step_id, {})
+    if approved and meta.get("task_id"):
+        _task_trusted.add(meta["task_id"])
+        logger.info("Task %s trusted: remaining risky steps will auto-approve", meta["task_id"])
+    _approval_results[step_id] = approved
+    _pending_approvals[step_id].set()
+    _approval_metadata.pop(step_id, None)
+    logger.info("Approval %s for step %s", "granted" if approved else "denied", step_id)
 
 
 async def wait_for_approval(step_id: str, timeout: float = 300) -> bool:
@@ -365,6 +381,27 @@ def get_pending_approvals() -> list[dict[str, str]]:
         for sid in _pending_approvals
         if not _pending_approvals[sid].is_set()
     ]
+
+
+def is_task_trusted(task_id: str) -> bool:
+    """Return True if a granted approval already covers this task's risky steps."""
+    return task_id in _task_trusted
+
+
+def trust_task(task_id: str) -> None:
+    """Mark a task trusted — its remaining risky steps will auto-approve."""
+    _task_trusted.add(task_id)
+    logger.info("Task %s marked trusted (auto-approve remaining risky steps)", task_id)
+
+
+def untrust_task(task_id: str) -> None:
+    """Clear task trust (called when the task finishes)."""
+    _task_trusted.discard(task_id)
+
+
+def get_trusted_tasks() -> list[str]:
+    """Return task ids currently approved for auto-approval (diagnostics)."""
+    return sorted(_task_trusted)
 
 
 # ── Self-Correction with Gemini ───────────────────────────────────
@@ -456,24 +493,39 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
 
     # Smart approval: check if this specific call needs approval
     if needs_approval(step.tool_name, step.tool_args or {}):
-        # Send approval request (Telegram + dashboard)
         # context uses keys task_id/task_goal (see orchestrator.py:220)
         ctx_task_id = context.get("task_id", "") if context else ""
         ctx_task_goal = context.get("task_goal", "") or context.get("goal", "") if context else ""
-        await request_approval(
-            step.id, step.description, step.tool_name,
-            tool_args=step.tool_args,
-            task_goal=ctx_task_goal,
-            task_id=ctx_task_id,
-        )
-        granted = await wait_for_approval(step.id)
-        if not granted:
-            step.status = StepStatus.FAILED
-            if step.id in _approval_timed_out:
-                step.error = "Approval timed out (5 minutes)"
-                return ToolResult(success=False, output="", error="Approval timed out (5 minutes)")
-            step.error = "Human denied approval"
-            return ToolResult(success=False, output="", error="Denied by human")
+
+        # Per-task trust ("one approval per task"): once the human granted a
+        # risky step for this task, the rest of that task auto-approves — a
+        # multi-step goal no longer asks once per risky step.
+        if ctx_task_id and ctx_task_id in _task_trusted:
+            logger.info(
+                "Auto-approving %s step for trusted task %s (no approval popup)",
+                step.tool_name,
+                ctx_task_id,
+            )
+        else:
+            hint = (
+                " — Approving also auto-approves the remaining risky steps of this task"
+                if ctx_task_id
+                else ""
+            )
+            await request_approval(
+                step.id, step.description + hint, step.tool_name,
+                tool_args=step.tool_args,
+                task_goal=ctx_task_goal,
+                task_id=ctx_task_id,
+            )
+            granted = await wait_for_approval(step.id)
+            if not granted:
+                step.status = StepStatus.FAILED
+                if step.id in _approval_timed_out:
+                    step.error = "Approval timed out (5 minutes)"
+                    return ToolResult(success=False, output="", error="Approval timed out (5 minutes)")
+                step.error = "Human denied approval"
+                return ToolResult(success=False, output="", error="Denied by human")
 
     # Execute with retry + self-correction
     # Resolve {{step_N_result}} templates from context, then merge step args (step args override)

@@ -515,3 +515,125 @@ class TestApprovalModes:
         result = await ex.execute_step(step, {})
         assert result.success is False
         assert "denied" in (result.error or "").lower()
+
+
+class TestPerTaskApprovalTrust:
+    """One approval per task: approving a risky step auto-approves the rest of
+    the SAME task's risky steps; unrelated tasks still ask as usual.
+    """
+
+    @pytest.fixture()
+    def smart_mode(self, monkeypatch):
+        from agent.config import settings
+        monkeypatch.setattr(settings, "approval_mode", "smart")
+        return monkeypatch
+
+    def _make_pending(self, sid: str, task_id: str) -> None:
+        ex._pending_approvals[sid] = asyncio.Event()
+        ex._approval_metadata[sid] = {
+            "tool_name": "run_command",
+            "description": "risky step",
+            "task_id": task_id,
+        }
+
+    def test_granted_approval_trusts_the_rest_of_the_task(self):
+        sid = "approve-trust-1"
+        try:
+            assert ex.is_task_trusted("t-approve-a") is False
+            self._make_pending(sid, "t-approve-a")
+            ex.resolve_approval(sid, approved=True)
+            assert ex.is_task_trusted("t-approve-a") is True
+        finally:
+            ex._pending_approvals.pop(sid, None)
+            ex.untrust_task("t-approve-a")
+
+    def test_denied_approval_never_trusts_the_task(self):
+        sid = "approve-deny-1"
+        try:
+            self._make_pending(sid, "t-approve-b")
+            ex.resolve_approval(sid, approved=False)
+            assert ex.is_task_trusted("t-approve-b") is False
+        finally:
+            ex._pending_approvals.pop(sid, None)
+
+    def test_resolve_unknown_step_is_noop(self):
+        ex.resolve_approval("does-not-exist", approved=True)
+        assert not ex.is_task_trusted("does-not-exist")
+
+    def test_trust_and_untrust_round_trip(self):
+        ex.trust_task("t-roundtrip")
+        assert ex.is_task_trusted("t-roundtrip") is True
+        assert "t-roundtrip" in ex.get_trusted_tasks()
+        ex.untrust_task("t-roundtrip")
+        assert ex.is_task_trusted("t-roundtrip") is False
+
+    @pytest.mark.asyncio
+    async def test_trusted_task_skips_approval_requests(self, monkeypatch, smart_mode):
+        from agent.models import ToolResult
+
+        @ex.register_tool("trust_test_risky_tool", high_risk=True)
+        async def risky(**_kwargs):
+            return ToolResult(success=True, output="ok")
+
+        try:
+            import agent.telegram as tg
+            monkeypatch.setattr(tg, "is_configured", lambda: False)
+
+            async def should_never_be_called(*_a, **_k):
+                raise AssertionError("request_approval must not be called for a trusted task")
+
+            async def grant(*_a, **_k):
+                return True
+
+            monkeypatch.setattr(ex, "request_approval", should_never_be_called)
+            monkeypatch.setattr(ex, "wait_for_approval", grant)
+            ex.trust_task("t-approve-skip")
+
+            step = TaskStep(
+                task_id="t-approve-skip", description="risky",
+                tool_name="trust_test_risky_tool", tool_args={}, order=0,
+            )
+            result = await ex.execute_step(step, {"task_id": "t-approve-skip"})
+            assert result.success is True
+        finally:
+            ex.untrust_task("t-approve-skip")
+            ex._tool_registry.pop("trust_test_risky_tool", None)
+            ex._high_risk_tools.discard("trust_test_risky_tool")
+
+    @pytest.mark.asyncio
+    async def test_untrusted_task_still_asks(self, monkeypatch, smart_mode):
+        from agent.models import ToolResult
+
+        @ex.register_tool("trust_test_risky_tool2", high_risk=True)
+        async def risky(**_kwargs):
+            return ToolResult(success=True, output="ok")
+
+        try:
+            import agent.telegram as tg
+            monkeypatch.setattr(tg, "is_configured", lambda: False)
+
+            calls: list[dict[str, Any]] = []
+
+            async def record(*args, **kwargs):
+                calls.append({"args": args, "kwargs": kwargs})
+
+            async def grant(*_a, **_k):
+                return True
+
+            monkeypatch.setattr(ex, "request_approval", record)
+            monkeypatch.setattr(ex, "wait_for_approval", grant)
+            ex.untrust_task("t-approve-ask")
+
+            step = TaskStep(
+                task_id="t-approve-ask", description="risky",
+                tool_name="trust_test_risky_tool2", tool_args={}, order=0,
+            )
+            result = await ex.execute_step(step, {"task_id": "t-approve-ask"})
+            assert result.success is True
+            assert len(calls) == 1
+            assert calls[0]["kwargs"].get("task_id") == "t-approve-ask"
+            assert "auto-approves" in calls[0]["args"][1]  # hint suffix present
+        finally:
+            ex.untrust_task("t-approve-ask")
+            ex._tool_registry.pop("trust_test_risky_tool2", None)
+            ex._high_risk_tools.discard("trust_test_risky_tool2")

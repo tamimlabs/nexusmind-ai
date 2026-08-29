@@ -96,6 +96,12 @@
         .tl-dot.success{background:var(--accent);box-shadow:0 0 6px rgba(34,197,94,.4)}.tl-dot.failed{background:var(--red);box-shadow:0 0 6px rgba(239,68,68,.4)}
         .tl-dot.running{background:var(--yellow);animation:pulse 1.5s ease-in-out infinite}.tl-dot.pending{background:var(--t5)}
         .tl-dot.skipped{background:var(--bg4)}
+        .todo-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--border);font-size:13px;color:var(--t2)}
+        .todo-row:last-child{border-bottom:none}
+        .todo-check{font-family:var(--mono);font-size:12px;width:14px;flex-shrink:0;color:var(--t5)}
+        .todo-title{flex:1}
+        .todo-title.done{text-decoration:line-through;color:var(--t5)}
+        .todo-title.skipped{text-decoration:line-through;color:var(--t5);opacity:.7}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
         .tl-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rm);padding:12px 14px;transition:all var(--tr)}
         .tl-card:hover{border-color:var(--bhover)}
@@ -123,7 +129,7 @@
 
         .think-list{display:flex;flex-direction:column;gap:6px}
         .think-item{background:var(--bg2);border:1px solid var(--border);border-left:3px solid var(--t5);border-radius:var(--rm);padding:10px 12px;animation:fadeIn .2s ease}
-        .think-item.received{border-left-color:var(--blue)}.think-item.thinking{border-left-color:var(--purple)}
+        .think-item.received{border-left-color:var(--blue)}.think-item.thinking{border-left-color:var(--purple)}.think-item.step_running{border-left-color:var(--blue)}
         .think-item.done{border-left-color:var(--accent)}.think-item.error{border-left-color:var(--red)}
         .think-msg{font-size:12px;font-weight:500;color:var(--t1);display:flex;align-items:center;gap:6px}
         .think-detail{margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--t4);white-space:pre-wrap;word-break:break-word;line-height:1.5}
@@ -299,7 +305,8 @@ function renderDetail(t){
   if(S.liveEvents.length>0&&S.liveTaskId===t.id){h+='<div class="detail-section"><div class="detail-label">Live Activity</div><div class="think-list">';S.liveEvents.forEach((e,i)=>{h+='<div class="think-item '+esc(e.type)+'"><div class="think-msg">'+thinkIcon(e,i===S.liveEvents.length-1,!['completed','failed'].includes(S.liveStatus))+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail">'+esc(e.detail)+'</div>':'')+'</div>'});h+='</div></div>'}
   if(t.result){const isFileResult=t.result.includes('Saved to:');h+='<div class="detail-section"><div class="detail-label">Result</div><div class="detail-code" style="'+(isFileResult?'border-left:3px solid var(--accent);background:var(--abg)':'')+'">'+esc(t.result)+'</div>'+(isFileResult?'<div style="margin-top:8px;font-size:11px;color:var(--accent)">📁 Check <code>output/</code> or <code>projects/</code> folder for saved files</code></div>':'')+'</div>';}
   if(t.error)h+='<div class="detail-section"><div class="detail-label">Error</div><div class="tc-error">'+esc(t.error)+'</div></div>';
-  if(t.steps&&t.steps.length>0){h+='<div class="detail-section"><div class="detail-label">Steps ('+t.steps.length+')</div><div class="timeline">';t.steps.forEach((s,i)=>{const tc=s.tool_name&&(s.tool_name==='execute_code'||s.tool_name==='run_command')?' high':'';h+='<div class="tl-step"><div class="tl-dot '+s.status+'"></div><div class="tl-card"><div class="tl-top"><div class="tl-desc">'+esc(s.description)+'</div><span class="tl-num">#'+(i+1)+'</span></div>'+(s.tool_name?'<div class="tl-tool'+tc+'">'+esc(s.tool_name)+'</div>':'')+(s.tool_args&&Object.keys(s.tool_args).length?'<div class="tl-expand" onclick="this.nextElementSibling.classList.toggle(\'show\')">Show args</div><div class="tl-detail">'+esc(JSON.stringify(s.tool_args,null,2))+'</div>':'')+(s.result?'<div class="tc-result">'+esc(s.result.slice(0,200))+'</div>':'')+(s.error?'<div class="tc-error">'+esc(s.error)+'</div>':'')+'</div></div>'});h+='</div></div>'}
+  if(t.todos&&t.todos.length>0){const done=t.todos.filter(x=>x.status==='completed').length;h+='<div class="detail-section"><div class="detail-label">TODO Checklist ('+done+'/'+t.todos.length+')</div>';t.todos.forEach(td=>{const st=td.status||'pending';let dot,chk;if(st==='completed'){dot='<span class="sdot on" style="background:var(--accent)"></span>';chk='[x]'}else if(st==='in_progress'){dot='<span class="tl-dot running" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[ ]'}else if(st==='skipped'){dot='<span class="tl-dot skipped" style="position:static;display:inline-block;background:var(--red);opacity:.6;margin-left:-2px"></span>';chk='[ ]'}else{dot='<span class="tl-dot pending" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[ ]'}const cls=st==='completed'||st==='skipped'?' done':'';h+='<div class="todo-row"><span class="todo-check">'+chk+'</span>'+dot+'<span class="todo-title'+cls+'">'+esc(td.title||'')+'</span></div>'});h+='</div>'}
+  if(t.steps&&t.steps.length>0){h+='<div class="detail-section"><div class="detail-label">Steps ('+t.steps.length+')</div><div class="timeline">';t.steps.forEach((s,i)=>{const tc=s.tool_name&&(s.tool_name==='execute_code'||s.tool_name==='run_command')?' high':'';h+='<div class="tl-step"><div class="tl-dot '+s.status+'"></div><div class="tl-card"><div class="tl-top"><div class="tl-desc">'+esc(s.description)+'</div><span class="tl-num" style="display:flex;align-items:center;gap:6px">'+(s.status?'<span class="tl-tool" style="margin:0;padding:1px 6px;font-size:10px">'+esc(s.status)+'</span>':'')+'#'+(i+1)+'</span></div>'+(s.tool_name?'<div class="tl-tool'+tc+'">'+esc(s.tool_name)+'</div>':'')+(s.tool_args&&Object.keys(s.tool_args).length?'<div class="tl-expand" onclick="this.nextElementSibling.classList.toggle(\'show\')">Show args</div><div class="tl-detail">'+esc(JSON.stringify(s.tool_args,null,2))+'</div>':'')+(s.result?'<div class="tc-result">'+esc(s.result.slice(0,200))+'</div>':'')+(s.error?'<div class="tc-error">'+esc(s.error)+'</div>':'')+'</div></div>'});h+='</div></div>'}
   return h}
 
 /* ── Right Panel Views ────────────────────────────────────────── */
@@ -312,6 +319,8 @@ function thinkIcon(e,isLast,running){
   if(e.type==='thinking')return(running&&isLast)?'<div class="spinner" style="width:10px;height:10px;border-width:1.5px"></div>':'<span style="color:var(--t5)">&#9679;</span>';
   if(e.type==='done')return'<span style="color:#22c55e">&#10003;</span>';
   if(e.type==='error')return'<span style="color:var(--red)">&#10007;</span>';
+  if(e.type==='step_running')return(running&&isLast)?'<div class="spinner" style="width:10px;height:10px;border-width:1.5px;border-top-color:var(--blue)"></div>':'<span style="color:var(--blue)">&#9679;</span>';
+  if(e.type==='received')return'<span style="color:var(--blue)">&#9679;</span>';
   return''}
 
 function renderThinkingPanel(c){
@@ -536,7 +545,7 @@ function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selec
 /* ── Live Polling ─────────────────────────────────────────────── */
 function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveStatus='running';S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500)}
 function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}S.liveTaskId=null}
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.trace=d.trace||t.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace}if(S.rtab==='thinking')renderThinkingPanel(document.getElementById('rpanelBody'));if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
 
 /* ── Right Panel Minimize ─────────────────────────────────────── */
 function toggleRPanel(){const min=!document.body.classList.contains('rp-min');document.body.classList.toggle('rp-min',min);try{localStorage.setItem('nm_rpanel_min',min?'1':'0')}catch(e){}}

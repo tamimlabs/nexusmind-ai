@@ -66,6 +66,7 @@ class Task(BaseModel):
     result: str | None = None
     error: str | None = None
     steps: list[TaskStep] = Field(default_factory=list)
+    todos: list[TaskTodo] = Field(default_factory=list)
 
 
 class TaskStep(BaseModel):
@@ -80,6 +81,31 @@ class TaskStep(BaseModel):
     result: str | None = None
     error: str | None = None
     order: int = 0
+
+
+class TodoStatus(StrEnum):
+    """A task todo item's lifecycle states."""
+
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+
+
+class TaskTodo(BaseModel):
+    """A live checklist item the agent maintains while working.
+
+    The adaptive loop seeds the list from the roadmap, marks items in
+    progress/completed as steps succeed, and lets the model add items as the
+    work unfolds — so the dashboard always shows where the task stands.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    task_id: str = ""
+    title: str = ""
+    status: TodoStatus = TodoStatus.PENDING
+    order: int = 0
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ToolResult(BaseModel):

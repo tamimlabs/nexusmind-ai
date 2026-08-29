@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 from agent.core.executor import execute_step
 from agent.core.planner import canonical_tool_names, repair_tool_name
-from agent.models import Task, TaskStep
+from agent.models import Task, TaskStep, TaskTodo, TodoStatus
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,9 @@ RULES
 7. Respect MEMORY CONTEXT (user preferences / standing instructions) and LESSONS. Never fabricate branding, text, images, or content that is not in the goal or in prior step results. If the goal needs photos and none are provided, download real ones from the web into an assets folder or build the visuals with CSS/JS.
 8. The loop executes exactly ONE action per reply and returns its result to you. Do not try to do several actions in one reply.
 9. Use {{step_N_result}} style references NEVER — put concrete values directly into tool_args (the actual prior RESULT text is already in your context).
-10. Purely informational questions are completed as soon as the answer is backed by retrieved results — a web_search or summarize step then DONE."""
+10. Purely informational questions are completed as soon as the answer is backed by retrieved results — a web_search or summarize step then DONE.
+11. You maintain a live TODO checklist (shown to the user). It is seeded from the suggested roadmap but it is YOUR plan, not an obligation: keep it honest, up to date, and complete. A step reply may carry an OPTIONAL "todo_updates" array (max 5 entries) with items {"kind": "add"|"complete"|"skip", "title": "..."}. Titles must match an existing todo closely (case-insensitive substring). Use it to add new follow-up work you discover, mark items done that your action completes, or drop items that turned out unnecessary. The checklist applies to EVERY task type — research, file builds, GitHub ops, anything — so the user always sees where you are.
+12. Keep each step small and single-purpose; for big goals prefer many small steps over one giant step (folder creation, then one file per step, then verification)."""
 
 _DECISION_USER_TEMPLATE = """GOAL
 {goal}
@@ -108,6 +110,9 @@ SKILL GUIDANCE
 
 SUGGESTED ROADMAP (a rough initial plan — the GOAL and the live results below override it; deviate freely when reality demands)
 {roadmap}
+
+CURRENT TODO LIST (your live checklist — keep it honest and up to date; close items with todo_updates as you complete them)
+{todos}
 
 WORKSPACE NOW
 {snapshot}
@@ -187,6 +192,97 @@ def _build_transcript(task: Task) -> str:
     return "\n".join(kept)
 
 
+def _todo_state(task: Task) -> str:
+    """Compact checklist view shown to the model and on the dashboard."""
+    if not task.todos:
+        return "_Empty — nothing planned yet._"
+    lines = []
+    for t in sorted(task.todos, key=lambda x: x.order):
+        mark = {
+            TodoStatus.PENDING: "[ ]",
+            TodoStatus.IN_PROGRESS: "[~]",
+            TodoStatus.COMPLETED: "[x]",
+            TodoStatus.SKIPPED: "[-]",
+        }.get(t.status, "[ ]")
+        lines.append(f"{mark} ({t.status.value}) {_trim(t.title, 100)}")
+    return "\n".join(lines)
+
+
+def _seed_todos(task: Task, roadmap: list[TaskStep] | None) -> None:
+    """Seed the live checklist from the suggested roadmap (best-effort)."""
+    if task.todos or not roadmap:
+        return
+    for i, s in enumerate(roadmap):
+        task.todos.append(
+            TaskTodo(
+                task_id=task.id,
+                title=s.description.strip() or s.tool_name or f"Step {i}",
+                status=TodoStatus.PENDING,
+                order=i,
+            )
+        )
+
+
+def _find_todo(task: Task, title: str) -> TaskTodo | None:
+    """Match a title against an open (pending/in_progress) todo, substrings ok."""
+    needle = (title or "").strip().lower()
+    if not needle:
+        return None
+    for t in sorted(task.todos, key=lambda x: x.order):
+        if t.status not in (TodoStatus.PENDING, TodoStatus.IN_PROGRESS):
+            continue
+        hay = t.title.lower()
+        if needle in hay or hay in needle:
+            return t
+    return None
+
+
+def _set_todo_status(todo: TaskTodo, status: TodoStatus) -> None:
+    todo.status = status
+    todo.updated_at = datetime.now(UTC)
+
+
+def _apply_todo_updates(task: Task, decision: dict[str, Any]) -> None:
+    """Apply the model's optional todo_updates to the live checklist."""
+    raw = decision.get("todo_updates")
+    if not isinstance(raw, list):
+        return
+    for entry in raw[:5]:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("kind")
+        title = entry.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        if kind == "add":
+            if len(task.todos) >= 30:
+                break
+            max_order = max((t.order for t in task.todos), default=-1)
+            task.todos.append(
+                TaskTodo(
+                    task_id=task.id,
+                    title=_trim(title.strip(), 140),
+                    status=TodoStatus.PENDING,
+                    order=max_order + 1,
+                )
+            )
+            continue
+        if kind in ("complete", "skip"):
+            todo = _find_todo(task, title)
+            if todo is not None:
+                _set_todo_status(
+                    todo, TodoStatus.COMPLETED if kind == "complete" else TodoStatus.SKIPPED
+                )
+
+
+def _next_open_todo(task: Task) -> TaskTodo | None:
+    """Lowest-order open todo (pending or already in_progress) for the next step."""
+    for t in sorted(task.todos, key=lambda x: x.order):
+        if t.status in (TodoStatus.PENDING, TodoStatus.IN_PROGRESS):
+            return t
+    return None
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     """Extract the first balanced JSON object from a model reply."""
     decoder = json.JSONDecoder()
@@ -248,6 +344,7 @@ def _validate_step_decision(decision: dict[str, Any]) -> tuple[dict[str, Any] | 
         "description": description.strip(),
         "tool_name": repaired,
         "tool_args": tool_args,
+        "todo_updates": decision.get("todo_updates"),
     }, ""
 
 
@@ -272,6 +369,7 @@ async def decide_next_step(state: dict[str, Any]) -> dict[str, Any]:
         or "_None._",
         skill_context=state.get("skill_context") or "_None._",
         roadmap=state.get("roadmap") or "_None._",
+        todos=state.get("todos") or "_Empty — nothing planned yet._",
         snapshot=state.get("snapshot") or _snapshot_workspace(),
         transcript=state.get("transcript") or "_None yet._",
         feedback=(state.get("feedback") or "") + "\n" if state.get("feedback") else "",
@@ -287,7 +385,12 @@ async def decide_next_step(state: dict[str, Any]) -> dict[str, Any]:
     obj = dict(obj)
     obj["_raw"] = raw
     if obj.get("done"):
-        return {"done": True, "result": str(obj.get("result") or ""), "_raw": raw}
+        return {
+            "done": True,
+            "result": str(obj.get("result") or ""),
+            "todo_updates": obj.get("todo_updates"),
+            "_raw": raw,
+        }
     repaired, error = _validate_step_decision(obj)
     if repaired is None:
         return {"_error": error, "_raw": raw}
@@ -305,6 +408,7 @@ async def run_adaptive_loop(
     execute_fn: Callable[..., Any] = execute_step,
     decide_fn: Callable[..., Any] = decide_next_step,
     max_steps: int = _MAX_STEPS,
+    on_event: Callable[..., Any] | None = None,
 ) -> AdaptiveOutcome:
     """Run the step-by-step loop against ``task`` (mutated in place).
 
@@ -313,6 +417,10 @@ async def run_adaptive_loop(
     the executor's template keys). Loop stops when the model says DONE, when a
     route fails ``_MAX_CONSECUTIVE_FAILURES`` in a row, when decision parsing
     never produced a valid action, or when the step budget is exhausted.
+
+    ``on_event(task_id, event_type, message, detail="")`` — if given, is called
+    live so callers can stream the detailed process (steps + checkbox states)
+    to the dashboard while the loop runs, not only after it finishes.
     """
     goals = task.goal or ""
     if context is None:
@@ -320,9 +428,20 @@ async def run_adaptive_loop(
     consecutive_failures = 0
     details: list[str] = []
 
+    def _emit(event_type: str, message: str, detail: str = "") -> None:
+        if on_event is not None:
+            try:
+                on_event(task.id, event_type, message, detail)
+            except Exception:
+                logger.debug("live event sink failed", exc_info=True)
+
     def _abort(reason: str) -> AdaptiveOutcome:
         logger.warning("Adaptive loop stopped for task %s: %s", task.id, reason)
+        for t in task.todos:
+            if t.status is TodoStatus.IN_PROGRESS:
+                _set_todo_status(t, TodoStatus.SKIPPED)
         task.updated_at = datetime.now(UTC)
+        _emit("error", "Stopped early", reason)
         return AdaptiveOutcome(
             done=False,
             summary="",
@@ -330,6 +449,8 @@ async def run_adaptive_loop(
             iterations=len(task.steps),
             steps_ran=len(task.steps),
         )
+
+    _seed_todos(task, roadmap)
 
     for _round in range(max_steps):
         task.updated_at = datetime.now(UTC)
@@ -342,6 +463,7 @@ async def run_adaptive_loop(
             "lessons": lessons or [],
             "skill_context": skill_context or "",
             "roadmap": roadmap_text,
+            "todos": _todo_state(task),
             "snapshot": _snapshot_workspace(),
             "transcript": _build_transcript(task),
             "feedback": "",
@@ -372,11 +494,25 @@ async def run_adaptive_loop(
 
         if decision is None or decision.get("done"):
             summary = str((decision or {}).get("result") or "").strip()
+            _apply_todo_updates(task, decision or {})
+            for t in task.todos:
+                if t.status is TodoStatus.IN_PROGRESS:
+                    _set_todo_status(t, TodoStatus.COMPLETED)
             task.updated_at = datetime.now(UTC)
             logger.info("Adaptive loop DONE for task %s after %d step(s)", task.id, len(task.steps))
+            _emit(
+                "done",
+                "Task complete",
+                _trim(summary, 300) or f"{len(task.steps)} step(s) executed.",
+            )
             return AdaptiveOutcome(
                 done=True, summary=summary, iterations=len(task.steps), steps_ran=len(task.steps)
             )
+
+        _apply_todo_updates(task, decision)
+        active_todo = _next_open_todo(task)
+        if active_todo is not None:
+            _set_todo_status(active_todo, TodoStatus.IN_PROGRESS)
 
         step = TaskStep(
             task_id=task.id,
@@ -388,6 +524,11 @@ async def run_adaptive_loop(
         task.steps.append(step)
         task.updated_at = datetime.now(UTC)
         logger.info("Step %d: %s", step.order, step.description[:80])
+        _emit(
+            "step_running",
+            f"Step {step.order}: {_trim(step.description, 90)}",
+            f"[{step.tool_name}]",
+        )
         result = await execute_fn(step, context or {})
         context[f"step_{step.order}_result"] = result.output
         context[f"step_{step.order + 1}_result"] = result.output
@@ -397,8 +538,14 @@ async def run_adaptive_loop(
 
         if result.success:
             consecutive_failures = 0
+            if active_todo is not None:
+                _set_todo_status(active_todo, TodoStatus.COMPLETED)
+            _emit("done", f"Step {step.order} complete", _trim(result.output or result.error, 300))
             continue
         consecutive_failures += 1
+        if active_todo is not None and active_todo.status is TodoStatus.IN_PROGRESS:
+            _set_todo_status(active_todo, TodoStatus.PENDING)
+        _emit("error", f"Step {step.order} failed", _trim(result.error or "unknown error", 300))
         if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
             latest = _trim(result.error or "unknown error", 200)
             return _abort(

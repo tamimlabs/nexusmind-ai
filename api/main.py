@@ -21,7 +21,15 @@ from pydantic import BaseModel
 
 import agent.config as _cfg
 from agent.core import command_gate
-from agent.core.executor import get_pending_approvals, list_tools, resolve_approval
+from agent.core.executor import (
+    get_pending_approvals,
+    get_trusted_tasks,
+    is_task_trusted,
+    list_tools,
+    resolve_approval,
+    trust_task,
+    untrust_task,
+)
 from agent.core.memory import memory_store
 from agent.core.skill_library import SkillError
 from agent.core.skill_library import skill_library as _skill_library
@@ -263,6 +271,7 @@ class TaskResponse(BaseModel):
     error: str | None = None
     steps_count: int = 0
     steps: list[dict[str, Any]] = []
+    todos: list[dict[str, Any]] = []
     trace: list[dict[str, Any]] = []
 
 
@@ -334,6 +343,42 @@ async def agent_status():
 
 async def _run_task_background(task_id: str, task: Task) -> None:
     """Run task in background and emit live events."""
+
+    def _snapshot() -> dict[str, Any]:
+        return {
+            "steps_count": len(task.steps),
+            "steps": [
+                {
+                    "id": s.id,
+                    "description": s.description,
+                    "tool_name": s.tool_name,
+                    "tool_args": s.tool_args,
+                    "status": s.status.value,
+                    "result": s.result,
+                    "error": s.error,
+                    "order": s.order,
+                }
+                for s in task.steps
+            ],
+            "todos": [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status.value,
+                    "order": t.order,
+                    "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+                }
+                for t in task.todos
+            ],
+        }
+
+    def _live_emit(event_type: str, message: str, detail: str = "") -> None:
+        _emit(task_id, event_type, message, detail)
+        try:
+            _update_task_status(task_id, task.status.value, goal=task.goal, **_snapshot())
+        except Exception:
+            logger.debug("Live status refresh failed", exc_info=True)
+
     from agent.config import settings
     use_adk = settings.database_backend.lower() == "firestore"
 
@@ -353,41 +398,19 @@ async def _run_task_background(task_id: str, task: Task) -> None:
             task.steps = []  # ADK handles steps internally
             _emit(task_id, "done", "Task completed via ADK Runner")
         else:
-            # Orchestrator fallback for local development
+            # Orchestrator fallback for local development. Every step, todo
+            # change and final verdict is streamed LIVE via the emit sink.
             from agent.orchestrator import orchestrator
-            task = await orchestrator.handle_task(task)
+            task = await orchestrator.handle_task(task, emit=_live_emit)
 
-        # Emit per-step events so thinking panel shows progress
-        if task.steps:
-            _emit(task_id, "thinking", f"Planned {len(task.steps)} steps")
-            for i, step in enumerate(task.steps):
-                status_type = {"success": "done", "failed": "error"}.get(step.status.value, "thinking")
-                step_msg = f"Step {i+1}: {step.description[:80]}"
-                if step.tool_name:
-                    step_msg += f" [{step.tool_name}]"
-                _emit(task_id, status_type, step_msg,
-                      step.result[:200] if step.result else (step.error[:200] if step.error else ""))
-
+        # Final snapshot after the task settled (status, result, steps, todos).
         _update_task_status(
             task_id,
             task.status.value,
             result=task.result,
             error=task.error,
             goal=task.goal,
-            steps_count=len(task.steps),
-            steps=[
-                {
-                    "id": s.id,
-                    "description": s.description,
-                    "tool_name": s.tool_name,
-                    "tool_args": s.tool_args,
-                    "status": s.status.value,
-                    "result": s.result,
-                    "error": s.error,
-                    "order": s.order,
-                }
-                for s in task.steps
-            ],
+            **_snapshot(),
         )
 
         trace = get_trace(task_id)
@@ -429,6 +452,7 @@ async def _run_task_background(task_id: str, task: Task) -> None:
                         }
                         for s in task.steps
                     ],
+                    "todos": _snapshot()["todos"],
                     "created_at": _live_tasks_created.get(task_id, time.time()),
                 })
                 logger.debug("Persisted task %s to Firestore", task_id)
@@ -492,6 +516,7 @@ async def get_task_live(task_id: str):
         "error": status.get("error"),
         "steps_count": status.get("steps_count", 0),
         "steps": status.get("steps", []),
+        "todos": status.get("todos", []),
         "trace": trace_chain,
     }
 
@@ -509,6 +534,7 @@ async def list_tasks():
             error=data.get("error"),
             steps_count=data.get("steps_count", 0),
             steps=data.get("steps", []),
+            todos=data.get("todos", []),
         ))
 
     try:
@@ -546,6 +572,7 @@ async def get_task(task_id: str):
             error=live.get("error"),
             steps_count=live.get("steps_count", 0),
             steps=live.get("steps", []),
+            todos=live.get("todos", []),
             trace=trace.get_chain() if trace else [],
         )
 
@@ -596,9 +623,39 @@ async def get_approvals():
 
 @app.post("/api/approvals/{step_id}")
 async def resolve(step_id: str, req: ApprovalRequest):
-    """Approve or deny a pending action."""
+    """Approve or deny a pending action.
+
+    A granted approval also trusts the rest of its task: later risky steps in
+    the same task auto-approve (one approval per task).
+    """
     resolve_approval(step_id, req.approved)
     return {"step_id": step_id, "status": "approved" if req.approved else "denied"}
+
+
+class TaskTrustRequest(BaseModel):
+    trusted: bool
+
+
+@app.get("/api/approvals/trusted")
+async def get_trusted():
+    """List task ids currently trusted for auto-approval (diagnostics)."""
+    return {"trusted_tasks": get_trusted_tasks()}
+
+
+@app.get("/api/tasks/{task_id}/trust")
+async def get_task_trust(task_id: str):
+    """Check whether a task's risky steps auto-approve (one approval per task)."""
+    return {"task_id": task_id, "trusted": is_task_trusted(task_id)}
+
+
+@app.post("/api/tasks/{task_id}/trust")
+async def set_task_trust(task_id: str, req: TaskTrustRequest):
+    """Explicitly trust (or untrust) a task so its risky steps auto-approve."""
+    if req.trusted:
+        trust_task(task_id)
+    else:
+        untrust_task(task_id)
+    return {"task_id": task_id, "trusted": req.trusted}
 
 
 # ── Approval Mode ─────────────────────────────────────────────────

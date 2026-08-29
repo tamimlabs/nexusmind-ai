@@ -17,14 +17,17 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.core.agent_loop import AdaptiveOutcome, decide_next_step, run_adaptive_loop
-from agent.core.executor import execute_step, list_tools, set_task_context
+from agent.core.executor import execute_step, list_tools, set_task_context, untrust_task
 from agent.core.memory import memory_store
 from agent.core.planner import plan_task
 from agent.core.skill_library import skill_library as _skill_library
 from agent.models import StepStatus, Task, TaskStatus
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +275,7 @@ class Orchestrator:
                 lessons.append(text)
         return lessons
 
-    async def handle_task(self, task: Task) -> Task:
+    async def handle_task(self, task: Task, emit: Callable[..., Any] | None = None) -> Task:
         """Process a task from start to finish."""
         logger.info("Handling task [%s]: %s", task.id, task.goal[:100])
         task.status = TaskStatus.PLANNING
@@ -378,6 +381,7 @@ class Orchestrator:
                 roadmap=roadmap,
                 execute_fn=execute_step,
                 decide_fn=decide_next_step,
+                on_event=emit,
             )
 
             task.status = TaskStatus.COMPLETED
@@ -403,6 +407,7 @@ class Orchestrator:
                     await notify_task_failed(task.id, task.goal, task.error[:300])
                 task.updated_at = datetime.now(UTC)
                 logger.error("Task [%s] FAILED: %s", task.id, task.error[:200])
+                untrust_task(task.id)
                 return task
 
             # Use the most meaningful result (prefer the model's DONE summary
@@ -533,12 +538,14 @@ class Orchestrator:
                 await notify_task_completed(task.id, task.goal, task.result[:300])
 
             logger.info("Task [%s] completed successfully", task.id)
+            untrust_task(task.id)
             return task
 
         except Exception as exc:
             logger.exception("Task [%s] failed with exception", task.id)
             task.status = TaskStatus.FAILED
             task.error = str(exc)
+            untrust_task(task.id)
             from agent.config import settings as _fail_settings
 
             if _fail_settings.gemini_full_control and _fail_settings.gemini_api_key:

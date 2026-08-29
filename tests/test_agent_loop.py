@@ -435,3 +435,184 @@ class TestNoFabrication:
         assert "decide_next_step" in source
         # The controller template never contains file content, only instructions.
         assert "<html" not in source
+
+
+class TestTodoLifecycle:
+    """The agent keeps a live checklist: seeded after planning, managed by the
+    model (add/complete/skip), and mapped 1:1 onto the steps it actually takes."""
+
+    def _roadmap(self, titles):
+        steps = []
+        for i, title in enumerate(titles):
+            steps.append(
+                TaskStep(
+                    task_id="t",
+                    description=title,
+                    tool_name="write_file",
+                    tool_args={},
+                    order=i,
+                )
+            )
+        return steps
+
+    @pytest.mark.asyncio
+    async def test_roadmap_seeds_checklist_after_planning(self):
+        """Todos are created from the suggested roadmap before any step runs."""
+        task = _task()
+
+        async def decide(state):
+            return {"done": True, "result": "Nothing needed."}
+
+        await run_adaptive_loop(
+            task,
+            {},
+            roadmap=self._roadmap(["Scaffold folder", "Write index.html", "Verify build"]),
+            decide_fn=decide,
+            execute_fn=_execute_ok,
+        )
+        assert len(task.todos) == 3
+        assert [t.title for t in task.todos] == [
+            "Scaffold folder", "Write index.html", "Verify build",
+        ]
+        assert all(t.status.value == "pending" for t in task.todos)
+
+    @pytest.mark.asyncio
+    async def test_step_completes_its_checkbox(self):
+        """The todo a step is working toward flips pending -> in_progress ->
+        completed when the step succeeds; DONE closes any IN_PROGRESS."""
+        task = _task()
+        executed: list[str] = []
+
+        async def execute(step, context):
+            executed.append(step.description)
+            return ToolResult(success=True, output="ok")
+
+        async def decide(state):
+            if len(executed) == 0:
+                return {"description": "Scaffold folder", "tool_name": "list_directory", "tool_args": {}}
+            if len(executed) == 1:
+                return {"description": "Write index.html", "tool_name": "write_file", "tool_args": {}}
+            return {"done": True, "result": "All good."}
+
+        await run_adaptive_loop(
+            task,
+            {},
+            roadmap=self._roadmap(["Scaffold folder", "Write index.html"]),
+            decide_fn=decide,
+            execute_fn=execute,
+        )
+        statuses = {t.title: t.status.value for t in task.todos}
+        assert statuses["Scaffold folder"] == "completed"
+        assert statuses["Write index.html"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_model_can_add_complete_and_skip_todos(self):
+        """todo_updates from a decision are applied to the live checklist."""
+        task = _task()
+        todos_calls: list[str] = []
+
+        async def decide(state):
+            todos_calls.append(state["todos"])
+            if len(todos_calls) == 1:
+                return {
+                    "description": "Create folder",
+                    "tool_name": "list_directory",
+                    "tool_args": {},
+                    "todo_updates": [
+                        {"kind": "add", "title": "Write README"},
+                        {"kind": "complete", "title": "Create folder"},
+                        {"kind": "skip", "title": "Scaffold folder"},
+                    ],
+                }
+            return {"done": True, "result": "done"}
+
+        await run_adaptive_loop(
+            task,
+            {},
+            roadmap=self._roadmap(["Scaffold folder", "Write index.html"]),
+            decide_fn=decide,
+            execute_fn=_execute_ok,
+        )
+        # The live checklist is surfaced to the model; the LAST call already
+        # reflects the add/complete/skip applied after the first decision.
+        assert "Write README" in todos_calls[1]
+        titles = {t.title: t.status.value for t in task.todos}
+        assert titles["Scaffold folder"] == "skipped"
+        assert titles["Write index.html"] == "completed"
+        assert titles["Write README"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_failed_step_reverts_todo_and_abort_skips_open_items(self):
+        """Failed steps do not claim their checkbox; an early stop marks any
+        in_progress item as skipped so the checklist stays honest."""
+        task = _task()
+
+        async def execute(step, context):
+            return ToolResult(success=False, output="", error="sandbox blocked")
+
+        async def decide(state):
+            if len(task.steps) >= 3:
+                return {"done": True, "result": "Gave up."}
+            return {"description": "Run dangerous op", "tool_name": "run_command", "tool_args": {}}
+
+        outcome = await run_adaptive_loop(
+            task,
+            {},
+            roadmap=self._roadmap(["Scaffold folder"]),
+            decide_fn=decide,
+            execute_fn=execute,
+            max_steps=4,
+        )
+        assert outcome.done is False
+        assert task.todos[0].status.value in ("skipped", "pending")
+
+    @pytest.mark.asyncio
+    async def test_live_events_stream_during_work(self):
+        """on_event fires step_running/done/error as steps run, so the dashboard
+        sees the detailed process WHILE the task executes, not after it ends."""
+        events: list[tuple[str, str]] = []
+
+        def on_event(task_id, event_type, message, detail=""):
+            events.append((event_type, message))
+
+        calls = {"n": 0}
+
+        async def decide(state):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"description": "Scaffold folder", "tool_name": "list_directory", "tool_args": {}}
+            return {"done": True, "result": "Built and verified."}
+
+        task = _task()
+        await run_adaptive_loop(
+            task,
+            {},
+            roadmap=self._roadmap(["Scaffold folder"]),
+            decide_fn=decide,
+            execute_fn=_execute_ok,
+            on_event=on_event,
+        )
+        types = [e for e, _ in events]
+        assert "step_running" in types
+        assert types.count("done") >= 1
+        assert any("Task complete" in m for _, m in events)
+
+    @pytest.mark.asyncio
+    async def test_emit_exceptions_do_not_break_the_loop(self):
+        """A broken live-event sink must never crash execution."""
+
+        def bad_sink(*args, **kwargs):
+            raise RuntimeError("sink down")
+
+        async def decide(state):
+            return {"done": True, "result": "ok"}
+
+        task = _task()
+        outcome = await run_adaptive_loop(
+            task,
+            {},
+            decide_fn=decide,
+            execute_fn=_execute_ok,
+            on_event=bad_sink,
+        )
+        assert outcome.done is True
