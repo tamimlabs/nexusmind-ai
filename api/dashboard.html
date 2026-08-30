@@ -750,28 +750,27 @@ function startLiveStream(id){
     S_eventSource=es;
     es.onmessage=e=>{
       if(e.data==='[DONE]'){es.close();return}
-      try{const msg=JSON.parse(e.data);if(msg.type==='done'){flushStreamBuf();pollLive();return}if(msg.type==='token'){const delta=msg.message||msg.detail||"";if(delta) handleTokenDelta(delta);return}if(msg.type&&msg.message){if(S._streamBuf) flushStreamBuf();S.liveEvents.push(msg);if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel()}}catch(err){}
+      try{const msg=JSON.parse(e.data);if(msg.type==='done'){flushStreamBuf();pollLive();return}if(msg.type==='token'){const delta=msg.message||msg.detail||"";if(delta) handleTokenDelta(delta);return}if(msg.type&&msg.message){
+        // share dedup with WS so same server event via WS+SSE doesn't triplicate
+        const skey=(msg.time||0)+':'+(msg.type||'')+':'+(msg.message||'').slice(0,40);
+        if(!S._seenWSKeys) S._seenWSKeys=new Set();
+        if(S._seenWSKeys.has(skey)) return; S._seenWSKeys.add(skey); if(S._seenWSKeys.size>800) S._seenWSKeys.clear();
+        if(S._streamBuf) flushStreamBuf();S.liveEvents.push(msg);if(S.liveEvents.length>600) S.liveEvents.shift(); if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel()}}catch(err){}
     };
     es.onerror=()=>{try{es.close()}catch(e){}};
   }catch(e){}
 }
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();const raw=(d.events||[]);if(!S._seenPollKeys) S._seenPollKeys=new Set();let hasNewToken=false;for(const e of raw){if(e.type==='token'){const k=(e.time||0)+':'+(e.message||'').slice(0,40);if(!S._seenPollKeys.has(k)){S._seenPollKeys.add(k);if(S._seenPollKeys.size>1000) S._seenPollKeys.clear();const delta=e.message||e.detail||"";if(delta) handleTokenDelta(delta);hasNewToken=true}}}
-const wsAlive=S_ws && S_ws.readyState===1;
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();const raw=(d.events||[]);const wsAlive=(S_ws && S_ws.readyState===1) || (S_eventSource && S_eventSource.readyState===1);
+if(!S._seenPollKeys) S._seenPollKeys=new Set();let hasNewToken=false;if(!wsAlive){for(const e of raw){if(e.type==='token'){const k=(e.time||0)+':'+(e.message||'').slice(0,40);if(!S._seenPollKeys.has(k)){S._seenPollKeys.add(k);if(S._seenPollKeys.size>1000) S._seenPollKeys.clear();const delta=e.message||e.detail||"";if(delta) handleTokenDelta(delta);hasNewToken=true}}}
 const filtered=raw.filter(e=>e.type!=='token');
 let eventsChanged=false;
 if(!wsAlive){
-  // poll is primary when WS disconnected — replace
   if(filtered.length!==S.liveEvents.length || JSON.stringify(filtered.map(e=>e.type+e.message).slice(-6))!==JSON.stringify(S.liveEvents.map(e=>e.type+e.message).slice(-6))){
     S.liveEvents=filtered; eventsChanged=true;
   }
 } else {
-  // WS is primary — only append truly new events not yet seen (avoid flicker from full replace)
-  if(!S._seenPollEventKeys) S._seenPollEventKeys=new Set();
-  for(const e of filtered){
-    const k=(e.time||0)+':'+e.type+':'+(e.message||'').slice(0,60);
-    if(!S._seenPollEventKeys.has(k)){ S._seenPollEventKeys.add(k); S.liveEvents.push(e); if(S.liveEvents.length>600) S.liveEvents.shift(); eventsChanged=true; }
-  }
-  if(S._seenPollEventKeys.size>800) S._seenPollEventKeys.clear();
+  // WS/SSE is primary — do not merge poll events at all (prevents 3× duplicate). Only status/todos below will update.
+  eventsChanged=false;
 }
 S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){const prevStatus=t.status, prevSteps=(t.steps||[]).length, prevTodos=(t.todos||[]).length; t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.elapsed_seconds=d.elapsed_seconds||t.elapsed_seconds;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace;
   if(t.status!==prevStatus || prevSteps!==t.steps.length || prevTodos!==t.todos.length) eventsChanged=true;
