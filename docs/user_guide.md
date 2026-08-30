@@ -37,7 +37,7 @@
 
 Give it a goal in plain English — *"summarize today's AI news"* or *"review open PRs in my repo"* — and it **works step by step: plans the path, runs one action at a time, reads each real result before the next move, handles errors, and asks you only when something risky needs permission.** 
 
-It can also **watch** GitHub, Slack, Jira, Reddit, Hacker News, Email and 6 more platforms 24/7 and act automatically when something new appears.
+It can also **watch** GitHub, GitLab, Slack, Discord, Jira, Reddit, Hacker News, Email and 4 more platforms 24/7 — and **act back** automatically when something new appears. All watchers that used to only *watch* can now *do* things for you: reply in Slack/Discord, comment or move Jira tickets, merge GitLab merge requests, and send emails — in addition to the original GitHub PR reviews/merges. You control all of it with a one-time standing instruction (Step 6) — no repeated prompting.
 
 > **You don't prompt it repeatedly. You give it a goal once, walk away, and it works.**
 
@@ -121,6 +121,8 @@ cp .env.example .env
 GEMINI_API_KEY=AIza...your-key-here
 ```
 
+> **Optional — connect watchers later:** You don't need anything else to start. When you're ready to let the agent *act* in Slack, Discord, Jira, GitLab, or Email, add those tokens to the same `.env` file (see [Step 9 — Credentials](#step-9--manage-credentials) for exactly what to paste). Everything is also editable from the dashboard under **Credentials** — no need to edit the file again.
+
 5. Start the dashboard:
 
 ```bash
@@ -161,15 +163,22 @@ You should see the NexusMind dashboard with a green **● Agent is online** indi
 | Tab | What You See |
 |-----|--------------|
 | **Trace** | Color-coded timeline of every step the agent took |
-| **Thinking** | Live reasoning — updates every ~1.5 seconds while a task runs |
+| **Thinking** | Live reasoning — word-to-word streaming bubble (token deltas via WebSocket/SSE) that fills as the agent writes |
 | **Approvals** | Buttons to approve or deny risky actions |
+| **Checklist** | Live TODO checklist (todowrite) — the agent's plan, updated in real time |
 
 **Minimize it:** Click the **—** (minimize) in the top-right of the right panel to collapse it to a slim rail. Click the **›** chevron or **Panel** label on the rail to bring it back. Your choice is remembered after reload.
+
+### What Makes It Feel Live
+
+- **Word-to-word streaming bubble** — the agent's answer appears token-by-token (not in chunks) via WebSocket/SSE, with a blinking cursor while it writes.
+- **Flicker-free Task tab** — the task list keeps your input focused and scroll position, updates via RAF diff with shell persistence, WS-primary with 2.8 s polling fallback, and shared dedup so nothing flashes or re-creates.
+- **Smoother under load** — performance throttle scales with key count, and the planning roadmap has a 12 s timeout so a slow Gemini call never freezes the UI.
 
 ### Status Colors
 
 | Indicator | Meaning |
-|-----------|---------|
+|-----------|--------------|
 | 🟢 Green dot / badge | Agent online / Task completed |
 | 🟡 Yellow badge | Task in progress |
 | 🟣 Purple badge | Agent is planning |
@@ -302,31 +311,37 @@ The **Memory** page is your window into what the agent has learned.
 
 Watchers let NexusMind monitor platforms 24/7 and trigger itself when something new appears. No polling by hand.
 
-### Supported Platforms (11)
+### Supported Platforms (11) — All Can Now Act Back
 
-| Platform | What It Watches |
-|----------|-----------------|
-| **GitHub** | New PRs, issues |
-| **GitLab** | Merge requests, issues |
-| **Slack** | Channel messages, mentions |
-| **Discord** | Channel messages |
-| **Jira** | New / updated issues |
-| **Reddit** | New posts in subreddits |
-| **Hacker News** | New stories, comments |
-| **Email (IMAP)** | Inbox messages |
-| **RSS / Atom** | Feed items |
-| **Cron** | Scheduled tasks (e.g., daily at 9am) |
-| **Custom Webhook** | Any HTTP event |
+> **New:** Previously only GitHub could *act* (review/merge). Now **GitLab, Slack, Discord, Jira, and Email** can also act back automatically via your standing instructions — using verified open-source patterns (`httpx` for Slack/Discord/Jira/GitLab, `smtplib` + TLS on port 587 for Email).
+
+| Platform | What It Watches | What It Can Do Back (when your instruction matches) |
+|----------|-----------------|------------------------------------------------------|
+| **GitHub** | New PRs, issues | Review, comment, merge / close PRs (`github_review_pr`, `github_merge_pr`, etc.) |
+| **GitLab** | Merge requests, issues | List MRs and **merge** them (`gitlab_merge_mr`) |
+| **Slack** | Channel messages, mentions | **Send message** / threaded reply (`slack_send_message`, `slack_reply_thread`) |
+| **Discord** | Channel messages | **Send message** to a channel (`discord_send_message`) |
+| **Jira** | New / updated issues | **Comment** and **transition** tickets (`jira_comment_issue`, `jira_transition_issue`) |
+| **Email (IMAP)** | Inbox messages | **Send email** via SMTP — or save a draft if SMTP isn't set up (`send_email`) |
+| **Reddit** | New posts in subreddits | Trigger only (read) |
+| **Hacker News** | New stories, comments | Trigger only (read) |
+| **RSS / Atom** | Feed items | Trigger only (read) |
+| **Cron** | Scheduled tasks (e.g., daily at 9am) | Runs your configured goal directly |
+| **Custom Webhook** | Any HTTP event | Runs your configured goal directly |
+
+New skills backing this: `slack`, `discord`, `jira`, `gitlab`, `email` — each authenticates via a token in `.env` (see Step 9). The agent only uses these write-back tools when a watcher event matches one of your standing instructions.
 
 ### Create a Watcher (30 seconds)
 
 1. Click **Watchers** in the left sidebar
 2. Click **+ New Watcher**
-3. Pick a platform (e.g., **GitHub**)
-4. Fill in the config — e.g., `repo: owner/repo`, `interval: 300` (seconds)
+3. Pick a platform (e.g., **Slack** or **GitHub**)
+4. Fill in the config — e.g., `repo: owner/repo`, `channel: #general`, `interval: 300` (seconds)
 5. Click **Save** → watcher shows as **Active**
 
 You can **Stop**, **Start**, or **Delete** any watcher from the same page.
+
+> **Try an auto-reply:** Create a Slack watcher for `#support`, then add a standing instruction: *"whenever a new Slack message asks for help, reply with a friendly answer and offer next steps"* — the agent will call `slack_send_message` automatically from then on. Same idea works for Discord (`discord_send_message`), Jira (`jira_comment_issue` / `jira_transition_issue` to move tickets to Done), GitLab (`gitlab_merge_mr`), and Email (`send_email`).
 
 ### The Safety Rule — Why a New Watcher Stays Quiet
 
@@ -342,6 +357,13 @@ This is intentional and important:
 2. Add this standing instruction: *"when you get a PR in my repo, review it and merge it if clean, otherwise decline with a helpful comment"*
 3. Now every future PR is reviewed, tested, commented, and merged/declined — fully automatically
 
+**More end-to-end examples:**
+
+- **Slack auto-reply:** Watcher on `#support` + instruction *"whenever a Slack message asks for help, send a helpful reply in the same channel"* → `slack_send_message` fires automatically.
+- **Jira auto-triage:** Watcher on your Jira project + *"when a Jira issue is marked Needs Review, comment with findings and transition it to Done if clean"* → `jira_comment_issue` + `jira_transition_issue`.
+- **GitLab auto-merge:** Watcher on `group/project` + *"when a GitLab MR is clean, merge it"* → `gitlab_merge_mr`.
+- **Email auto-responder:** Watcher on inbox + *"whenever you get an email about demo requests, send a friendly reply with next steps"* → `send_email` (saves a draft to `output/email_drafts/` if SMTP isn't configured yet, so nothing is lost).
+
 > **Exception:** Cron and Webhook watchers run their configured goal directly on trigger — they don't wait for a standing instruction.
 
 ---
@@ -353,24 +375,38 @@ All secrets in one place, never exposed in plain text to the frontend.
 1. Click **Credentials** in the left sidebar
 2. You'll see 10 categories:
 
-| Category | Fields |
-|----------|--------|
-| **AI & LLM** | Gemini API Keys, Model |
-| **Google Cloud** | Project ID, Region |
-| **Web Search** | Google Search API Key, CX |
-| **GitHub** | Personal Access Token |
-| **GitLab** | Token, Base URL |
-| **Slack** | Bot Token |
-| **Discord** | Bot Token |
-| **Jira** | Domain, Email, API Token |
-| **Email** | IMAP Server, Address, Password |
-| **Telegram** | Bot Token, Chat ID |
+| Category | Fields | Where to Get It |
+|----------|--------|-----------------|
+| **AI & LLM** | Gemini API Keys, Model | https://aistudio.google.com/apikey |
+| **Google Cloud** | Project ID, Region | Google Cloud Console |
+| **Web Search** | Google Search API Key, CX | Google Custom Search (optional — falls back to DuckDuckGo) |
+| **GitHub** | Personal Access Token | GitHub → Settings → Developer settings → PAT |
+| **GitLab** | Token (`GITLAB_TOKEN`), Base URL (`GITLAB_BASE_URL`, default `https://gitlab.com`) | GitLab → Preferences → Access Tokens (needs `api` scope) |
+| **Slack** | Bot Token (`SLACK_BOT_TOKEN` = `xoxb-...`) | https://api.slack.com/apps → Create app → OAuth → copy Bot Token |
+| **Discord** | Bot Token (`DISCORD_BOT_TOKEN`) | https://discord.com/developers → Your App → Bot → Token |
+| **Jira** | Domain (`JIRA_DOMAIN` e.g. `company.atlassian.net`), Email (`JIRA_EMAIL`), API Token (`JIRA_TOKEN`) | https://id.atlassian.com/manage-profile/security/api-tokens |
+| **Email** | SMTP Server (`EMAIL_SMTP_SERVER`, or `EMAIL_IMAP_SERVER` as fallback), Port (`EMAIL_SMTP_PORT`, default `587`), Address (`EMAIL_ADDRESS`), App Password (`EMAIL_PASSWORD`) | Gmail: `smtp.gmail.com` + App Password (Google Account → Security → 2-Step → App passwords). If SMTP isn't set, `send_email` safely saves a draft to `output/email_drafts/` instead of failing silently. |
+| **Telegram** | Bot Token, Chat ID | @BotFather / @userinfobot (see Step 5) |
 
 3. Fill in what you need — values are masked (••••)
 4. Click **Save All**
 5. To remove one, click the **Delete** icon next to that key
 
-Credentials are stored locally in `.env` (gitignored) and never committed.
+Credentials are stored locally in `.env` (gitignored) and never committed. The same keys also work as **`.env` variables** if you prefer editing the file directly — add any of these lines and restart:
+
+```
+SLACK_BOT_TOKEN=xoxb-...
+DISCORD_BOT_TOKEN=MTIz...
+JIRA_DOMAIN=company.atlassian.net
+JIRA_EMAIL=you@company.com
+JIRA_TOKEN=your-jira-api-token
+GITLAB_TOKEN=glpat-...
+GITLAB_BASE_URL=https://gitlab.com
+EMAIL_SMTP_SERVER=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+EMAIL_ADDRESS=you@gmail.com
+EMAIL_PASSWORD=your-app-password
+```
 
 ---
 
@@ -378,10 +414,10 @@ Credentials are stored locally in `.env` (gitignored) and never committed.
 
 1. **Be specific** — `Search for Python web frameworks and compare Flask vs FastAPI` beats `search stuff`
 2. **One task at a time** — let the trace finish before starting the next
-3. **Watch the Thinking tab** — it's the best way to see if the agent understood you
-4. **Approve carefully** — only approve `run_command` / `execute_code` if you trust the goal
+3. **Watch the Thinking tab** — the word-to-word streaming bubble is the fastest way to see if the agent understood you
+4. **Approve carefully** — only approve `run_command` / `execute_code` / `send_email` / `gitlab_merge_mr` / `jira_transition_issue` if you trust the goal (Smart mode auto-asks for these)
 5. **Curate Memory** — delete wrong memories; the agent improves from what's kept
-6. **Teach with standing instructions** — use "whenever..." once instead of repeating the same goal
+6. **Teach with standing instructions** — use "whenever..." once instead of repeating the same goal (e.g., auto-reply in Slack/Discord or transition Jira tickets)
 7. **Start with Smart approval** — switch to Always/Never only when you know why
 
 ---
@@ -406,6 +442,11 @@ Credentials are stored locally in `.env` (gitignored) and never committed.
 
 ### My watcher saw an event but did nothing
 - **By design.** It checks standing instructions first. Add one in **Memory** → **Add Memory** (category: instruction). See Step 8.
+
+### Slack / Discord / Jira / GitLab / Email action failed
+- Check **Credentials** for that service — missing or wrong token is the #1 cause (`SLACK_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `JIRA_DOMAIN`/`JIRA_EMAIL`/`JIRA_TOKEN`, `GITLAB_TOKEN`/`GITLAB_BASE_URL`, `EMAIL_SMTP_SERVER`/`EMAIL_ADDRESS`/`EMAIL_PASSWORD`).
+- For Slack: ensure the bot is invited to the channel. For Discord: bot needs Send Messages permission. For Jira: token needs API scope; domain must be `company.atlassian.net` without `https://`. For GitLab: token needs `api` scope and access to the project. For Email: use an App Password (not your normal password) and `EMAIL_SMTP_SERVER=smtp.gmail.com` with port `587`.
+- If Email SMTP isn't set, the agent still saves a draft to `output/email_drafts/` — check there; nothing is lost.
 
 ### I keep getting Telegram notices about events
 - At most one per watcher per 6 hours — it's a heads-up, not spam

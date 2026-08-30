@@ -17,6 +17,11 @@ _SKILL_PACKAGES = [
     "agent.skills.file_management",
     "agent.skills.data_processing",
     "agent.skills.github",
+    "agent.skills.slack",
+    "agent.skills.discord",
+    "agent.skills.jira",
+    "agent.skills.gitlab",
+    "agent.skills.email",
 ]
 
 _loaded = False

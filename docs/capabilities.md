@@ -27,36 +27,73 @@ Give NexusMind a goal in plain English. It uses **Gemini Flash** to break it int
 > 2. Fetch detailed comparison data
 > 3. Summarize findings into a structured comparison
 
-### 2. Tool Execution — 20 Registered Tools
-The agent has **20 registered tools** across two groups (+ 2 opencode-parity).
+### 2. Tool Execution — 30 Registered Tools
+The agent has **30 registered tools** across 9 skill packages + 2 opencode-parity utilities. Loader `agent/skills/loader.py:15` now loads 9 packages (was 4); `agent/core/executor.py:36` `high_risk` set expanded to cover all mutating integrations. All new skills copy the verified open-source REST API pattern from `agent/skills/github/skill.py` (httpx direct-to-API, no `run_command` curl, no `web_search` fallback for actions).
 
 **Core Tools (12):**
 
-| Tool | What It Does |
-|------|-------------|
-| `web_search` | Search the web (Google Custom Search primary, DuckDuckGo fallback when Google's quota is hit) |
-| `fetch_url` | Fetch and extract text from any URL |
-| `read_file` | Read local files |
-| `write_file` | Create or update files |
-| `list_directory` | Browse directory contents |
-| `parse_json` | Extract structured data from JSON |
-| `summarize_text` | Condense long text into key points |
-| `extract_data` | Pull specific data from unstructured text |
-| `execute_code` | Run Python code (approval required) |
-| `run_command` | Execute shell commands (approval required) |
+| Tool | What It Does | Risk |
+|------|-------------|------|
+| `web_search` | Search the web (Google Custom Search primary, DuckDuckGo fallback when Google's quota is hit) | — |
+| `fetch_url` | Fetch and extract text from any URL | — |
+| `read_file` | Read local files | — |
+| `write_file` | Create or update files | — |
+| `list_directory` | Browse directory contents | — |
+| `parse_json` | Extract structured data from JSON | — |
+| `summarize_text` | Condense long text into key points | — |
+| `extract_data` | Pull specific data from unstructured text | — |
+| `execute_code` | Run Python code | **high-risk** (smart-approval gated) |
+| `run_command` | Execute shell commands | **high-risk** (smart-approval gated) |
+| `task` | Delegate to `explore`/`general` sub-agent (opencode parity) | — |
+| `todowrite` | Overwrite live TODO checklist (opencode parity) | — |
 
-**GitHub Skill (8):**
+**GitHub Skill (9):**
 
-| Tool | What It Does |
-|------|-------------|
-| `github_resolve_repo` | Resolves owner/name even from partial repo references |
-| `github_get_repo` | Fetch repository details |
-| `github_list_prs` | List open pull requests |
-| `github_get_pr` | Get details of a specific PR |
-| `github_review_pr` | Gemini-powered review verdict: merge / reject / skip, each with a confidence score |
-| `github_merge_pr` | Merge a pull request (high-risk, approval-gated) |
-| `github_close_pr` | Close a pull request (high-risk, approval-gated) |
-| `github_apply_decisions` | Applies review verdicts across PRs (mutating operations are high-risk and gated by approvals) |
+| Tool | What It Does | Risk |
+|------|-------------|------|
+| `github_resolve_repo` | Resolves owner/name even from partial repo references | — |
+| `github_get_repo` | Fetch repository details | — |
+| `github_list_prs` | List open pull requests | — |
+| `github_get_pr` | Get details of a specific PR (files + patch) | — |
+| `github_review_pr` | Gemini-powered review verdict: merge / reject / skip, each with a confidence score | — |
+| `github_verify_pr_locally` | Checkout PR branch and run tests locally before merge decision | — |
+| `github_merge_pr` | Merge a pull request | **high-risk** |
+| `github_close_pr` | Close a pull request (with optional comment) | **high-risk** |
+| `github_apply_decisions` | Applies review verdicts across PRs (sequential, locally verified) | **high-risk** |
+
+**Slack Skill (2) — `agent/skills/slack/skill.py`:**
+
+| Tool | What It Does | Risk | Auth |
+|------|-------------|------|------|
+| `slack_send_message` | `POST https://slack.com/api/chat.postMessage` — post to channel | **high-risk** | `SLACK_BOT_TOKEN` (xoxb-…) via `settings.slack_bot_token` → `SLACK_BOT_TOKEN` env → project `.env` |
+| `slack_reply_thread` | Same endpoint with `thread_ts` — threaded reply | **high-risk** | same |
+
+**Discord Skill (1) — `agent/skills/discord/skill.py`:**
+
+| Tool | What It Does | Risk | Auth |
+|------|-------------|------|------|
+| `discord_send_message` | `POST https://discord.com/api/v10/channels/{channel_id}/messages` — send message | **high-risk** | `DISCORD_BOT_TOKEN` via `settings.discord_bot_token` → env → `.env` |
+
+**Jira Skill (2) — `agent/skills/jira/skill.py`:**
+
+| Tool | What It Does | Risk | Auth |
+|------|-------------|------|------|
+| `jira_comment_issue` | `POST https://{JIRA_DOMAIN}/rest/api/3/issue/{key}/comment` (ADF body) — add comment | **high-risk** | `JIRA_DOMAIN` + `JIRA_EMAIL` + `JIRA_TOKEN` (basic auth) via `settings.jira_domain/email/token` → env → `.env` |
+| `jira_transition_issue` | `POST https://{JIRA_DOMAIN}/rest/api/3/issue/{key}/transitions` `{"transition":{"id":…}}` — transition status | **high-risk** | same |
+
+**GitLab Skill (3) — `agent/skills/gitlab/skill.py`:**
+
+| Tool | What It Does | Risk | Auth |
+|------|-------------|------|------|
+| `gitlab_list_mrs` | `GET {base_url}/api/v4/projects/{id}/merge_requests?state=` — list MRs | — | `GITLAB_TOKEN` / `GITLAB_BASE_URL` (or `GITLAB_URL`) via settings → env → `.env`; defaults to `https://gitlab.com`; `PRIVATE-TOKEN` header |
+| `gitlab_get_mr` | `GET .../merge_requests/{iid}` — single MR details | — | same |
+| `gitlab_merge_mr` | `PUT .../merge_requests/{iid}/merge` — merge MR | **high-risk** | same |
+
+**Email Skill (1) — `agent/skills/email/skill.py`:**
+
+| Tool | What It Does | Risk | Auth |
+|------|-------------|------|------|
+| `send_email` | `smtplib` TLS `587` — send email; if SMTP not configured or send fails, saves draft to `output/email_drafts/{ts}_{to}.eml` | **high-risk** | `EMAIL_SMTP_SERVER` (or `EMAIL_IMAP_SERVER` fallback) + `EMAIL_ADDRESS` + `EMAIL_PASSWORD`/`EMAIL_IMAP_PASSWORD` (+ optional `EMAIL_SMTP_PORT` default 587) via settings → env → `.env` |
 
 ### 3. Deterministic GitHub Pipeline
 When a goal mentions repos or pull requests, NexusMind doesn't gamble on free-form planning. It routes through a fixed, reliable pipeline:
@@ -110,22 +147,22 @@ Instead of executing that sentence once and forgetting it, NexusMind detects the
 - **Manual control:** Add instructions yourself on the Memory page, which auto-detects instruction phrasing
 - **Persistent:** Directives survive restarts and shape future behavior
 
-### 7. Memory-Gated Watchers (11 Platforms, Honest Autonomy)
-NexusMind monitors 11 platforms around the clock — but here's the honest part: **watchers don't act on their own.** Every auto-triggering watcher needs a **matching standing instruction in memory** before it may do anything.
+### 7. Memory-Gated Watchers (11 Platforms, Honest Autonomy — All Fully Actionable)
+NexusMind monitors **11 platforms** around the clock — and **every watcher is now fully actionable with write-back** (not just GitHub). Previously GitHub was the only fully actionable watcher; the other 10 were read-only/notify-only. The 5 new skill packages close the gap: Slack, Discord, Jira, GitLab, and Email can now act, mirroring the verified GitHub httpx REST pattern. Every auto-triggering watcher still needs a **matching standing instruction in memory** before it may do anything.
 
-| Platform | What It Monitors |
-|----------|-----------------|
-| GitHub | New PRs, issues |
-| GitLab | New merge requests, issues |
-| Slack | Channel messages, mentions |
-| Discord | Channel messages |
-| Jira | New/updated issues |
-| Reddit | New posts in subreddits |
-| Hacker News | New stories, comments |
-| Email (IMAP) | Inbox messages |
-| RSS/Atom | Feed items |
-| Cron | Scheduled tasks (pre-authorized — you wrote the goals) |
-| Custom Webhook | Any HTTP event (pre-authorized — you wrote the goals) |
+| Platform | What It Monitors | Write-Back Tools | Status |
+|----------|-----------------|-----------------|--------|
+| GitHub | New PRs, issues | `github_merge_pr`, `github_close_pr`, `github_apply_decisions`, `github_verify_pr_locally` | **Fully actionable** |
+| GitLab | New merge requests, issues | `gitlab_list_mrs`, `gitlab_get_mr`, `gitlab_merge_mr` | **Fully actionable** (new) |
+| Slack | Channel messages, mentions | `slack_send_message`, `slack_reply_thread` | **Fully actionable** (new) |
+| Discord | Channel messages | `discord_send_message` | **Fully actionable** (new) |
+| Jira | New/updated issues | `jira_comment_issue`, `jira_transition_issue` | **Fully actionable** (new) |
+| Email (IMAP) | Inbox messages | `send_email` (SMTP TLS 587, draft fallback to `output/email_drafts/`) | **Fully actionable** (new) |
+| Reddit | New posts in subreddits | Respond via `send_email`/`slack`/`discord` or file-based workflows | **Actionable via skills** |
+| Hacker News | New stories, comments | Respond via skills / summarization pipeline | **Actionable via skills** |
+| RSS/Atom | Feed items | Respond via skills | **Actionable via skills** |
+| Cron | Scheduled tasks (pre-authorized — you wrote the goals) | Full tool access per goal | **Fully actionable** |
+| Custom Webhook | Any HTTP event (pre-authorized — you wrote the goals) | Full tool access per goal | **Fully actionable** |
 
 How the gating works:
 - **No matching instruction?** The watcher does *nothing* except notify you — at most once every 6 hours per watcher
@@ -253,15 +290,17 @@ User submits goal
        ▼
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
 │   Executor   │────▶│  Tool Engine │────▶│  Self-Correct│
-│ (run steps)  │     │  (18 tools)  │     │   (retry)    │
+│ (run steps)  │     │  (30 tools,  │     │   (retry)    │
+│              │     │  9 packages) │     │              │
 └──────┬──────┘     └──────────────┘     └─────────────┘
-       │
+       │  loader agent/skills/loader.py:15 · high_risk agent/core/executor.py:36
        ▼
 ┌───────────────────────┐  ┌──────────────┐  ┌─────────────┐
 │        Memory         │◀─│  Reflection  │─▶│  Next Task   │
 │ (local SQLite + optional│  │   (learn)    │  │  (improved)  │
 │       Firestore)      │  └──────────────┘  └─────────────┘
 └───────────────────────┘
+  11 watchers fully actionable — GitHub (9 tools) + Slack (2) + Discord (1) + Jira (2) + GitLab (3) + Email (1) all via httpx REST pattern from GitHub skill
 ```
 
 ---

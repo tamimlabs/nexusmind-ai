@@ -33,7 +33,19 @@ logger = logging.getLogger(__name__)
 # ── Tool Registry ─────────────────────────────────────────────────
 
 _tool_registry: dict[str, Callable[..., Awaitable[ToolResult]]] = {}
-_high_risk_tools: set[str] = {"send_email", "execute_code", "run_command", "deploy", "transfer_funds"}
+_high_risk_tools: set[str] = {
+    "send_email",
+    "execute_code",
+    "run_command",
+    "deploy",
+    "transfer_funds",
+    "slack_send_message",
+    "slack_reply_thread",
+    "discord_send_message",
+    "jira_transition_issue",
+    "jira_comment_issue",
+    "gitlab_merge_mr",
+}
 
 # Pending approvals — keyed by step ID
 _pending_approvals: dict[str, asyncio.Event] = {}

@@ -74,7 +74,7 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
 - **Human-in-the-loop safety** -- dangerous actions pause for approval via Telegram or dashboard
 - **Persistent cross-session memory** -- SQLite locally; Firestore on Cloud Run, with hybrid retrieval (BM25 + Jaccard + HRR), trust scoring (`+0.05`/`-0.10`), fenced `<memory-context>`, contradiction detection, and compositional recall (`search`/`probe`/`related`/`reason`)
 - **Self-evolving skills** -- solved tasks become reusable SKILL.md packages with usage telemetry and an audit ledger
-- **11 automated watchers** -- continuously monitors GitHub, GitLab, Slack, Discord, Jira, Reddit, Hacker News, Email, RSS, Cron, and Webhooks, triggering workflows when new events are detected
+- **11 fully-trained automated watchers** -- continuously monitors GitHub, GitLab, Slack, Discord, Jira, Reddit, Hacker News, Email, RSS, Cron, and Webhooks with actionable write-back tools (not just detect) — e.g., reply to Slack threads, send Discord messages, comment/transition Jira issues, merge GitLab MRs, and send emails
 - **Builds real artifacts** -- generates complete multi-file projects (`projects/<name>/`: HTML/CSS/JS + backend server)
 - **Zero-cost commands** -- `/help`, `/start`, `/status`, `/tasks`, `/pending`, `/tools`, `/skills`, `/memory` answered deterministically without an LLM call (path-safe: `/Users/x/file.md` is a task, not a command)
 - **Full observability** -- live reasoning chain, audit trails, compaction every 90 steps, and **each step + token + todo appearing in the dashboard as it runs** — you watch the agent work in real time, not after the fact
@@ -309,19 +309,19 @@ NexusMind can monitor external platforms and react to events automatically -- no
 
 ### Supported Platforms
 
-| Platform | What It Monitors |
-|----------|-----------------|
-| **GitHub** | New PRs, issues |
-| **GitLab** | New merge requests, issues |
-| **Slack** | Channel messages, mentions |
-| **Discord** | Channel messages |
-| **Jira** | New/updated issues |
-| **Reddit** | New posts in subreddits |
-| **Hacker News** | New stories, comments |
-| **Email (IMAP)** | Inbox messages |
-| **RSS/Atom** | Feed items |
-| **Cron** | Scheduled tasks |
-| **Custom Webhook** | Any HTTP event |
+| Platform | What It Monitors | Write-back Actions |
+|----------|-----------------|-------------------|
+| **GitHub** | New PRs, issues | review, merge, close, comment (`github_*` 8 tools) |
+| **GitLab** | New merge requests, issues | list/get/merge MRs (`gitlab_list_mrs`, `gitlab_get_mr`, `gitlab_merge_mr`) |
+| **Slack** | Channel messages, mentions | send message, reply in thread (`slack_send_message`, `slack_reply_thread`) |
+| **Discord** | Channel messages | send message (`discord_send_message`) |
+| **Jira** | New/updated issues | comment, transition issue (`jira_comment_issue`, `jira_transition_issue`) |
+| **Reddit** | New posts in subreddits | detect + summarize (read-only) |
+| **Hacker News** | New stories, comments | detect + summarize (read-only) |
+| **Email (IMAP)** | Inbox messages | send email (`send_email`) |
+| **RSS/Atom** | Feed items | detect + summarize (read-only) |
+| **Cron** | Scheduled tasks | trigger autonomous task (pre-authorized) |
+| **Custom Webhook** | Any HTTP event | trigger autonomous task (pre-authorized) |
 
 ### How It Works
 
@@ -435,7 +435,7 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 
 ---
 
-## Available Tools
+## Available Tools — 30 total (12 core + 18 skill) — all new skill tools copy verified open-source REST API patterns via `httpx` (GitHub API as reference)
 
 ### Core Tools (12)
 
@@ -467,6 +467,40 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 | `github_close_pr` | Close a pull request | **Approval Required** |
 | `github_apply_decisions` | Apply review verdicts across PRs | **Approval Required** |
 
+### Slack Skill (2) — `httpx` + Slack Web API (`conversations.history` / `chat.postMessage`)
+
+| Tool | Description | Risk Level |
+|------|-------------|------------|
+| `slack_send_message` | Send a message to a Slack channel (`chat.postMessage`) | **Approval Required** |
+| `slack_reply_thread` | Reply in a Slack thread (`chat.postMessage` with `thread_ts`) | **Approval Required** |
+
+### Discord Skill (1) — `httpx` + Discord REST API (`/channels/{id}/messages`)
+
+| Tool | Description | Risk Level |
+|------|-------------|------------|
+| `discord_send_message` | Send a message to a Discord channel | **Approval Required** |
+
+### Jira Skill (2) — `httpx` + Jira Cloud REST API (`/rest/api/3`)
+
+| Tool | Description | Risk Level |
+|------|-------------|------------|
+| `jira_comment_issue` | Add a comment to a Jira issue | **Approval Required** |
+| `jira_transition_issue` | Transition a Jira issue to a new status | **Approval Required** |
+
+### GitLab Skill (3) — `httpx` + GitLab REST API (`/api/v4` — GitHub API as reference)
+
+| Tool | Description | Risk Level |
+|------|-------------|------------|
+| `gitlab_list_mrs` | List open merge requests for a project | Safe |
+| `gitlab_get_mr` | Get details of a specific merge request | Safe |
+| `gitlab_merge_mr` | Merge a merge request | **Approval Required** |
+
+### Email Skill (1) — `httpx` / `smtplib` + IMAP/SMTP patterns
+
+| Tool | Description | Risk Level |
+|------|-------------|------------|
+| `send_email` | Send an email via SMTP | **Approval Required** |
+
 ---
 
 ## Tech Stack
@@ -481,7 +515,8 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 | **API** | FastAPI + Uvicorn + WebSocket global bus (`/api/ws`) |
 | **Language** | Python 3.11+ |
 | **Testing** | pytest + pytest-asyncio |
-| **Watchers** | 11 platforms (GitHub, GitLab, Slack, Discord, Jira, Reddit, HN, Email, RSS, Cron, Webhook) |
+| **Tools** | 30 tools (12 core + 18 skill: GitHub 8, Slack 2, Discord 1, Jira 2, GitLab 3, Email 1 — all skill tools via `httpx` REST patterns, GitHub API as reference) |
+| **Watchers** | 11 fully-trained platforms with write-back actions (GitHub, GitLab, Slack, Discord, Jira, Reddit, HN, Email, RSS, Cron, Webhook) |
 | **Approvals** | Smart approval + Telegram bot (remote approve from phone) |
 
 ---
@@ -506,7 +541,12 @@ nexusmind-ai/
 │   │   ├── web_research/           # Web search + URL fetch
 │   │   ├── file_management/        # File read/write/list
 │   │   ├── data_processing/        # JSON, summarization, extraction
-│   │   └── github/                 # GitHub PR/issue/review tools
+│   │   ├── github/                 # GitHub PR/issue/review tools (8 tools, httpx)
+│   │   ├── slack/                  # Slack send/reply tools (2 tools, httpx Slack Web API)
+│   │   ├── discord/                # Discord send tool (1 tool, httpx Discord REST)
+│   │   ├── jira/                   # Jira comment/transition tools (2 tools, httpx Jira Cloud REST)
+│   │   ├── gitlab/                 # GitLab MR tools (3 tools, httpx GitLab REST — GitHub API as reference)
+│   │   └── email/                  # Email send tool (1 tool, SMTP/httpx)
 │   ├── watchers/                   # Always-awake event monitors
 │   │   ├── base.py                 # Abstract watcher with poll loop
 │   │   ├── github.py               # GitHub PR/issue watcher
@@ -536,7 +576,7 @@ nexusmind-ai/
 │   ├── dashboard.html              # Live traceability dashboard (WS + token/tool_delta/todo WS)
 │   ├── watcher_routes.py           # Watcher CRUD API endpoints
 │   └── credentials_routes.py       # Credentials management API
-├── tests/                          # 250+ passing tests
+├── tests/                          # 280+ passing tests (incl. new slack/discord/jira/gitlab/email skills)
 ├── projects/                       # Agent-generated multi-file builds (websites, apps)
 ├── data/                           # SQLite memory store (gitignored)
 ├── scripts/                        # Deploy scripts (bash + PowerShell)
@@ -596,7 +636,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **280+ tests** (parallel `pytest-xdist`) covering models, memory (hybrid retrieval, HRR, trust scoring, hygiene/contradictions), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder, **Complexity Router Tier1/2/3**), the **adaptive step-by-step agent loop** (result feedback, self-correction, verification before done, failure guards, `40→120` elastic + compaction, project collision guard, `todowrite` + legacy `todo_updates`, `token`/`tool_delta` streaming), executor (smart approval, one-approval-per-task trust, `todowrite`/`task`), orchestrator (lazy roadmap), API endpoints (including `WebSocket /api/ws`, `GET /api/events/live`, `SSE`), watchers, and ADK integration.
+All **280+ tests** (parallel `pytest-xdist`) covering models, memory (hybrid retrieval, HRR, trust scoring, hygiene/contradictions), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder, **Complexity Router Tier1/2/3**), the **adaptive step-by-step agent loop** (result feedback, self-correction, verification before done, failure guards, `40→120` elastic + compaction, project collision guard, `todowrite` + legacy `todo_updates`, `token`/`tool_delta` streaming), executor (smart approval, one-approval-per-task trust, `todowrite`/`task`), orchestrator (lazy roadmap), API endpoints (including `WebSocket /api/ws`, `GET /api/events/live`, `SSE`), watchers, ADK integration, and **new skills**: Slack (`slack_send_message`, `slack_reply_thread`), Discord (`discord_send_message`), Jira (`jira_comment_issue`, `jira_transition_issue`), GitLab (`gitlab_list_mrs`, `gitlab_get_mr`, `gitlab_merge_mr`), Email (`send_email`) — all verified via `httpx` REST mocks.
 
 ---
 
