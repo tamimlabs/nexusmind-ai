@@ -396,6 +396,7 @@ async def plan_task(
     lessons: list[str] | None = None,
     memory_context: str | None = None,
     skill_context: str | None = None,
+    on_event: Any | None = None,
 ) -> list[TaskStep]:
     """Decompose a task into ordered steps.
 
@@ -454,8 +455,45 @@ Return ONLY the JSON array."""
         f"{_tool_catalog_section()}"
     )
 
+    def _emit_token(delta: str) -> None:
+        if on_event is None or not delta:
+            return
+        # 4-arg sink (task_id, event_type, message, detail) preferred by orchestrator/live bus
+        try:
+            on_event(task.id, "token", delta, "")
+            return
+        except TypeError:
+            pass
+        except Exception:
+            logger.debug("planner token sink failed (4-arg)", exc_info=True)
+            return
+        try:
+            on_event("token", delta)
+        except Exception:
+            logger.debug("planner token sink failed (2-arg)", exc_info=True)
+
     async def _generate(feedback: str = "") -> str:
         suffix = f"\n\n{feedback}" if feedback else ""
+        # Streaming path: forward token deltas word-to-word when a live sink is present
+        if on_event is not None:
+            try:
+                from agent.core.gemini_client import generate_content_stream as _stream
+
+                buf = ""
+                async for _delta in _stream(
+                    model=settings.gemini_model,
+                    system=system_prompt,
+                    user=user_prompt + suffix,
+                    max_tokens=_PLANNER_MAX_TOKENS,
+                ):
+                    if _delta:
+                        buf += _delta
+                        _emit_token(_delta)
+                if buf:
+                    return buf
+                logger.debug("planner generate_content_stream yielded no text; falling back to buffered")
+            except Exception:
+                logger.debug("planner streaming failed, falling back to buffered generate_content", exc_info=True)
         return await generate_content(
             model=settings.gemini_model,
             system=system_prompt,

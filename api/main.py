@@ -448,11 +448,10 @@ async def _run_task_background(task_id: str, task: Task) -> None:
     use_adk = getattr(settings, "execution_engine", "orchestrator").lower() == "adk"
 
     try:
-        _emit(task_id, "thinking", "Analyzing your goal...")
+        _emit(task_id, "thinking", "Gemini connected — routing your goal...", task.goal[:160])
         _update_task_status(task_id, "planning", goal=task.goal)
 
-        _emit(task_id, "thinking", "Breaking down into steps using Gemini Flash...")
-        await asyncio.sleep(0.3)
+        _emit(task_id, "thinking", "Breaking down into steps using Gemini Flash… (streaming live)", task.goal[:160])
 
         if use_adk:
             # ADK Runner is the primary execution path on Cloud Run

@@ -623,6 +623,7 @@ class Orchestrator:
             # Prefetch relevant memory for this turn (Hermes pattern): a fenced
             # <memory-context> block with trust-ranked, hybrid-retrieved facts.
             # Trivial prompts are gated inside prefetch() and return "".
+            _safe_emit(emit, task.id, "thinking", "Recalling memory…", task.goal[:120])
             memory_context = self.memory.prefetch(task.goal)
             if memory_context:
                 logger.info("Recalled %d chars of memory context for planning", len(memory_context))
@@ -640,6 +641,7 @@ class Orchestrator:
             # Procedural skill index + best-matched procedure body (Hermes
             # description-as-router pattern). matched skills get use-credit
             # when the task completes successfully.
+            _safe_emit(emit, task.id, "thinking", "Matching skills…", task.goal[:120])
             skill_context, matched_skills = self.skills.plan_context(
                 task.goal, available_tools=set(list_tools())
             )
@@ -653,6 +655,9 @@ class Orchestrator:
 
             # Best-effort initial roadmap — LAZY: only for Tier3.
             # Tier1/2 already returned; this Gemini call is skipped entirely for them.
+            # Streaming: plan_task will forward token deltas via emit so the
+            # dashboard's word-to-word bubble starts within 2-3s.
+            _safe_emit(emit, task.id, "thinking", "Drafting roadmap with Gemini Flash… (streaming)", task.goal[:120])
             roadmap: list = []
             try:
                 roadmap = await plan_task(
@@ -661,6 +666,7 @@ class Orchestrator:
                     lessons or None,
                     memory_context or None,
                     skill_context or None,
+                    on_event=emit,
                 )
                 logger.info("Roadmap ready (%d suggested steps) for task %s", len(roadmap), task.id)
             except Exception:
