@@ -794,9 +794,13 @@ async def run_adaptive_loop(
             )
 
         _apply_todo_updates(task, decision)
+        # Emit todo_update for legacy delta so dashboard checklist moves in realtime even if model doesn't call todowrite
+        if decision.get("todo_updates"):
+            _emit("todo_update", f"Checklist {sum(1 for t in task.todos if t.status==TodoStatus.COMPLETED)}/{len(task.todos)}", _todo_state(task)[:1200])
         active_todo = _next_open_todo(task)
         if active_todo is not None:
             _set_todo_status(active_todo, TodoStatus.IN_PROGRESS)
+            _emit("todo_update", f"Working: {active_todo.title[:80]}", _todo_state(task)[:1200])
 
         step = TaskStep(
             task_id=task.id,
@@ -882,6 +886,12 @@ async def run_adaptive_loop(
 
         if result.success:
             consecutive_failures = 0
+            # Auto-complete the active todo on success and emit live so right-panel Checklist turns green immediately
+            if active_todo is not None and active_todo.status == TodoStatus.IN_PROGRESS:
+                _set_todo_status(active_todo, TodoStatus.COMPLETED)
+                _emit("todo_update", f"Done: {active_todo.title[:80]}", _todo_state(task)[:1200])
+                # Prevent double-complete in the generic block below
+                active_todo = None
             if step.tool_name == "todowrite":
                 # Opencode semantics: overwrite whole checklist
                 try:
