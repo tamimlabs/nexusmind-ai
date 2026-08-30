@@ -888,6 +888,12 @@ class Orchestrator:
             untrust_task(task.id)
             return task
 
+        except asyncio.CancelledError:
+            logger.info("Task [%s] cancelled", task.id)
+            task.status = TaskStatus.FAILED
+            task.error = "Cancelled by user"
+            untrust_task(task.id)
+            raise
         except Exception as exc:
             logger.exception("Task [%s] failed with exception", task.id)
             task.status = TaskStatus.FAILED

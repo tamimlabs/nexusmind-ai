@@ -784,10 +784,11 @@ async def run_adaptive_loop(
         if _round > 0 and _round % compaction_threshold == 0 and len(task.steps) >= compaction_threshold:
             try:
                 from agent.core.gemini_client import generate_content as _gc
+                import asyncio as _aio_comp
 
                 older = task.steps[: len(task.steps) - _TRANSCRIPT_MAX_ENTRIES]
                 summary_prompt = "Summarize these completed steps in 8 bullet lines, keep file paths and errors:\n" + "\n".join(f"{s.order} [{s.tool_name}] {s.description[:80]}: {(s.result or s.error or '')[:120]}" for s in older[-30:])
-                comp = await _gc(system="Summarize agent progress concisely.", user=summary_prompt, temperature=0.2, max_tokens=600)
+                comp = await _aio_comp.wait_for(_gc(system="Summarize agent progress concisely.", user=summary_prompt, temperature=0.2, max_tokens=600), timeout=30)
                 if comp and len(comp) > 40:
                     # Merge the summary into what the model reads next instead
                     # of only streaming a cosmetic "thinking" event.
@@ -829,7 +830,12 @@ async def run_adaptive_loop(
         for _attempt in range(1, _MAX_DECISION_PARSE_RETRIES + 1):
             try:
                 _emit("thinking", f"Gemini deciding… attempt {_attempt}/{_MAX_DECISION_PARSE_RETRIES}", f"model brain thinking (round {_round+1})")
-                decision = await _call_decide(decide_fn, state, on_event=on_event)
+                import asyncio as _aio_decide
+
+                try:
+                    decision = await _aio_decide.wait_for(_call_decide(decide_fn, state, on_event=on_event), timeout=90)
+                except _aio_decide.TimeoutError:
+                    return _abort("Gemini decision timed out after 90s — aborting round")
                 raw_preview = _trim(str(decision.get("_raw") or decision)[:800], 500)
                 _emit("thinking", "Decision received", raw_preview)
             except QuotaExhaustedError as exc:
@@ -934,6 +940,13 @@ async def run_adaptive_loop(
                 f"Step {step.order} blocked",
                 f"{blocked_root} already exists — read its files first or pick a new name.",
             )
+            # Count SKIPPED as failure to avoid infinite loop on pre-existing projects
+            consecutive_failures += 1
+            if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                return _abort(
+                    f"{_MAX_CONSECUTIVE_FAILURES} consecutive steps blocked/failed (last: {blocked_root}). "
+                    "Hint: pick a new project name (-2/v2) or read existing files first."
+                )
             continue
 
         _emit(

@@ -478,7 +478,20 @@ async def _run_task_background(task_id: str, task: Task) -> None:
                         task.context["max_steps_override"] = min(req_max, _MAX_STEPS_HARD)
                 except Exception:
                     pass
-            task = await orchestrator.handle_task(task, emit=_live_emit)
+            # Enforce overall task deadline (config.py:132) — prevents forever EXECUTING on LLM stall
+            try:
+                tout = int(getattr(settings, "agent_timeout_seconds", 300))
+                if tout and tout > 0:
+                    task = await asyncio.wait_for(orchestrator.handle_task(task, emit=_live_emit), timeout=tout)
+                else:
+                    task = await orchestrator.handle_task(task, emit=_live_emit)
+            except asyncio.TimeoutError:
+                _emit(task_id, "error", f"Task timed out after {tout}s — aborting")
+                _update_task_status(task_id, "failed", error=f"Task timed out after {tout}s")
+                task.status = TaskStatus.FAILED
+                task.error = f"Task timed out after {tout}s (agent_timeout_seconds)"
+            except asyncio.CancelledError:
+                raise
 
         # Final snapshot after the task settled (status, result, steps, todos).
         _update_task_status(
