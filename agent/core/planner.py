@@ -175,7 +175,28 @@ _QUESTION_PREFIXES = (
 
 
 def _is_github_goal(goal: str) -> bool:
-    """Return True if the goal clearly concerns repositories/PRs."""
+    """Return True if the goal clearly concerns repositories/PRs — not just news about GitHub."""
+    g = (goal or "").lower()
+    # Nothing is hardcoded to a task type — we only route to the deterministic
+    # GitHub pipeline when the *user's command* explicitly asks for a repo/PR
+    # operation. Plain "news about github" or "search github news" stays research.
+    if "github" in g and "news" in g:
+        has_repo_signal = bool(
+            re.search(r"\b\w+/\w+\b", goal)  # owner/name like tamimlabs/repo
+            or _PR_NUMBER_PATTERN.search(goal)  # #123
+            or re.search(r"\b(repo(sitorie)?s?|pull\s*request|prs?\b|branch|commit|merge|close|issue)\b", g)
+        )
+        if not has_repo_signal:
+            return False
+    # Also handle "trending/latest on github" without news word — similar
+    if "github" in g and any(w in g for w in ("trending", "latest headlines", "latest update")):
+        has_repo_signal = bool(
+            re.search(r"\b\w+/\w+\b", goal)
+            or _PR_NUMBER_PATTERN.search(goal)
+            or re.search(r"\b(repo|pull\s*request|prs?\b|branch|commit|merge|close)\b", g)
+        )
+        if not has_repo_signal:
+            return False
     return bool(_GITHUB_GOAL_PATTERN.search(goal))
 
 
