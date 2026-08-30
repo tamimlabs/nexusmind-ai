@@ -16,6 +16,11 @@ Write-Host "Deploying $ServiceName to Cloud Run..." -ForegroundColor Green
 Write-Host "  Project: $ProjectId"
 Write-Host "  Region:  $Region"
 
+Write-Host "Ensuring Pub/Sub + Firestore exist (idempotent)..." -ForegroundColor Gray
+gcloud pubsub topics describe nexusmind-tasks --project $ProjectId 2>$null; if ($LASTEXITCODE -ne 0) { gcloud pubsub topics create nexusmind-tasks --project $ProjectId 2>$null }
+gcloud pubsub topics describe nexusmind-events --project $ProjectId 2>$null; if ($LASTEXITCODE -ne 0) { gcloud pubsub topics create nexusmind-events --project $ProjectId 2>$null }
+gcloud firestore databases describe --project $ProjectId --region $Region 2>$null; if ($LASTEXITCODE -ne 0) { gcloud firestore databases create --project $ProjectId --location $Region --type=firestore --quiet 2>$null }
+
 gcloud run deploy $ServiceName `
     --source . `
     --platform managed `

@@ -1,0 +1,25 @@
+# Keep Cloud Build fast & small — judges' docker build must not bloat
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+data/
+projects/
+output/
+opencode-dev/
+opencode/
+.venv*/
+.env
+.env.*
+!.env.example
+docs/gallery
+docs/YOUTUBE_VIDEO_GUIDE_BANGLA.md
+tests/
+scripts/
+.idea
+.vscode
+*.log

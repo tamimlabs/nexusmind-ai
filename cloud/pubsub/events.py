@@ -55,7 +55,14 @@ def publish_task_event(
         The published message ID.
 
     """
-    publisher = _get_publisher()
+    if not settings.google_cloud_project:
+        logger.debug("Pub/Sub publish skipped — GOOGLE_CLOUD_PROJECT not set (local/SQlite mode)")
+        return ""
+    try:
+        publisher = _get_publisher()
+    except Exception:
+        logger.debug("Pub/Sub publisher unavailable — skipping publish")
+        return ""
     topic_path = publisher.topic_path(settings.google_cloud_project, settings.pubsub_topic_tasks)
 
     data = {
@@ -80,7 +87,14 @@ def publish_task_event(
 
 def publish_event(event_type: str, payload: dict[str, Any]) -> str:
     """Publish a generic event (webhook trigger, etc.)."""
-    publisher = _get_publisher()
+    if not settings.google_cloud_project:
+        logger.debug("Pub/Sub generic publish skipped — GOOGLE_CLOUD_PROJECT not set")
+        return ""
+    try:
+        publisher = _get_publisher()
+    except Exception:
+        logger.debug("Pub/Sub publisher unavailable — skipping generic publish")
+        return ""
     topic_path = publisher.topic_path(settings.google_cloud_project, settings.pubsub_topic_events)
 
     data = {
