@@ -12,12 +12,12 @@ Key hackathon features:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
 import re
 import sys
-import contextvars
 import tempfile
 import uuid
 from pathlib import Path
@@ -568,13 +568,17 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                     fallback_key = f"step_{idx - 1}_result"
                     if fallback_key in (context or {}):
                         v = v.replace(match.group(0), str(context[fallback_key]))
-            # If still unresolved, fail fast instead of sending literal braces to tool
-            if "{{" in v and "}}" in v:
-                # Only error on step_N_result templates; other braces may be legit
-                if re.search(r"\{\{step_\d+_result\}\}", v):
-                    step.status = StepStatus.FAILED
-                    step.error = f"Unresolved template in arg '{k}': {v[:200]} (missing context)"
-                    return ToolResult(success=False, output="", error=step.error)
+            # If still unresolved, fail fast instead of sending literal braces
+            # to the tool — but only for step_N_result templates; other braces
+            # may be legit.
+            if (
+                "{{" in v
+                and "}}" in v
+                and re.search(r"\{\{step_\d+_result\}\}", v)
+            ):
+                step.status = StepStatus.FAILED
+                step.error = f"Unresolved template in arg '{k}': {v[:200]} (missing context)"
+                return ToolResult(success=False, output="", error=step.error)
         resolved_args[k] = v
     # Schema-drift tolerance (Hermes): LLMs vary arg keys ("file_path",
     # "filename"...). Normalize aliases, then derive required args that are
@@ -757,7 +761,6 @@ async def task(description: str, prompt: str, subagent_type: str = "explore", **
         else:
             # general: short adaptive loop (max 8 steps) with its own task
             from agent.core.agent_loop import run_adaptive_loop
-            from agent.models import TaskStatus
 
             t = _Task(goal=prompt or description)
             ctx: dict[str, Any] = {"task_id": t.id, "task_goal": t.goal, "subagent": True}
@@ -779,12 +782,26 @@ _current_todo_task_id: contextvars.ContextVar[str | None] = contextvars.ContextV
 _todo_emit: Any | None = None  # set by orchestrator/loop to broadcast todo_update
 
 
-def set_todo_context(task_id: str | None, emit_fn: Any | None = None) -> None:
-    """Set current task for todowrite and optional emit sink."""
+def set_todo_context(task_id: str | None, emit_fn: Any | None = None) -> Callable[[], None]:
+    """Set current task for todowrite and optional emit sink.
+
+    Returns a no-arg closure that RESTORES the previous task id + emit sink,
+    so nested executions (sub-agents, multi-tool calls) always broadcast to the
+    right task and never leak a foreign ``_todo_emit`` into the outer loop.
+    """
     global _todo_emit
+    prev_id = _current_todo_task_id.get()
+    prev_emit = _todo_emit
     _current_todo_task_id.set(task_id)
     if emit_fn is not None:
         _todo_emit = emit_fn
+
+    def _restore() -> None:
+        global _todo_emit
+        _current_todo_task_id.set(prev_id)
+        _todo_emit = prev_emit
+
+    return _restore
 
 
 @register_tool("todowrite", high_risk=False)
@@ -795,7 +812,6 @@ async def todowrite(todos: list[dict[str, Any]] | None = None, **_: Any) -> Tool
     Supports both `title`/`content`, `status` in pending/in_progress/completed/cancelled/skipped,
     and `priority` low/medium/high.
     """
-    from agent.models import TaskTodo, TodoPriority, TodoStatus
 
     if todos is None:
         todos = []

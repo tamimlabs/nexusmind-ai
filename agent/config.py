@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     # "firestore" = Google Cloud Firestore (for Cloud Run deployments)
     database_backend: str = "sqlite"
 
+    # --- Execution Engine ---
+    # "orchestrator" = the adaptive loop (planner + agent_loop + executor), the
+    #   hackathon flagship: todos, live events, memory, self-improvement.
+    # "adk"          = Google ADK Runner wrapper (Vertex AI) — ONLY for cost-
+    #   conscious Cloud Run demos of the ADK integration; it bypasses the
+    #   orchestrator's todo/adaptive-loop machinery on purpose.
+    execution_engine: str = "orchestrator"
+
     # --- Gemini / Vertex AI ---
     gemini_model: str = "gemini-3.5-flash"
     # Stronger fallback model: when the primary model hits its max output
@@ -117,7 +125,9 @@ class Settings(BaseSettings):
     pubsub_topic_events: str = "nexusmind-events"
 
     # --- Agent ---
-    agent_max_steps: int = 20
+    # Matches the loop's _MAX_STEPS (40) so .env cannot silently throttle the
+    # agent to a quarter of its intended budget.
+    agent_max_steps: int = 40
     agent_max_retries: int = 3
     agent_timeout_seconds: int = 300
     agent_memory_max_items: int = 1000

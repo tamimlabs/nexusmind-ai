@@ -9,8 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from agent.core.agent_loop import _build_transcript, _validate_step_decision, run_adaptive_loop
-from agent.models import StepStatus, Task, TaskStep, ToolResult
+from agent.core.agent_loop import (
+    _apply_todo_updates,
+    _build_transcript,
+    _reconcile_todos,
+    _validate_step_decision,
+    run_adaptive_loop,
+)
+from agent.models import StepStatus, Task, TaskStep, TaskTodo, TodoStatus, ToolResult
 
 
 def _task(goal: str = "Build a portfolio website into projects/testsite/ step by step.") -> Task:
@@ -464,8 +470,10 @@ class TestNoFabrication:
 
 
 class TestTodoLifecycle:
-    """The agent keeps a live checklist: seeded after planning, managed by the
-    model (add/complete/skip), and mapped 1:1 onto the steps it actually takes."""
+    """The agent keeps a live checklist (opencode todowrite semantics): it is
+    seeded after planning, and ONLY the model mutates it — every add/complete/
+    skip/in_progress write comes from the model's own `todowrite` tool call or
+    `todo_updates` payload. The loop never fabricates checkbox changes."""
 
     def _roadmap(self, titles):
         steps = []
@@ -506,8 +514,9 @@ class TestTodoLifecycle:
 
     @pytest.mark.asyncio
     async def test_step_completes_its_checkbox(self):
-        """The todo a step is working toward flips pending -> in_progress ->
-        completed when the step succeeds; DONE closes any IN_PROGRESS."""
+        """The model drives the checklist: it marks an item in_progress before
+        working, confirms completion after the tool succeeded, and the loop
+        faithfully reflects those writes (pending -> in_progress -> completed)."""
         task = _task()
         executed: list[str] = []
 
@@ -521,14 +530,23 @@ class TestTodoLifecycle:
                     "description": "Scaffold folder",
                     "tool_name": "list_directory",
                     "tool_args": {},
+                    "todo_updates": [{"kind": "in_progress", "title": "Scaffold folder"}],
                 }
             if len(executed) == 1:
                 return {
                     "description": "Write index.html",
                     "tool_name": "write_file",
                     "tool_args": {},
+                    "todo_updates": [
+                        {"kind": "complete", "title": "Scaffold folder"},
+                        {"kind": "in_progress", "title": "Write index.html"},
+                    ],
                 }
-            return {"done": True, "result": "All good."}
+            return {
+                "done": True,
+                "result": "All good.",
+                "todo_updates": [{"kind": "complete", "title": "Write index.html"}],
+            }
 
         await run_adaptive_loop(
             task,
@@ -540,6 +558,32 @@ class TestTodoLifecycle:
         statuses = {t.title: t.status.value for t in task.todos}
         assert statuses["Scaffold folder"] == "completed"
         assert statuses["Write index.html"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_loop_never_fabricates_completions(self):
+        """Regression: opencode semantics — a model that runs steps without
+        managing `todo_updates` leaves every seeded checkbox untouched. The
+        loop must NEVER auto-complete the next open item on step success (the
+        old lowest-order fallback corrupted boxes)."""
+        task = _task()
+
+        async def decide(state):
+            if len(task.steps) == 0:
+                return {
+                    "description": "Scaffold folder",
+                    "tool_name": "list_directory",
+                    "tool_args": {},
+                }
+            return {"done": True, "result": "done"}
+
+        await run_adaptive_loop(
+            task,
+            {},
+            roadmap=self._roadmap(["Scaffold folder", "Write index.html"]),
+            decide_fn=decide,
+            execute_fn=_execute_ok,
+        )
+        assert all(t.status.value == "pending" for t in task.todos)
 
     @pytest.mark.asyncio
     async def test_model_can_add_complete_and_skip_todos(self):
@@ -556,7 +600,7 @@ class TestTodoLifecycle:
                     "tool_args": {},
                     "todo_updates": [
                         {"kind": "add", "title": "Write README"},
-                        {"kind": "complete", "title": "Create folder"},
+                        {"kind": "complete", "title": "Write index.html"},
                         {"kind": "skip", "title": "Scaffold folder"},
                     ],
                 }
@@ -578,7 +622,51 @@ class TestTodoLifecycle:
         assert titles["Write README"] == "pending"
 
     @pytest.mark.asyncio
-    async def test_failed_step_reverts_todo_and_abort_skips_open_items(self):
+    async def test_in_progress_kind_demotes_others_to_single_owner(self):
+        """todo_updates kind=in_progress marks ONE item active and demotes any
+        other in_progress item, keeping the "exactly one" rule even when the
+        model's payload would violate it."""
+        task = _task()
+        task.todos = [
+            TaskTodo(task_id=task.id, title="Setup", status=TodoStatus.IN_PROGRESS, order=0),
+            TaskTodo(task_id=task.id, title="Build", status=TodoStatus.PENDING, order=1),
+        ]
+        _apply_todo_updates(task, {"todo_updates": [{"kind": "in_progress", "title": "Build"}]})
+        statuses = {t.title: t.status for t in task.todos}
+        assert statuses["Build"] is TodoStatus.IN_PROGRESS
+        assert statuses["Setup"] is TodoStatus.PENDING  # demoted — single owner
+
+    @pytest.mark.asyncio
+    async def test_todowrite_reconcile_preserves_ids_and_single_in_progress(self):
+        """A todowrite whole-list call never churns todo ids: existing items
+        are matched by title and MUTATED in place, and only ONE item can ever
+        be in_progress after the reconcile (opencode "exactly one" contract)."""
+        task = _task()
+        task.todos = [
+            TaskTodo(task_id=task.id, title="Setup", status=TodoStatus.COMPLETED, order=0),
+            TaskTodo(task_id=task.id, title="Build", status=TodoStatus.PENDING, order=1),
+            TaskTodo(task_id=task.id, title="Verify", status=TodoStatus.PENDING, order=2),
+        ]
+        ids_before = {t.title: t.id for t in task.todos}
+        _reconcile_todos(
+            task,
+            [
+                {"title": "Setup", "status": "completed"},
+                {"title": "Build", "status": "in_progress"},
+                {"title": "Verify", "status": "in_progress"},  # must be demoted
+                {"title": "Ship", "status": "pending"},
+            ],
+        )
+        assert [t.title for t in task.todos] == ["Setup", "Build", "Verify", "Ship"]
+        for t in task.todos:
+            if t.title in ids_before:
+                assert t.id == ids_before[t.title]  # no UUID churn
+        in_progress = [t for t in task.todos if t.status is TodoStatus.IN_PROGRESS]
+        assert len(in_progress) == 1 and in_progress[0].title == "Build"
+        assert {t.title: t.status for t in task.todos}["Setup"] is TodoStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_failed_steps_leave_checklist_honest_and_abort_skips_open_items(self):
         """Failed steps do not claim their checkbox; an early stop marks any
         in_progress item as skipped so the checklist stays honest."""
         task = _task()
@@ -589,7 +677,12 @@ class TestTodoLifecycle:
         async def decide(state):
             if len(task.steps) >= 3:
                 return {"done": True, "result": "Gave up."}
-            return {"description": "Run dangerous op", "tool_name": "run_command", "tool_args": {}}
+            return {
+                "description": "Run dangerous op",
+                "tool_name": "run_command",
+                "tool_args": {},
+                "todo_updates": [{"kind": "in_progress", "title": "Scaffold folder"}],
+            }
 
         outcome = await run_adaptive_loop(
             task,

@@ -13,7 +13,7 @@ import pathlib
 import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -209,11 +209,9 @@ def _emit(task_id: str, event_type: str, message: str, detail: str = "", *, sour
     if len(_global_events) > _GLOBAL_MAX:
         del _global_events[: len(_global_events) - _GLOBAL_MAX]
     # fan-out to WebSocket clients (best-effort)
-    for q in list(_ws_clients):
-        try:
+    with contextlib.suppress(Exception):
+        for q in list(_ws_clients):
             q.put_nowait(entry)
-        except Exception:
-            pass
 
 
 def _update_task_status(task_id: str, status: str, **extra) -> None:
@@ -427,7 +425,15 @@ async def _run_task_background(task_id: str, task: Task) -> None:
         }
 
     def _live_emit(event_type: str, message: str, detail: str = "") -> None:
-        _emit(task_id, event_type, message, detail)
+        extra: dict[str, Any] | None = None
+        if event_type == "todo_update":
+            # The dashboard's live Checklist pane must NOT poll — ship the
+            # current (already-mutated) todo list on every todo_update event.
+            try:
+                extra = {"todos": _snapshot().get("todos", [])}
+            except Exception:
+                logger.debug("todo live snapshot failed", exc_info=True)
+        _emit(task_id, event_type, message, detail, extra=extra)
         try:
             _update_task_status(task_id, task.status.value, goal=task.goal, **_snapshot())
         except Exception:
@@ -435,7 +441,11 @@ async def _run_task_background(task_id: str, task: Task) -> None:
 
     from agent.config import settings
 
-    use_adk = settings.database_backend.lower() == "firestore"
+    # Explicit engine switch: the orchestrator's adaptive loop is the AUTONOMOUS
+    # hackathon flagship and must never be silently swapped out because the
+    # storage backend (Firestore on Cloud Run) happens to be cloud. ADK Runner
+    # is now lazy through EXECUTION_ENGINE=adk ONLY.
+    use_adk = getattr(settings, "execution_engine", "orchestrator").lower() == "adk"
 
     try:
         _emit(task_id, "thinking", "Analyzing your goal...")
@@ -459,7 +469,6 @@ async def _run_task_background(task_id: str, task: Task) -> None:
             from agent.orchestrator import orchestrator
 
             # Opencode-like: pass per-task max_steps if caller overrode it
-            orig_max = None
             if req_max := getattr(task, "context", {}).get("max_steps"):
                 try:
                     req_max = int(req_max)
@@ -622,8 +631,9 @@ async def get_task_live(task_id: str):
 @app.get("/api/tasks/live/{task_id}/stream")
 async def get_task_live_stream(task_id: str):
     """SSE stream for live events — opencode-style push (fallback to polling if EventSource unavailable)."""
-    from fastapi.responses import StreamingResponse
     import json as _json
+
+    from fastapi.responses import StreamingResponse
 
     async def _event_gen():
         last = 0

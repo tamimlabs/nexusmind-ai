@@ -268,12 +268,15 @@ class TestAPITasksUseADK:
     """Verify the API routes through ADK when configured."""
 
     @pytest.mark.asyncio
-    async def test_background_task_uses_adk_when_firestore(self):
-        """_run_task_background uses ADK Runner when database_backend=firestore."""
+    async def test_background_task_uses_adk_when_engine_adk(self):
+        """_run_task_background uses ADK Runner when EXECUTION_ENGINE=adk,
+        regardless of the storage backend (Firestore alone must NOT silently
+        swap the orchestrator's adaptive loop for ADK)."""
         from api.main import _run_task_background
 
         with patch("agent.config.settings") as mock_settings:
             mock_settings.database_backend = "firestore"
+            mock_settings.execution_engine = "adk"
 
             with patch("api.main.run_task_via_adk", create=True) as mock_adk:
                 mock_adk.return_value = "ADK result"
@@ -294,12 +297,42 @@ class TestAPITasksUseADK:
                         mock_adk.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_firestore_backend_does_not_force_adk(self):
+        """Regression: a Firestore storage backend must keep routing through the
+        orchestrator's adaptive loop unless the engine is explicitly 'adk'."""
+        from api.main import _run_task_background
+
+        with patch("agent.config.settings") as mock_settings:
+            mock_settings.database_backend = "firestore"
+            mock_settings.execution_engine = "orchestrator"
+
+            with patch("agent.orchestrator.orchestrator") as mock_orch:
+                mock_task = MagicMock()
+                mock_task.steps = []
+                mock_task.status.value = "completed"
+                mock_task.result = "done"
+                mock_task.error = None
+                mock_orch.handle_task = AsyncMock(return_value=mock_task)
+
+                task = MagicMock()
+                task.goal = "test goal"
+
+                with patch("api.main._emit"), \
+                     patch("api.main._update_task_status"), \
+                     patch("api.main.get_trace") as mock_trace:
+                    mock_trace.return_value = None
+
+                    await _run_task_background("task-005", task)
+                    mock_orch.handle_task.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_background_task_uses_orchestrator_when_sqlite(self):
         """_run_task_background uses orchestrator when database_backend=sqlite."""
         from api.main import _run_task_background
 
         with patch("agent.config.settings") as mock_settings:
             mock_settings.database_backend = "sqlite"
+            mock_settings.execution_engine = "orchestrator"
 
             with patch("agent.orchestrator.orchestrator") as mock_orch:
                 mock_task = MagicMock()

@@ -33,10 +33,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from agent.core.executor import execute_step
+from agent.core.executor import execute_step, set_todo_context
 from agent.core.gemini_client import QuotaExhaustedError
 from agent.core.planner import canonical_tool_names, repair_tool_name
-from agent.models import StepStatus, Task, TaskStep, TaskTodo, TodoStatus
+from agent.models import StepStatus, Task, TaskStep, TaskTodo, TodoPriority, TodoStatus
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +100,13 @@ RULES
 8. The loop executes exactly ONE action per reply and returns its result to you. Do not try to do several actions in one reply.
 9. Use {{step_N_result}} style references NEVER — put concrete values directly into tool_args (the actual prior RESULT text is already in your context).
 10. Purely informational questions are completed as soon as the answer is backed by retrieved results — a web_search or summarize step then DONE.
-11. TODO checklist — use todowrite (shown to user live, like opencode). Rules from opencode todowrite.txt:
+11. TODO checklist — YOU own it, exactly like opencode todowrite (shown to the user live). Rules:
    - When to use: task needs 3+ distinct steps, non-trivial work, or user gave multiple tasks — also when new instructions arrive.
-   - You start a task: call todowrite BEFORE working — mark that item `in_progress` (exactly ONE at a time).
-   - You finish a task: call todowrite immediately — mark it `completed` only after work is actually done including verification — add any follow-ups discovered.
+   - You start a task: set exactly ONE item `in_progress` BEFORE working — either include `"todo_updates": [{"kind": "in_progress", "title": "<item>"}]` in your step decision, or call the `todowrite` tool ONCE with the FULL desired list.
+   - You finish a task: mark it `completed` only AFTER a tool result confirms the work is actually done INCLUDING verification — via a `todo_updates` `complete` entry or a fresh `todowrite` call — and add any follow-ups discovered (`add`).
    - Keep exactly one `in_progress` while work remains. If blocked, keep `in_progress` and add a follow-up todo describing blocker.
    - States: `pending` (not started), `in_progress` (actively working — one only), `completed` (done + verified), `cancelled` (no longer needed).
-   - Don't batch completions — update in real time. Preserve user goal text verbatim. Break large work into smaller steps. The list is YOUR plan, seeded from roadmap but you own it.
+   - Don't batch completions — update in real time. Preserve user goal text verbatim. Break large work into smaller steps. The list is YOUR plan — the loop NEVER changes todo status on its own; every checkbox change comes from YOU.
 12. Keep each step small and single-purpose; for big goals prefer many small steps over one giant step (folder creation, then one file per step, then verification)."""
 
 _DECISION_USER_TEMPLATE = """GOAL
@@ -124,7 +124,7 @@ SKILL GUIDANCE
 SUGGESTED ROADMAP (a rough initial plan — the GOAL and the live results below override it; deviate freely when reality demands)
 {roadmap}
 
-CURRENT TODO LIST (your live checklist — keep it honest and up to date; close items with todo_updates as you complete them)
+CURRENT TODO LIST (your live checklist — keep it honest and up to date; add/complete/skip/in_progress items with todo_updates in each relevant decision)
 {todos}
 
 WORKSPACE NOW
@@ -261,6 +261,7 @@ def _todo_state(task: Task) -> str:
             TodoStatus.IN_PROGRESS: "[~]",
             TodoStatus.COMPLETED: "[x]",
             TodoStatus.SKIPPED: "[-]",
+            TodoStatus.CANCELLED: "[/]",
         }.get(t.status, "[ ]")
         lines.append(f"{mark} ({t.status.value}) {_trim(t.title, 100)}")
     return "\n".join(lines)
@@ -301,7 +302,12 @@ def _set_todo_status(todo: TaskTodo, status: TodoStatus) -> None:
 
 
 def _apply_todo_updates(task: Task, decision: dict[str, Any]) -> None:
-    """Apply the model's optional todo_updates to the live checklist."""
+    """Apply the model's optional todo_updates to the live checklist.
+
+    Supported kinds: add (append a new pending item), in_progress (mark the
+    matched OPEN item as the single active focus — demoting any other
+    in_progress item), complete, skip.
+    """
     raw = decision.get("todo_updates")
     if not isinstance(raw, list):
         return
@@ -325,20 +331,85 @@ def _apply_todo_updates(task: Task, decision: dict[str, Any]) -> None:
                 )
             )
             continue
-        if kind in ("complete", "skip"):
+        if kind in ("complete", "skip", "in_progress"):
             todo = _find_todo(task, title)
-            if todo is not None:
+            if todo is None:
+                continue
+            if kind == "in_progress":
+                for other in task.todos:
+                    if other is not todo and other.status is TodoStatus.IN_PROGRESS:
+                        _set_todo_status(other, TodoStatus.PENDING)
+                _set_todo_status(todo, TodoStatus.IN_PROGRESS)
+            else:
                 _set_todo_status(
                     todo, TodoStatus.COMPLETED if kind == "complete" else TodoStatus.SKIPPED
                 )
 
 
-def _next_open_todo(task: Task) -> TaskTodo | None:
-    """Lowest-order open todo (pending or already in_progress) for the next step."""
+def _enforce_single_in_progress(task: Task) -> None:
+    """Keep the checklist honest: at most one in_progress item at a time."""
+    declared = False
     for t in sorted(task.todos, key=lambda x: x.order):
-        if t.status in (TodoStatus.PENDING, TodoStatus.IN_PROGRESS):
-            return t
-    return None
+        if t.status is TodoStatus.IN_PROGRESS:
+            if declared:
+                _set_todo_status(t, TodoStatus.PENDING)
+            else:
+                declared = True
+
+
+def _norm_title(title: str) -> str:
+    """Normalized title for todo identity matching (keeps the SAME todo object)."""
+    return re.sub(r"[^a-z0-9]+", "", (title or "").lower().strip())
+
+
+def _reconcile_todos(task: Task, specs: list[dict[str, Any]]) -> None:
+    """Replace the checklist wholesale (opencode todowrite semantics).
+
+    Items already tracked are matched by normalized title and MUTATED in place
+    (same ``id``/``updated_at`` continuity for the dashboard + Firestore),
+    new titles are appended, dropped titles are removed. Enforces at most
+    one in_progress item so the model's "exactly one" rule cannot be broken
+    by a bad payload.
+    """
+    existing = {_norm_title(t.title): t for t in task.todos}
+    used: set[str] = set()
+    rebuilt: list[TaskTodo] = []
+    for i, spec in enumerate(specs):
+        if len(rebuilt) >= 30:
+            break
+        title = str(spec.get("title") or spec.get("content") or "").strip()[:140]
+        if not title:
+            continue
+        status_raw = str(spec.get("status") or "pending").strip().lower()
+        try:
+            status = TodoStatus(status_raw)
+        except ValueError:
+            status = TodoStatus.CANCELLED if status_raw == "cancelled" else TodoStatus.PENDING
+        priority_raw = str(spec.get("priority") or "medium").strip().lower()
+        try:
+            priority = TodoPriority(priority_raw)
+        except ValueError:
+            priority = TodoPriority.MEDIUM
+        key = _norm_title(title)
+        prev = existing.get(key)
+        if prev is not None and key not in used:
+            used.add(key)
+            _set_todo_status(prev, status)
+            prev.priority = priority
+            prev.order = i
+            rebuilt.append(prev)
+        else:
+            rebuilt.append(
+                TaskTodo(
+                    task_id=task.id,
+                    title=title,
+                    status=status,
+                    priority=priority,
+                    order=i,
+                )
+            )
+    task.todos = rebuilt
+    _enforce_single_in_progress(task)
 
 
 # ── Project collision guard ───────────────────────────────────────
@@ -667,6 +738,8 @@ async def run_adaptive_loop(
                 _set_todo_status(t, TodoStatus.SKIPPED)
         task.updated_at = datetime.now(UTC)
         _emit("error", "Stopped early", reason)
+        if task.todos:
+            _emit("todo_update", "Checklist frozen on early stop", _todo_state(task)[:1200])
         return AdaptiveOutcome(
             done=False,
             summary="",
@@ -676,14 +749,19 @@ async def run_adaptive_loop(
         )
 
     _seed_todos(task, roadmap)
+    _enforce_single_in_progress(task)
     preexisting = _preexisting_project_roots()
     read_roots: set[str] = set()
     # Opencode-like elastic budget: start at max_steps, extend if making progress
     effective_max = max_steps
     loop_start = datetime.now(UTC)
 
+    # Compaction — the Gemini summary of very old steps is MERGED into the
+    # transcript the model reads (prepended above the raw window), so the call
+    # actually compresses context instead of just emitting a useless event.
+    compaction_note = ""
     # D2: Compaction — summarize very long transcripts via Gemini to avoid context blow-up at hard cap
-    _COMPACTION_THRESHOLD = 90
+    compaction_threshold = 90
 
     for _round in range(_MAX_STEPS_HARD):
         # Reached the current elastic budget — decide whether to extend or stop
@@ -703,7 +781,7 @@ async def run_adaptive_loop(
                     "partial work and any errors are reported below."
                 )
         # Periodic compaction for very long runs (opencode session/compaction parity)
-        if _round > 0 and _round % _COMPACTION_THRESHOLD == 0 and len(task.steps) >= _COMPACTION_THRESHOLD:
+        if _round > 0 and _round % compaction_threshold == 0 and len(task.steps) >= compaction_threshold:
             try:
                 from agent.core.gemini_client import generate_content as _gc
 
@@ -711,13 +789,18 @@ async def run_adaptive_loop(
                 summary_prompt = "Summarize these completed steps in 8 bullet lines, keep file paths and errors:\n" + "\n".join(f"{s.order} [{s.tool_name}] {s.description[:80]}: {(s.result or s.error or '')[:120]}" for s in older[-30:])
                 comp = await _gc(system="Summarize agent progress concisely.", user=summary_prompt, temperature=0.2, max_tokens=600)
                 if comp and len(comp) > 40:
-                    # Keep first 10 raw steps + summary instead of 25 window
+                    # Merge the summary into what the model reads next instead
+                    # of only streaming a cosmetic "thinking" event.
+                    compaction_note = (
+                        "EARLIER WORK COMPACTED (read this instead of the collapsed recap below — pre-compaction steps were summarized by the model):\n"
+                        + _trim(comp, 900)
+                    )
                     _emit("thinking", "Compacted transcript", comp[:400])
             except Exception:
                 logger.debug("compaction failed", exc_info=True)
         task.updated_at = datetime.now(UTC)
         snapshot_text = _snapshot_workspace()
-        transcript_text = _build_transcript(task)
+        transcript_text = (compaction_note + "\n\n" if compaction_note else "") + _build_transcript(task)
         todo_text = _todo_state(task)
         roadmap_text = (
             "\n".join(f"- [{s.tool_name}] {s.description}" for s in (roadmap or [])) or "_None._"
@@ -785,11 +868,18 @@ async def run_adaptive_loop(
         if decision is None or decision.get("done"):
             summary = str((decision or {}).get("result") or "").strip()
             _apply_todo_updates(task, decision or {})
-            for t in task.todos:
-                if t.status is TodoStatus.IN_PROGRESS:
-                    _set_todo_status(t, TodoStatus.COMPLETED)
+            had_done_updates = bool(
+                isinstance((decision or {}).get("todo_updates"), list)
+                and (decision or {}).get("todo_updates")
+            )
             task.updated_at = datetime.now(UTC)
             logger.info("Adaptive loop DONE for task %s after %d step(s)", task.id, len(task.steps))
+            if had_done_updates and task.todos:
+                _emit(
+                    "todo_update",
+                    f"Checklist {sum(1 for t in task.todos if t.status==TodoStatus.COMPLETED)}/{len(task.todos)}",
+                    _todo_state(task)[:1200],
+                )
             _emit(
                 "done",
                 "Task complete",
@@ -800,14 +890,12 @@ async def run_adaptive_loop(
             )
 
         _apply_todo_updates(task, decision)
-        if decision.get("todo_updates"):
+        had_todo_updates = bool(
+            isinstance(decision.get("todo_updates"), list)
+            and decision.get("todo_updates")
+        )
+        if had_todo_updates:
             _emit("todo_update", f"Checklist {sum(1 for t in task.todos if t.status==TodoStatus.COMPLETED)}/{len(task.todos)}", _todo_state(task)[:1200])
-        # Pure model-driven like opencode: todowrite owns status. No auto IN_PROGRESS here — model must call todowrite with one in_progress before work.
-        active_todo = None
-        # Keep legacy fallback: if no todowrite and we have an open todo, track it for auto-complete on success (but don't mutate status pre-step)
-        _fallback_open = _next_open_todo(task)
-        if _fallback_open is not None:
-            active_todo = _fallback_open
 
         step = TaskStep(
             task_id=task.id,
@@ -872,7 +960,17 @@ async def run_adaptive_loop(
         if isinstance(context, dict):
             context["on_output"] = _on_tool_chunk
         try:
-            result = await execute_fn(step, call_context)
+            _restore_todo_ctx = set_todo_context(
+                task.id,
+                lambda _tid, etype, msg, det="": _emit(etype, msg, det),
+            )
+            try:
+                result = await execute_fn(step, call_context)
+            finally:
+                try:
+                    _restore_todo_ctx()
+                except Exception:
+                    logger.debug("todo context restore failed", exc_info=True)
         finally:
             if isinstance(context, dict):
                 if _saved_on_output is None:
@@ -893,52 +991,32 @@ async def run_adaptive_loop(
 
         if result.success:
             consecutive_failures = 0
-            # Auto-complete the active todo on success and emit live so right-panel Checklist turns green immediately
-            if active_todo is not None and active_todo.status == TodoStatus.IN_PROGRESS:
-                _set_todo_status(active_todo, TodoStatus.COMPLETED)
-                _emit("todo_update", f"Done: {active_todo.title[:80]}", _todo_state(task)[:1200])
-                # Prevent double-complete in the generic block below
-                active_todo = None
             if step.tool_name == "todowrite":
-                # Opencode semantics: overwrite whole checklist
-                try:
-                    from agent.models import TodoPriority
-
-                    raw_todos = (result.metadata or {}).get("todos") or []
-                    if isinstance(raw_todos, list) and raw_todos:
-                        new_todos: list[TaskTodo] = []
-                        for i, td in enumerate(raw_todos[:30]):
-                            title = str(td.get("title") or td.get("content") or "").strip()[:140]
-                            if not title:
-                                continue
-                            s_raw = str(td.get("status") or "pending").lower()
-                            p_raw = str(td.get("priority") or "medium").lower()
-                            try:
-                                status = TodoStatus(s_raw)
-                            except ValueError:
-                                status = TodoStatus.PENDING if s_raw not in ("cancelled",) else TodoStatus.CANCELLED
-                            try:
-                                prio = TodoPriority(p_raw)
-                            except ValueError:
-                                prio = TodoPriority.MEDIUM
-                            new_todos.append(TaskTodo(task_id=task.id, title=title, status=status, priority=prio, order=i))
-                        if new_todos:
-                            task.todos.clear()
-                            task.todos.extend(new_todos)
-                            _emit("todo_update", f"Checklist {sum(1 for t in new_todos if t.status==TodoStatus.COMPLETED)}/{len(new_todos)}", "\n".join(f"[{'x' if t.status==TodoStatus.COMPLETED else ' '}] {t.title}" for t in new_todos[:8]))
-                except Exception:
-                    logger.debug("todowrite apply failed", exc_info=True)
+                # Opencode semantics: overwrite the whole checklist, preserving
+                # existing todo identities by normalized title (no UUID churn).
+                raw_todos = (result.metadata or {}).get("todos") or []
+                if isinstance(raw_todos, list) and raw_todos:
+                    _reconcile_todos(task, raw_todos)
+                    completed = (
+                        sum(1 for t in task.todos if t.status == TodoStatus.COMPLETED)
+                        if task.todos
+                        else 0
+                    )
+                    _emit(
+                        "todo_update",
+                        f"Checklist {completed}/{len(task.todos)}",
+                        "\n".join(
+                            f"[{'x' if t.status==TodoStatus.COMPLETED else ' '}] {t.title}"
+                            for t in task.todos[:8]
+                        ),
+                    )
                 _emit("done", f"Step {step.order} checklist updated", _trim(result.output or "", 300))
                 continue
             if step.tool_name in ("read_file", "list_directory"):
                 read_roots.update(_step_target_roots(step))
-            if active_todo is not None:
-                _set_todo_status(active_todo, TodoStatus.COMPLETED)
             _emit("done", f"Step {step.order} complete", _trim(result.output or result.error, 300))
             continue
         consecutive_failures += 1
-        if active_todo is not None and active_todo.status is TodoStatus.IN_PROGRESS:
-            _set_todo_status(active_todo, TodoStatus.PENDING)
         _emit("error", f"Step {step.order} failed", _trim(result.error or "unknown error", 300))
         if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
             latest = _trim(result.error or "unknown error", 200)
