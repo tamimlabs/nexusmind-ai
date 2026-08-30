@@ -40,9 +40,14 @@ from agent.models import StepStatus, Task, TaskStep, TaskTodo, TodoStatus
 
 logger = logging.getLogger(__name__)
 
-# A single task may legitimately need many steps for large projects. The loop
-# is allowed to keep working for as long as it takes up to this many actions.
+# Elastic budget — like opencode IDE: short tasks finish in 3-5 steps without
+# waiting, long builds keep going. The loop starts at _MAX_STEPS and auto-
+# extends by _EXTEND_CHUNK while it is making progress (pending todos or recent
+# successes). Hard ceiling _MAX_STEPS_HARD prevents a truly stuck model from
+# running forever.
 _MAX_STEPS = 40
+_MAX_STEPS_HARD = 120
+_EXTEND_CHUNK = 20
 
 # If a path fails repeatedly, stop feeding a broken route — the model already
 # got the errors and could not or did not fix them.
@@ -577,9 +582,31 @@ async def run_adaptive_loop(
     _seed_todos(task, roadmap)
     preexisting = _preexisting_project_roots()
     read_roots: set[str] = set()
+    # Opencode-like elastic budget: start at max_steps, extend if making progress
+    effective_max = max_steps
+    loop_start = datetime.now(UTC)
 
-    for _round in range(max_steps):
+    for _round in range(_MAX_STEPS_HARD):
+        # Reached the current elastic budget — decide whether to extend or stop
+        if _round >= effective_max:
+            pending = sum(1 for t in task.todos if t.status.value in ("pending", "in_progress"))
+            recent_ok = sum(1 for s in task.steps[-3:] if s.status == StepStatus.SUCCESS)
+            if pending > 0 and recent_ok > 0 and effective_max < _MAX_STEPS_HARD:
+                effective_max = min(effective_max + _EXTEND_CHUNK, _MAX_STEPS_HARD)
+                _emit(
+                    "thinking",
+                    f"Extending budget to {effective_max} steps — {pending} todo(s) left, recent progress {recent_ok}/3",
+                    f"elapsed {(datetime.now(UTC)-loop_start).total_seconds():.0f}s",
+                )
+            else:
+                return _abort(
+                    f"step budget reached ({effective_max} steps). The task may be incomplete; "
+                    "partial work and any errors are reported below."
+                )
         task.updated_at = datetime.now(UTC)
+        snapshot_text = _snapshot_workspace()
+        transcript_text = _build_transcript(task)
+        todo_text = _todo_state(task)
         roadmap_text = (
             "\n".join(f"- [{s.tool_name}] {s.description}" for s in (roadmap or [])) or "_None._"
         )
@@ -589,16 +616,26 @@ async def run_adaptive_loop(
             "lessons": lessons or [],
             "skill_context": skill_context or "",
             "roadmap": roadmap_text,
-            "todos": _todo_state(task),
-            "snapshot": _snapshot_workspace(),
-            "transcript": _build_transcript(task),
+            "todos": todo_text,
+            "snapshot": snapshot_text,
+            "transcript": transcript_text,
             "feedback": "",
         }
+        # Opencode-like visibility: stream what the brain is about to see
+        _emit(
+            "thinking",
+            f"Planning step {_round+1}/{effective_max}…",
+            f"todos: {_trim(todo_text.replace(chr(10), ' | '), 180)}\ntranscript tail: {_trim(transcript_text.split(chr(10))[-1] if transcript_text else '', 180)}",
+        )
 
+        decide_started = datetime.now(UTC)
         decision: dict[str, Any] | None = None
         for _attempt in range(1, _MAX_DECISION_PARSE_RETRIES + 1):
             try:
+                _emit("thinking", f"Gemini deciding… attempt {_attempt}/{_MAX_DECISION_PARSE_RETRIES}", f"model brain thinking (round {_round+1})")
                 decision = await _call_decide(decide_fn, state)
+                raw_preview = _trim(str(decision.get("_raw") or decision)[:800], 500)
+                _emit("thinking", "Decision received", raw_preview)
             except QuotaExhaustedError as exc:
                 # Every key AND the fallback model are rate-limited/quota-gone
                 # (free-tier daily limit is the usual suspect). Halt cleanly
@@ -615,12 +652,14 @@ async def run_adaptive_loop(
                 break
             if decision.get("_error"):
                 state["feedback"] = str(decision["_error"])
+                _emit("error", "Decision parse issue", state["feedback"][:300])
                 continue
             repaired, error = _validate_step_decision(decision)
             if repaired is not None:
                 decision = repaired
                 break
             state["feedback"] = error
+            _emit("error", "Invalid step shape", error[:300])
         else:
             # Parse retries exhausted without a usable action.
             last_note = _trim(state.get("feedback") or "", 160)
@@ -628,6 +667,7 @@ async def run_adaptive_loop(
                 "the model produced no valid action after "
                 f"{_MAX_DECISION_PARSE_RETRIES} attempts. Last feedback: {last_note}"
             )
+        decide_ms = int((datetime.now(UTC) - decide_started).total_seconds() * 1000)
 
         if decision is None or decision.get("done"):
             summary = str((decision or {}).get("result") or "").strip()
@@ -693,12 +733,20 @@ async def run_adaptive_loop(
         _emit(
             "step_running",
             f"Step {step.order}: {_trim(step.description, 90)}",
-            f"[{step.tool_name}]",
+            f"[{step.tool_name}] decide {decide_ms}ms | budget {effective_max} | elapsed {int((datetime.now(UTC)-loop_start).total_seconds())}s",
         )
+        tool_started = datetime.now(UTC)
         result = await execute_fn(step, context or {})
+        tool_ms = int((datetime.now(UTC) - tool_started).total_seconds() * 1000)
         context[f"step_{step.order}_result"] = result.output
         details.append(
-            f"step {step.order} [{step.tool_name}]: {'ok' if result.success else 'FAILED'}"
+            f"step {step.order} [{step.tool_name}]: {'ok' if result.success else 'FAILED'} {tool_ms}ms"
+        )
+        # Opencode-like: stream full tool I/O for dashboard to show without truncation
+        _emit(
+            "tool_output" if result.success else "error",
+            f"Step {step.order} {'output' if result.success else 'failed'} ({tool_ms}ms)",
+            _trim((result.output or result.error or "")[:2000], 1500) + f"\n— tool: {step.tool_name} | decide: {decide_ms}ms | tool: {tool_ms}ms",
         )
 
         if result.success:
@@ -721,6 +769,6 @@ async def run_adaptive_loop(
             )
 
     return _abort(
-        f"step budget reached ({max_steps} steps). The task may be incomplete; "
+        f"step budget reached ({effective_max} steps, hard cap {_MAX_STEPS_HARD}). The task may be incomplete; "
         "partial work and any errors are reported below."
     )

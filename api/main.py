@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 
 # Strong references to background tasks (prevents GC cancelling mid-run)
 _bg_tasks: set[asyncio.Task] = set()
+# Map task_id -> background asyncio.Task for cancellation (opencode-like stop)
+_bg_task_by_id: dict[str, asyncio.Task] = {}
 _last_cleanup: float = 0.0
 
 app = FastAPI(
@@ -291,6 +293,7 @@ class SubmitTaskRequest(BaseModel):
     goal: str
     priority: str = "medium"
     context: dict[str, Any] = {}
+    max_steps: int | None = None  # opencode-like elastic: override budget per task
 
 
 class TaskResponse(BaseModel):
@@ -375,11 +378,14 @@ async def agent_status():
 
 
 async def _run_task_background(task_id: str, task: Task) -> None:
-    """Run task in background and emit live events."""
+    """Run task in background and emit live events — opencode-like full visibility."""
+    _task_started_at: float = time.time()
 
     def _snapshot() -> dict[str, Any]:
+        elapsed = time.time() - _task_started_at
         return {
             "steps_count": len(task.steps),
+            "elapsed_seconds": round(elapsed, 1),
             "steps": [
                 {
                     "id": s.id,
@@ -437,6 +443,18 @@ async def _run_task_background(task_id: str, task: Task) -> None:
             # change and final verdict is streamed LIVE via the emit sink.
             from agent.orchestrator import orchestrator
 
+            # Opencode-like: pass per-task max_steps if caller overrode it
+            orig_max = None
+            if req_max := getattr(task, "context", {}).get("max_steps"):
+                try:
+                    req_max = int(req_max)
+                    if 1 <= req_max <= 200:
+                        from agent.core.agent_loop import _MAX_STEPS_HARD
+
+                        # validated — orchestrator will honor via handle_task
+                        task.context["max_steps_override"] = min(req_max, _MAX_STEPS_HARD)
+                except Exception:
+                    pass
             task = await orchestrator.handle_task(task, emit=_live_emit)
 
         # Final snapshot after the task settled (status, result, steps, todos).
@@ -499,10 +517,17 @@ async def _run_task_background(task_id: str, task: Task) -> None:
         except Exception:
             logger.debug("Firestore task write skipped (not configured)")
 
+    except asyncio.CancelledError:
+        logger.info("Background task %s cancelled by user", task_id)
+        _update_task_status(task_id, "failed", error="Cancelled by user")
+        _emit(task_id, "error", "Cancelled by user")
+        raise
     except Exception as exc:
         logger.exception("Background task %s failed", task_id)
         _update_task_status(task_id, "failed", error=str(exc))
         _emit(task_id, "error", f"Exception: {exc}")
+    finally:
+        _bg_task_by_id.pop(task_id, None)
 
 
 @app.post("/api/tasks")
@@ -513,7 +538,15 @@ async def submit_task(req: SubmitTaskRequest):
         if req.priority in [p.value for p in TaskPriority]
         else TaskPriority.MEDIUM
     )
-    task = Task(goal=req.goal, priority=priority, context=req.context)
+    ctx = dict(req.context or {})
+    if req.max_steps is not None:
+        try:
+            ms = int(req.max_steps)
+            if 1 <= ms <= 200:
+                ctx["max_steps"] = ms
+        except Exception:
+            pass
+    task = Task(goal=req.goal, priority=priority, context=ctx)
 
     trace = create_trace(task.id)
     trace.start_span("task_received", kind="reasoning")
@@ -530,7 +563,9 @@ async def submit_task(req: SubmitTaskRequest):
     # Run in background — don't await (keep a ref so GC can't cancel it)
     bg = asyncio.create_task(_run_task_background(task.id, task))
     _bg_tasks.add(bg)
+    _bg_task_by_id[task.id] = bg
     bg.add_done_callback(_bg_tasks.discard)
+    bg.add_done_callback(lambda t: _bg_task_by_id.pop(task.id, None))
 
     return {
         "id": task.id,
@@ -546,7 +581,7 @@ async def submit_task(req: SubmitTaskRequest):
 
 @app.get("/api/tasks/live/{task_id}")
 async def get_task_live(task_id: str):
-    """Poll for live task updates + thinking events."""
+    """Poll for live task updates + thinking events — opencode-like full visibility."""
     events = _live_events.get(task_id, [])
     status = _live_tasks.get(task_id, {"status": "unknown"})
 
@@ -557,14 +592,60 @@ async def get_task_live(task_id: str):
     return {
         "task_id": task_id,
         "events": events,
+        "events_count": len(events),
         "status": status.get("status", "unknown"),
         "result": status.get("result"),
         "error": status.get("error"),
         "steps_count": status.get("steps_count", 0),
+        "elapsed_seconds": status.get("elapsed_seconds", 0),
         "steps": status.get("steps", []),
         "todos": status.get("todos", []),
         "trace": trace_chain,
     }
+
+
+@app.get("/api/tasks/live/{task_id}/stream")
+async def get_task_live_stream(task_id: str):
+    """SSE stream for live events — opencode-style push (fallback to polling if EventSource unavailable)."""
+    from fastapi.responses import StreamingResponse
+    import json as _json
+
+    async def _event_gen():
+        last = 0
+        # Send snapshot immediately
+        status = _live_tasks.get(task_id, {"status": "unknown"})
+        yield f"data: {_json.dumps({'type': 'snapshot', 'status': status.get('status'), 'steps_count': status.get('steps_count', 0)})}\n\n"
+        for _ in range(600):  # up to ~10 min
+            events = _live_events.get(task_id, [])
+            if len(events) > last:
+                for ev in events[last:]:
+                    yield f"data: {_json.dumps(ev)}\n\n"
+                last = len(events)
+            status = _live_tasks.get(task_id, {})
+            if status.get("status") in ("completed", "failed"):
+                yield f"data: {_json.dumps({'type': 'done', 'status': status.get('status')})}\n\n"
+                break
+            await asyncio.sleep(0.5)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_event_gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a long-running task — opencode-like stop. Running loop will abort on next decision."""
+    bg = _bg_task_by_id.get(task_id)
+    if bg and not bg.done():
+        bg.cancel()
+        _emit(task_id, "error", "Cancelled by user")
+        _update_task_status(task_id, "failed", error="Cancelled by user")
+        return {"task_id": task_id, "cancelled": True}
+    # Also mark live status even if no bg task (planning phase)
+    if task_id in _live_tasks:
+        _update_task_status(task_id, "failed", error="Cancelled by user")
+        _emit(task_id, "error", "Cancelled by user")
+        return {"task_id": task_id, "cancelled": True}
+    raise HTTPException(status_code=404, detail="Task not found or already finished")
 
 
 @app.get("/api/tasks", response_model=list[TaskResponse])

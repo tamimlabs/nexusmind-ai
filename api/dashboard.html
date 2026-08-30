@@ -130,9 +130,10 @@
         .think-list{display:flex;flex-direction:column;gap:6px}
         .think-item{background:var(--bg2);border:1px solid var(--border);border-left:3px solid var(--t5);border-radius:var(--rm);padding:10px 12px;animation:fadeIn .2s ease}
         .think-item.received{border-left-color:var(--blue)}.think-item.thinking{border-left-color:var(--purple)}.think-item.step_running{border-left-color:var(--blue)}
-        .think-item.done{border-left-color:var(--accent)}.think-item.error{border-left-color:var(--red)}
+        .think-item.tool_output{border-left-color:var(--blue)}.think-item.done{border-left-color:var(--accent)}.think-item.error{border-left-color:var(--red)}
         .think-msg{font-size:12px;font-weight:500;color:var(--t1);display:flex;align-items:center;gap:6px}
-        .think-detail{margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--t4);white-space:pre-wrap;word-break:break-word;line-height:1.5}
+        .think-detail{margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--t4);white-space:pre-wrap;word-break:break-word;line-height:1.5;max-height:120px;overflow-y:auto;display:none;background:var(--bg3);border-radius:var(--r);padding:8px 10px}
+        .think-detail.show{display:block}
         .think-time{font-size:10px;font-family:var(--mono);color:var(--t5);margin-top:4px}
         @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1}}
 
@@ -276,8 +277,9 @@ function renderRPanel(){const c=document.getElementById('rpanelBody');if(S.rtab=
 /* ── Task Views ───────────────────────────────────────────────── */
 function renderTasksPage(c){
   const prevVal=document.getElementById('goalInput')?document.getElementById('goalInput').value:'';
-  let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div></div>';
-  html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span></div>';
+  const prevSteps=document.getElementById('maxStepsInput')?document.getElementById('maxStepsInput').value:'';
+  let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><input class="input-field" id="maxStepsInput" type="number" min="5" max="120" placeholder="steps" title="Max steps — elastic. Leave blank for auto (40→120 as needed, opencode-style long runs)" style="max-width:78px" /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div><div style="font-size:11px;color:var(--t5);margin-top:6px">Auto = short tasks finish fast, long builds auto-extend to 120 steps (opencode-like). Set a cap if you want it longer/shorter.</div></div>';
+  html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span><button class="btn btn-d btn-sm" style="margin-left:auto" onclick="cancelCurrentTask()">Cancel</button></div>';
   html+='<div class="task-list" id="taskListEl">';
   if(S.selected){html+=renderDetail(S.selected)}
   else if(S.tasks.length===0){html+='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}
@@ -301,9 +303,10 @@ function quickFixInstruction(taskId){
 
 function renderDetail(t){
   const isNeeds=t.status==='needs_instruction';
-  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span>'+(isNeeds?'<button class="btn btn-p btn-sm" onclick="quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+'<button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
+  const isRunning=['planning','executing','pending'].includes(t.status)||(S.liveTaskId===t.id&&!['completed','failed'].includes(S.liveStatus));
+  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span>'+(t.elapsed_seconds?'<span class="badge" style="background:var(--bg3);color:var(--t4);border:1px solid var(--border)">⏱ '+t.elapsed_seconds+'s</span>':'')+(isNeeds?'<button class="btn btn-p btn-sm" onclick="quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+(isRunning?'<button class="btn btn-d btn-sm" onclick="cancelCurrentTask()">⏹ Cancel</button>':'')+'<button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
   if(isNeeds){h+='<div class="detail-section" style="background:var(--ybg);border:1px solid var(--yad);border-radius:8px;padding:12px"><div style="font-size:13px;font-weight:600;color:var(--yellow);margin-bottom:6px">⚠️ Needs your instruction — nothing was executed</div><div style="font-size:12px;color:var(--t3);line-height:1.6">This watcher detected an event but you have no matching standing instruction. Add one in <b>Memory → instruction</b> to auto-handle future events. Telegram was notified (once per 6h). Click <b>Create Instruction</b> for a suggestion.</div></div>';}
-  if(S.liveEvents.length>0&&S.liveTaskId===t.id){h+='<div class="detail-section"><div class="detail-label">Live Activity</div><div class="think-list">';S.liveEvents.forEach((e,i)=>{h+='<div class="think-item '+esc(e.type)+'"><div class="think-msg">'+thinkIcon(e,i===S.liveEvents.length-1,!['completed','failed'].includes(S.liveStatus))+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail">'+esc(e.detail)+'</div>':'')+'</div>'});h+='</div></div>'}
+  if(S.liveEvents.length>0&&S.liveTaskId===t.id){h+='<div class="detail-section"><div class="detail-label">Live Activity — opencode-style stream <span style="font-weight:400;color:var(--t5)">('+S.liveEvents.length+' events · click detail to expand)</span></div><div class="think-list">';S.liveEvents.forEach((e,i)=>{h+='<div class="think-item '+esc(e.type)+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')" style="cursor:pointer"><div class="think-msg">'+thinkIcon(e,i===S.liveEvents.length-1,!['completed','failed'].includes(S.liveStatus))+esc(e.message)+'<span style="margin-left:auto;font-size:10px;color:var(--t5);font-family:var(--mono)">'+new Date(e.time*1000).toLocaleTimeString()+'</span></div>'+(e.detail?'<div class="think-detail'+(i>=S.liveEvents.length-3?' show':'')+'">'+esc(e.detail)+'</div>':'')+'</div>'});h+='</div></div>'}
   if(t.result){const isFileResult=t.result.includes('Saved to:');h+='<div class="detail-section"><div class="detail-label">Result</div><div class="detail-code" style="'+(isFileResult?'border-left:3px solid var(--accent);background:var(--abg)':'')+'">'+esc(t.result)+'</div>'+(isFileResult?'<div style="margin-top:8px;font-size:11px;color:var(--accent)">📁 Check <code>output/</code> or <code>projects/</code> folder for saved files</code></div>':'')+'</div>';}
   if(t.error)h+='<div class="detail-section"><div class="detail-label">Error</div><div class="tc-error">'+esc(t.error)+'</div></div>';
   if(t.todos&&t.todos.length>0){const done=t.todos.filter(x=>x.status==='completed').length;h+='<div class="detail-section"><div class="detail-label">TODO Checklist ('+done+'/'+t.todos.length+')</div>';t.todos.forEach(td=>{const st=td.status||'pending';let dot,chk;if(st==='completed'){dot='<span class="sdot on" style="background:var(--accent)"></span>';chk='[x]'}else if(st==='in_progress'){dot='<span class="tl-dot running" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[ ]'}else if(st==='skipped'){dot='<span class="tl-dot skipped" style="position:static;display:inline-block;background:var(--red);opacity:.6;margin-left:-2px"></span>';chk='[ ]'}else{dot='<span class="tl-dot pending" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[ ]'}const cls=st==='completed'||st==='skipped'?' done':'';h+='<div class="todo-row"><span class="todo-check">'+chk+'</span>'+dot+'<span class="todo-title'+cls+'">'+esc(td.title||'')+'</span></div>'});h+='</div>'}
@@ -326,10 +329,11 @@ function thinkIcon(e,isLast,running){
 
 function renderThinkingPanel(c){
   const evs=S.liveEvents||[];
-  if(!evs.length){c.innerHTML='<div class="empty empty-big">No live events yet<div class="empty-sub">Submit a task to see agent thinking</div></div>';return}
+  if(!evs.length){c.innerHTML='<div class="empty empty-big">No live events yet<div class="empty-sub">Submit a task to see agent thinking — opencode-style full visibility</div></div>';return}
   const running=!['completed','failed'].includes(S.liveStatus);
-  let h='<div style="font-size:11px;color:var(--t5);margin-bottom:8px">'+evs.length+' event'+(evs.length!==1?'s':'')+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</div><div class="think-list">';
-  evs.forEach((e,i)=>{h+='<div class="think-item '+esc(e.type)+'"><div class="think-msg">'+thinkIcon(e,i===evs.length-1,running)+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
+  const elapsed=S.tasks.find(x=>x.id===S.liveTaskId)?.elapsed_seconds||0;
+  let h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--t5)">'+evs.length+' event'+(evs.length!==1?'s':'')+' · '+elapsed+'s'+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</span><span style="font-size:10px;color:var(--t5);font-family:var(--mono)">SSE+poller like opencode</span></div><div class="think-list">';
+  evs.forEach((e,i)=>{const isTool=e.type==='tool_output'||e.type==='step_running';h+='<div class="think-item '+esc(e.type)+'" style="'+(isTool?'border-left-color:var(--blue)':'')+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')"><div class="think-msg">'+thinkIcon(e,i===evs.length-1,running)+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail'+(i>=evs.length-2||e.type==='error'?' show':'')+'" style="'+(e.detail.length>400?'max-height:220px;overflow-y:auto':'')+'">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
   h+='</div>';c.innerHTML=h;c.scrollTop=c.scrollHeight}
 
 function renderApprovalPanel(c){
@@ -566,10 +570,15 @@ async function saveAllCredentials(){
 async function refreshCredentials(){try{await fetch('/api/credentials')}catch(e){}}
 
 /* ── Actions ──────────────────────────────────────────────────── */
+async function cancelCurrentTask(){
+  const id=S.liveTaskId||(S.selected&&S.selected.id);
+  if(!id)return;
+  try{const res=await fetch('/api/tasks/'+id+'/cancel',{method:'POST'});if(!res.ok)throw new Error((await res.json()).detail||'Cancel failed');modalAlert('Cancelled','Task '+id.slice(0,8)+' stopped.')}catch(e){modalAlert('Error',e.message,'error')}}
 async function submitTask(){
   const inp=document.getElementById('goalInput');if(!inp)return;const goal=inp.value.trim();if(!goal)return;
+  const msEl=document.getElementById('maxStepsInput');let max_steps=null;if(msEl&&msEl.value.trim()){const v=parseInt(msEl.value,10);if(v>=5&&v<=200)max_steps=v}
   const btn=document.getElementById('submitBtn');const lb=document.getElementById('loadingBar');btn.disabled=true;lb.style.display='flex';
-  try{const res=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal})});if(!res.ok){const err=await res.json().catch(()=>({detail:res.statusText}));if(res.status===429)throw new Error('Rate limited (429) - Gemini quota hit. Wait 15s or add another GEMINI_API_KEY (comma-separated) for rotation.');throw new Error(err.detail||('Request failed: '+res.status))}const task=await res.json();S.tasks.unshift(task);S.selected=task;document.getElementById('taskCount').textContent=S.tasks.length;renderPage();renderTracePanel(document.getElementById('rpanelBody'));startLivePoll(task.id);switchRTab('thinking')}
+  try{const res=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(max_steps?{goal,max_steps}:{goal})});if(!res.ok){const err=await res.json().catch(()=>({detail:res.statusText}));if(res.status===429)throw new Error('Rate limited (429) - Gemini quota hit. Wait 15s or add another GEMINI_API_KEY (comma-separated) for rotation.');throw new Error(err.detail||('Request failed: '+res.status))}const task=await res.json();S.tasks.unshift(task);S.selected=task;document.getElementById('taskCount').textContent=S.tasks.length;renderPage();renderTracePanel(document.getElementById('rpanelBody'));startLivePoll(task.id);switchRTab('thinking')}
   catch(e){modalAlert('Error',e.message,'error')}
   finally{btn.disabled=false;lb.style.display='none';if(document.getElementById('goalInput'))document.getElementById('goalInput').value=''}}
 
@@ -596,10 +605,23 @@ async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=a
 
 function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selected)}else if(S.tasks.length===0){html='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}el.innerHTML=html}
 
-/* ── Live Polling ─────────────────────────────────────────────── */
-function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveStatus='running';S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500)}
-function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}S.liveTaskId=null}
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace}if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel();if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
+/* ── Live Visibility — opencode-like: SSE push + poller fallback ───── */
+let S_eventSource=null;
+function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveStatus='running';S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500);startLiveStream(id)}
+function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}if(S_eventSource){try{S_eventSource.close()}catch(e){}S_eventSource=null}S.liveTaskId=null}
+function startLiveStream(id){
+  try{
+    if(typeof EventSource==='undefined')return;
+    const es=new EventSource('/api/tasks/live/'+id+'/stream');
+    S_eventSource=es;
+    es.onmessage=e=>{
+      if(e.data==='[DONE]'){es.close();return}
+      try{const msg=JSON.parse(e.data);if(msg.type==='done'){pollLive()}else if(msg.type&&msg.message){S.liveEvents.push(msg);if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel()}}catch(err){}
+    };
+    es.onerror=()=>{try{es.close()}catch(e){}};
+  }catch(e){}
+}
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.elapsed_seconds=d.elapsed_seconds||t.elapsed_seconds;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace}if(S.rtab==='thinking'||S.rtab==='checklist'||S.rtab==='trace')renderRPanel();if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl);const lb=document.getElementById('loadingBar');if(lb)lb.style.display=['completed','failed'].includes(d.status)?'none':'flex'}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
 
 /* ── Right Panel Minimize ─────────────────────────────────────── */
 function toggleRPanel(){const min=!document.body.classList.contains('rp-min');document.body.classList.toggle('rp-min',min);try{localStorage.setItem('nm_rpanel_min',min?'1':'0')}catch(e){}}

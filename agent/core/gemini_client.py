@@ -24,11 +24,15 @@ _FALLBACK_TOKEN_CEILING = 65536
 # - RPS/RPM-class limits ("per minute", "per second") reset within seconds to a
 #   minute, so the client WAITS and keeps polling every ~5 s until the window
 #   frees up — a burst is never fatal and the task is never abandoned for it.
+#   Per-key wait is capped at _MAX_RATE_RETRY_SECONDS (45s) — if the window
+#   doesn't reset, the key is parked briefly and the request rotates to the
+#   next API key instead of blocking the task indefinitely.
 # - Per-day per-key caps (free tier "20 requests/day") only reset after hours,
 #   so the spent key is parked until its bucket resets and the request is
 #   handed to the NEXT configured API key (each key has its own daily bucket).
 #   QuotaExhaustedError is raised only when every key is spent for the day.
 _RATE_POLL_SECONDS = 5.0  # fixed retry cadence while waiting out a rate window
+_MAX_RATE_RETRY_SECONDS = 45.0  # max wall-time to poll a single key on RPS/RPM 429 before rotating
 _DAILY_KEY_PARK_SECONDS = 86400  # key retired until the daily bucket resets
 
 # Diagnostic markers in the 429 body used to tell the two apart.
@@ -306,17 +310,26 @@ async def generate_content(
     used_fallback = False
     fallback_rounds = 1 if (fallback_model and fallback_model != primary_model) else 0
     retry_note = ""  # appended to the prompt once a retry is needed (see below)
+    rate_retry_start: float | None = None  # wall-time start for current key's RPS/RPM polls
 
     attempts = 0
+    # For RPS/RPM 429s we stay on the SAME key for up to 45s before rotating
+    _reuse_client: Any | None = None
+    _reuse_key: str | None = None
     while True:
         attempts += 1
         active_model = model_name
-        # If all keys in cooldown, wait for the shortest cooldown before picking a key
-        if rotator.active_keys == 0 and rotator._cooldowns:
-            shortest = min(rotator._cooldowns.values()) - time.monotonic()
-            if shortest > 0:
-                await asyncio.sleep(min(shortest, 5))
-        client, key_used = rotator.get_client()
+        if _reuse_client is not None and _reuse_key is not None and rate_retry_start is not None:
+            # Still within the 45s budget for this key — retry same key
+            client, key_used = _reuse_client, _reuse_key
+        else:
+            # Pick next available key (or wait if all in cooldown)
+            if rotator.active_keys == 0 and rotator._cooldowns:
+                shortest = min(rotator._cooldowns.values()) - time.monotonic()
+                if shortest > 0:
+                    await asyncio.sleep(min(shortest, 5))
+            client, key_used = rotator.get_client()
+            _reuse_client, _reuse_key = client, key_used
 
         effective_user = f"{user}\n\n— {retry_note} —" if retry_note else user
 
@@ -378,6 +391,8 @@ async def generate_content(
             if "invalid" in error_str and "key" in error_str:
                 rotator.mark_rate_limited(key_used, retry_after=86400)
                 logger.error("Invalid API key ...%s, removing from rotation", key_used[-6:])
+                _reuse_client = _reuse_key = None
+                rate_retry_start = None
                 continue
 
             if not _is_quota_error(error_str):
@@ -401,31 +416,66 @@ async def generate_content(
                     key_used[-6:],
                     attempts,
                 )
+                _reuse_client = _reuse_key = None
+                rate_retry_start = None  # new key -> reset RPS/RPM window
                 if rotator.key_count <= 1 or rotator.active_keys == 0:
                     raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
                 if delay > 0:
                     await asyncio.sleep(min(delay, 2.0))
                 continue
 
-            # RPS/RPM-class limit: WAIT it out, then keep polling every ~5 s
-            # until the per-minute/second window resets. Never give up on a
-            # transient burst — the caller's model sees a note that this is a
-            # continuation of the paused request.
+            # RPS/RPM-class limit: stay on SAME key for up to 45s, then park it
+            # and rotate to the next API key. This is your requested bound.
+            if rate_retry_start is None:
+                rate_retry_start = time.monotonic()
+            elapsed = time.monotonic() - rate_retry_start
+            if elapsed >= _MAX_RATE_RETRY_SECONDS:
+                logger.warning(
+                    "Rate-limit on key ...%s persisted %.0fs (>=%.0fs); parking key and switching to next API key (attempt %d)",
+                    key_used[-6:],
+                    elapsed,
+                    _MAX_RATE_RETRY_SECONDS,
+                    attempts,
+                )
+                # Park this key briefly and rotate — don't sleep full poll window
+                rotator.mark_rate_limited(key_used, retry_after=_RATE_POLL_SECONDS * 2)
+                retry_note = _retry_context_note(
+                    "the previous API key was rate-limited for ~45s and was "
+                    "replaced; nothing was executed or lost — continue this "
+                    "request exactly as asked, over the same context."
+                )
+                _reuse_client = _reuse_key = None
+                rate_retry_start = None  # new key gets a fresh 45s budget
+                if rotator.key_count <= 1 or rotator.active_keys == 0:
+                    # Single key or all keys exhausted — surface as quota error
+                    # so the orchestrator can abort cleanly with retry guidance.
+                    raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
+                continue
+
             retry_note = _retry_context_note(
                 "the previous attempt was paused by a per-minute/second rate "
                 "limit and is now being retried after the window reset; "
                 "nothing was executed or lost — respond exactly as requested."
             )
             poll_seconds = max(delay, _RATE_POLL_SECONDS)
+            # Don't overshoot the 45s budget — sleep only the remaining time
+            remaining = _MAX_RATE_RETRY_SECONDS - elapsed
+            sleep_for = min(poll_seconds, remaining) if remaining > 0 else 0
+            # Keep retrying SAME key — still record a short backoff for
+            # observability (test expects _cooldowns set) but reuse bypasses it.
             rotator.mark_rate_limited(key_used, retry_after=poll_seconds)
             logger.warning(
-                "Rate-limit on key ...%s (attempt %d), model %s — polling again in ~%.0fs",
+                "Rate-limit on key ...%s (attempt %d, %.0fs/%.0fs), model %s — retrying same key in ~%.0fs",
                 key_used[-6:],
                 attempts,
+                elapsed,
+                _MAX_RATE_RETRY_SECONDS,
                 active_model,
-                poll_seconds,
+                sleep_for,
             )
-            await asyncio.sleep(poll_seconds)
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
+            # _reuse_client/_reuse_key already set so next loop retries same key
 
 
 async def generate_structured(

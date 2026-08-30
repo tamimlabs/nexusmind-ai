@@ -374,9 +374,28 @@ class Orchestrator:
             # forces a stop. No content is ever fabricated here: every action
             # comes from the model, goal and live results.
             context: dict[str, Any] = {"task_id": task.id, "task_goal": task.goal}
-            outcome: AdaptiveOutcome = await run_adaptive_loop(
-                task,
-                context,
+            # Opencode-like elastic per-task budget (caller can request longer runs)
+            max_steps_override = None
+            for k in ("max_steps", "max_steps_override"):
+                if k in task.context:
+                    try:
+                        v = int(task.context[k])
+                        if 1 <= v <= 200:
+                            max_steps_override = v
+                            break
+                    except Exception:
+                        pass
+            if max_steps_override is None:
+                # fall back to global config (default 40, hard cap 120)
+                try:
+                    from agent.config import settings as _s
+
+                    cfg_steps = int(getattr(_s, "agent_max_steps", 40))
+                    if 5 <= cfg_steps <= 200:
+                        max_steps_override = cfg_steps
+                except Exception:
+                    pass
+            loop_kwargs: dict[str, Any] = dict(
                 memory_context=memory_context or "",
                 lessons=lessons or [],
                 skill_context=skill_context or "",
@@ -385,6 +404,9 @@ class Orchestrator:
                 decide_fn=decide_next_step,
                 on_event=emit,
             )
+            if max_steps_override is not None:
+                loop_kwargs["max_steps"] = max_steps_override
+            outcome: AdaptiveOutcome = await run_adaptive_loop(task, context, **loop_kwargs)
 
             task.status = TaskStatus.COMPLETED
             task.updated_at = datetime.now(UTC)
