@@ -797,10 +797,14 @@ async def run_adaptive_loop(
         # Emit todo_update for legacy delta so dashboard checklist moves in realtime even if model doesn't call todowrite
         if decision.get("todo_updates"):
             _emit("todo_update", f"Checklist {sum(1 for t in task.todos if t.status==TodoStatus.COMPLETED)}/{len(task.todos)}", _todo_state(task)[:1200])
+        # Don't mark IN_PROGRESS for todowrite itself — it resets the whole list and would lose the mark (seen as 0/6 gray)
+        _is_todowrite = str(decision.get("tool_name") or "").lower() == "todowrite"
         active_todo = _next_open_todo(task)
-        if active_todo is not None:
+        if active_todo is not None and not _is_todowrite:
             _set_todo_status(active_todo, TodoStatus.IN_PROGRESS)
             _emit("todo_update", f"Working: {active_todo.title[:80]}", _todo_state(task)[:1200])
+        elif _is_todowrite:
+            active_todo = None  # todowrite is meta, not real work — don't auto-complete it as a todo
 
         step = TaskStep(
             task_id=task.id,
