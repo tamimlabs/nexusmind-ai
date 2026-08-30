@@ -660,15 +660,25 @@ class Orchestrator:
             _safe_emit(emit, task.id, "thinking", "Drafting roadmap with Gemini Flash… (streaming)", task.goal[:120])
             roadmap: list = []
             try:
-                roadmap = await plan_task(
-                    task,
-                    available_skills or None,
-                    lessons or None,
-                    memory_context or None,
-                    skill_context or None,
-                    on_event=emit,
-                )
-                logger.info("Roadmap ready (%d suggested steps) for task %s", len(roadmap), task.id)
+                import asyncio as _aio
+
+                try:
+                    roadmap = await _aio.wait_for(
+                        plan_task(
+                            task,
+                            available_skills or None,
+                            lessons or None,
+                            memory_context or None,
+                            skill_context or None,
+                            on_event=emit,
+                        ),
+                        timeout=12,
+                    )
+                    logger.info("Roadmap ready (%d suggested steps) for task %s", len(roadmap), task.id)
+                except _aio.TimeoutError:
+                    logger.warning("Roadmap planning timed out after 12s for %s; continuing without roadmap", task.id)
+                    _safe_emit(emit, task.id, "thinking", "Roadmap slow — continuing step-by-step", "")
+                    roadmap = []
             except Exception:
                 logger.exception(
                     "Initial roadmap failed for %s; the adaptive loop will work step-by-step from scratch",

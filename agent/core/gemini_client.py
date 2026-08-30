@@ -247,12 +247,28 @@ class RateThrottle:
 
     @staticmethod
     def _interval(rps: float, rpm: int) -> float:
-        """Min seconds between requests implied by the rps and rpm bounds."""
+        """Min seconds between requests implied by the rps and rpm bounds.
+
+        Scales RPM by the number of configured API keys (free tier is per-key).
+        With 4 keys at 15 rpm each the effective budget is 60 rpm → 1s interval,
+        not 4s. The server-side 429 retry + rotation still protects the real
+        quota, so this only removes the *preemptive* sleep that made every
+        website build pay 28s of idle time.
+        """
         interval = 0.0
         if rps and rps > 0:
             interval = max(interval, 1.0 / rps)
         if rpm and rpm > 0:
-            interval = max(interval, 60.0 / rpm)
+            try:
+                keys = max(1, rotator.key_count or 1)
+                # Use active keys when some are parked for the day
+                active = rotator.active_keys
+                if active and active < keys:
+                    keys = active
+            except Exception:
+                keys = 1
+            effective_rpm = rpm * keys
+            interval = max(interval, 60.0 / effective_rpm)
         return interval
 
     async def acquire(self) -> float:
