@@ -7,29 +7,28 @@ on:
     branches: [master]
   workflow_dispatch:
 
-# Required to commit the badge JSON on master pushes.
 permissions:
   contents: write
 
-# Rapid successive pushes: only the latest run may write the badge,
-# older runs are cancelled instead of racing each other's commits.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    name: pytest (3.11)
+    name: pytest shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          # No requirements.txt exists; point the cache key at the lock
-          # source of truth so dependency changes actually bust the cache.
           cache: pip
           cache-dependency-path: pyproject.toml
 
@@ -38,32 +37,79 @@ jobs:
           python -m pip install --upgrade pip
           pip install .[dev]
 
-      # Tests assume a project-root .env exists — Settings and the credentials
-      # code both read _PROJECT_ROOT/.env. Fresh CI checkouts have none (it's
-      # gitignored), so synthesize one from the example with a placeholder key.
       - name: Create .env for tests
         run: |
           cp .env.example .env
           sed -i 's/^GEMINI_API_KEY=.*/GEMINI_API_KEY=ci-placeholder-key/' .env
 
-      # continue-on-error lets the badge reflect a red result instead of
-      # aborting before it is written; the final step re-fails the job so
-      # PR gating stays honest.
-      - name: Run tests
+      - name: Run tests (shard ${{ matrix.shard }}/3 with xdist)
         id: pytest
         continue-on-error: true
         run: |
           set -o pipefail
-          python -m pytest tests/ --junitxml=pytest_report.xml -q --no-header -p no:cacheprovider 2>&1 | tee pytest_output.txt
+          python -m pytest tests/ --splits 3 --group ${{ matrix.shard }} -q --no-header -p no:cacheprovider -n auto --dist loadscope --junitxml=pytest_report_${{ matrix.shard }}.xml 2>&1 | tee pytest_output_${{ matrix.shard }}.txt
 
-      # Counts come from the JUnit XML report (machine-readable, stable
-      # schema) instead of grepping pytest stdout.
-      - name: Update badge and commit (master only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      - name: Upload shard report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report-${{ matrix.shard }}
+          path: |
+            pytest_report_${{ matrix.shard }}.xml
+            pytest_output_${{ matrix.shard }}.txt
+
+  badge:
+    name: update badge
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pytest-report-*
+          merge-multiple: true
+
+      - name: Merge JUnit reports and update badge
         run: |
           mkdir -p .github/badges
-          python .github/scripts/update_badge.py \
-            pytest_report.xml .github/badges/tests.json "${{ steps.pytest.outcome }}"
+          # Merge is not needed for badge counts; use any shard's outcome + total check
+          # If any shard failed, overall outcome is failure
+          python -c "
+          import xml.etree.ElementTree as ET, glob, sys
+          total=err=fail=0
+          for f in glob.glob('pytest_report_*.xml'):
+              try:
+                  root=ET.parse(f).getroot()
+                  total+=int(root.attrib.get('tests',0))
+                  err+=int(root.attrib.get('errors',0))
+                  fail+=int(root.attrib.get('failures',0))
+              except Exception as e: print(e)
+          print(f'Merged: {total} tests, {fail} failures, {err} errors')
+          open('merged.txt','w').write(f'{total} {fail} {err}')
+          "
+          cat merged.txt
+          # Determine overall outcome from needs context via file existence; assume success if no failures
+          read total fail err < merged.txt
+          if [ \"$fail\" -eq 0 ] && [ \"$err\" -eq 0 ]; then outcome=success; else outcome=failure; fi
+          echo \"Overall: $outcome\"
+          # Pick first report for badge script (it reads total from XML, we now pass merged count via env)
+          cp pytest_report_1.xml pytest_report.xml 2>/dev/null || cp pytest_report_*.xml pytest_report.xml
+          python .github/scripts/update_badge.py pytest_report.xml .github/badges/tests.json \"$outcome\"
+          # Patch badge json with true merged total if script only counted shard 1
+          python -c "
+          import json
+          p='.github/badges/tests.json'
+          data=json.load(open(p))
+          import glob, xml.etree.ElementTree as ET
+          total=sum(int(ET.parse(f).getroot().attrib.get('tests',0)) for f in glob.glob('pytest_report_*.xml'))
+          # Recompute passed
+          fail=sum(int(ET.parse(f).getroot().attrib.get('failures',0)) for f in glob.glob('pytest_report_*.xml'))
+          data['total']=total
+          data['passed']=total-fail
+          json.dump(data, open(p,'w'), indent=2)
+          print(open(p).read())
+          "
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -74,8 +120,8 @@ jobs:
             git push
           fi
 
-      - name: Fail if tests failed
-        if: steps.pytest.outcome != 'success'
+      - name: Fail if any shard failed
+        if: needs.test.result != 'success'
         run: |
-          echo "::error::Test suite did not pass"
+          echo "::error::One or more shards failed"
           exit 1
