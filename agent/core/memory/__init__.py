@@ -157,10 +157,11 @@ class MemoryStore:
                     if created:
                         migrated += 1
                 logger.info("Migrated %d memory entries from %s", migrated, _LEGACY_JSON_PATH)
-            # Retire the file whether or not we just imported: if the DB is
-            # already populated the migration clearly ran before.
-            _LEGACY_JSON_PATH.rename(imported_path)
-            logger.info("Retired legacy memory file -> %s", imported_path.name)
+                # Only retire after successful import
+                _LEGACY_JSON_PATH.rename(imported_path)
+                logger.info("Retired legacy memory file -> %s", imported_path.name)
+            else:
+                logger.debug("Legacy migration skipped: DB already populated (%d facts)", self._store.count())
         except Exception:
             logger.exception("Legacy memory migration failed (%s)", _LEGACY_JSON_PATH)
 

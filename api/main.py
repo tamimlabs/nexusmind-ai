@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Strong references to background tasks (prevents GC cancelling mid-run)
 _bg_tasks: set[asyncio.Task] = set()
+_last_cleanup: float = 0.0
 
 app = FastAPI(
     title="NexusMind AI",
@@ -200,13 +201,16 @@ def _emit(task_id: str, event_type: str, message: str, detail: str = "") -> None
 
 def _update_task_status(task_id: str, status: str, **extra) -> None:
     """Update live task status for polling."""
+    global _last_cleanup
     if task_id not in _live_tasks:
         _live_tasks[task_id] = {}
         _live_tasks_created[task_id] = time.time()
     _live_tasks[task_id].update({"status": status, "updated_at": time.time(), **extra})
-    # Periodic cleanup (every 50 new tasks)
-    if len(_live_tasks_created) % 50 == 0:
+    # Periodic cleanup: every 50 tasks or every 5 minutes
+    now = time.time()
+    if len(_live_tasks_created) % 50 == 0 or (now - _last_cleanup) > 300:
         _cleanup_stale_tasks()
+        _last_cleanup = now
 
 
 async def _register_watcher_unhandled(
@@ -317,7 +321,13 @@ class WebhookPayload(BaseModel):
 async def root():
     """Serve the traceability dashboard."""
     html_path = pathlib.Path(__file__).parent / "dashboard.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    if not html_path.exists():
+        return HTMLResponse("<html><body><h1>NexusMind AI</h1><p>Dashboard not found — API is running. See /docs</p></body></html>", status_code=200)
+    try:
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.exception("Failed to read dashboard.html")
+        return HTMLResponse(f"<html><body><h1>Dashboard error</h1><p>{exc}</p></body></html>", status_code=500)
 
 
 # ── Health ────────────────────────────────────────────────────────
@@ -518,7 +528,9 @@ async def submit_task(req: SubmitTaskRequest):
         logger.debug("Pub/Sub publish skipped (not configured)")
 
     # Run in background — don't await (keep a ref so GC can't cancel it)
-    _bg_tasks.add(asyncio.create_task(_run_task_background(task.id, task)))
+    bg = asyncio.create_task(_run_task_background(task.id, task))
+    _bg_tasks.add(bg)
+    bg.add_done_callback(_bg_tasks.discard)
 
     return {
         "id": task.id,
@@ -1237,7 +1249,9 @@ async def receive_webhook(req: WebhookPayload):
     with contextlib.suppress(Exception):
         publish_task_event(task.id, task.goal, "pending", context=req.payload)
 
-    _bg_tasks.add(asyncio.create_task(_run_task_background(task.id, task)))
+    bg2 = asyncio.create_task(_run_task_background(task.id, task))
+    _bg_tasks.add(bg2)
+    bg2.add_done_callback(_bg_tasks.discard)
 
     return {"task_id": task.id, "status": "pending"}
 

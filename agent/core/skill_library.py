@@ -562,8 +562,8 @@ class SkillLibrary:
                     record["state"] = STATE_STALE
                     applied.append((name, STATE_STALE))
                 elif record["state"] == STATE_STALE and anchor <= archive_cutoff:
-                    self.archive(name, actor="curator")
-                    applied.append((name, STATE_ARCHIVED))
+                    if self.archive(name, actor="curator"):
+                        applied.append((name, STATE_ARCHIVED))
             if applied:
                 self._save_usage()
         return applied

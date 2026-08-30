@@ -71,15 +71,17 @@ class TestMemory:
 
     def test_max_items(self):
         store = MemoryStore()
+        import agent.core.memory as mem_mod
         # Add entries with unique content to avoid dedup
         for i in range(10):
             store.add(MemoryEntry(content=f"Unique item number {i} for testing", category="task_outcome"))
-        # Should be capped at _MAX_TASK_OUTCOMES (20) but we only added 10
         assert store.size == 10
         # Add more to exceed limit
         for i in range(15):
             store.add(MemoryEntry(content=f"Another unique item {i + 100} for testing", category="task_outcome"))
-        assert store.size <= 100  # Global limit
+        assert store.size <= mem_mod._MAX_ENTRIES
+        # Ensure eviction respects global cap (500) not legacy 100
+        assert mem_mod._MAX_ENTRIES == 500
 
     def test_save_task_outcome(self):
         store = MemoryStore()

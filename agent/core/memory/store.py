@@ -180,8 +180,8 @@ class FactStore:
                 raise ValueError("content must not be empty")
 
             existing = self._conn.execute(
-                "SELECT fact_id FROM facts WHERE entry_uid = ? OR content = ?",
-                (entry_uid, content),
+                "SELECT fact_id FROM facts WHERE entry_uid = ? OR (content = ? AND category = ?)",
+                (entry_uid, content, category),
             ).fetchone()
             if existing is not None:
                 return int(existing["fact_id"]), False

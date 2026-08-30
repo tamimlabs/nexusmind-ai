@@ -77,10 +77,18 @@ async def extract_data(text: str, keys: str = "", **_) -> ToolResult:
     if urls:
         results["urls"] = list(set(urls))
 
-    # Phone numbers (basic)
-    phones = re.findall(r"\+?[\d\s\-\(\)]{7,15}", text)
-    if phones:
-        results["phones"] = list(set(p.strip() for p in phones))
+    # Phone numbers (stricter: require leading + or (XXX) or 10+ digits avoiding dates)
+    phones = re.findall(r"(?:\+\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}", text)
+    # Filter: keep only those with at least 10 digits and not matching date-like patterns
+    filtered = []
+    for p in phones:
+        digits = re.sub(r"\D", "", p)
+        if len(digits) >= 10 and len(digits) <= 15:
+            # Exclude if looks like date (e.g., 12/05/2024 already captured separately)
+            if not re.match(r"^\d{1,2}[/-]\d{1,2}[/-]", p.strip()):
+                filtered.append(p.strip())
+    if filtered:
+        results["phones"] = list(set(filtered))
 
     # Dates (basic)
     dates = re.findall(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", text)

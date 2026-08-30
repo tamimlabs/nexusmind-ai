@@ -328,7 +328,7 @@ class FactRetriever:
             return []
 
         # Guard against O(n²) blow-up on large stores.
-        max_contradict_facts = 500
+        max_contradict_facts = 150
         if len(rows) > max_contradict_facts:
             rows = sorted(
                 rows, key=lambda r: r["updated_at"] or r["created_at"], reverse=True
@@ -346,6 +346,9 @@ class FactRetriever:
 
         with self.store.lock:
             for i in range(len(facts)):
+                # Early exit if enough contradictions found (avoid O(n²) tail)
+                if len(contradictions) >= limit * 2:
+                    break
                 for j in range(i + 1, len(facts)):
                     f1, f2 = facts[i], facts[j]
                     ents1 = fact_entities.get(int(f1["fact_id"]), set())
@@ -375,6 +378,8 @@ class FactRetriever:
                             "contradiction_score": round(contradiction_score, 3),
                             "shared_entities": sorted(ents1 & ents2),
                         })
+                        if len(contradictions) >= limit * 2:
+                            break
 
         contradictions.sort(key=lambda c: c["contradiction_score"], reverse=True)
         return contradictions[:limit]
@@ -426,7 +431,11 @@ class FactRetriever:
         if not rows:
             return []
 
-        raw_ranks = [abs(float(row["fts_rank_raw"])) for row in rows]
+        # FTS5 rank is negative BM25 (more negative = better). Negate to positive
+        # so larger means better, then normalize to [0,1] preserving ranking.
+        raw_ranks = [-float(row["fts_rank_raw"]) for row in rows]
+        # Guard against non-negative or zero ranks
+        raw_ranks = [max(r, 0.0) for r in raw_ranks]
         max_rank = max(max(raw_ranks), 1e-6)
 
         results = []

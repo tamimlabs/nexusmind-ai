@@ -171,13 +171,13 @@ class KeyRotator:
         if not self._keys:
             raise RuntimeError("No Gemini API keys configured")
 
-        now = time.time()
+        now = time.monotonic()
         attempts = 0
         while attempts < len(self._keys):
             key = self._keys[self._current_index % len(self._keys)]
             self._current_index += 1
 
-            # Check if key is in cooldown
+            # Check if key is in cooldown (monotonic to survive NTP jumps)
             cooldown_until = self._cooldowns.get(key, 0)
             if now >= cooldown_until:
                 return key
@@ -195,7 +195,7 @@ class KeyRotator:
 
     def mark_rate_limited(self, key: str, retry_after: float = 60) -> None:
         """Mark a key as rate-limited with backoff duration."""
-        self._cooldowns[key] = time.time() + retry_after
+        self._cooldowns[key] = time.monotonic() + retry_after
         logger.warning("Key ...%s rate-limited, backing off %.0fs", key[-6:], retry_after)
 
     def get_client(self) -> tuple[Any, str]:
@@ -220,7 +220,7 @@ class KeyRotator:
 
     @property
     def active_keys(self) -> int:
-        now = time.time()
+        now = time.monotonic()
         return sum(1 for k in self._keys if now >= self._cooldowns.get(k, 0))
 
 
@@ -311,13 +311,12 @@ async def generate_content(
     while True:
         attempts += 1
         active_model = model_name
-        client, key_used = rotator.get_client()
-
-        # If all keys in cooldown, async wait before trying
-        if rotator.active_keys == 0:
-            shortest = min(rotator._cooldowns.values()) - time.time()
+        # If all keys in cooldown, wait for the shortest cooldown before picking a key
+        if rotator.active_keys == 0 and rotator._cooldowns:
+            shortest = min(rotator._cooldowns.values()) - time.monotonic()
             if shortest > 0:
                 await asyncio.sleep(min(shortest, 5))
+        client, key_used = rotator.get_client()
 
         effective_user = f"{user}\n\n— {retry_note} —" if retry_note else user
 

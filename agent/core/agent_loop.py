@@ -672,7 +672,7 @@ async def run_adaptive_loop(
                 (r for r in targets if r in preexisting and r not in read_roots),
                 None,
             )
-            if step.tool_name in ("write_file", "write_directory")
+            if step.tool_name in ("write_file", "write_directory", "execute_code", "run_command")
             else None
         )
         if blocked_root is not None:
@@ -680,7 +680,6 @@ async def run_adaptive_loop(
             step.status = StepStatus.SKIPPED
             step.error = block_msg
             context[f"step_{step.order}_result"] = block_msg
-            context[f"step_{step.order + 1}_result"] = block_msg
             details.append(
                 f"step {step.order} [{step.tool_name}]: BLOCKED (existing {blocked_root})"
             )
@@ -698,7 +697,6 @@ async def run_adaptive_loop(
         )
         result = await execute_fn(step, context or {})
         context[f"step_{step.order}_result"] = result.output
-        context[f"step_{step.order + 1}_result"] = result.output
         details.append(
             f"step {step.order} [{step.tool_name}]: {'ok' if result.success else 'FAILED'}"
         )

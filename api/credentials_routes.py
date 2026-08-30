@@ -53,7 +53,7 @@ CREDENTIAL_FIELDS: dict[str, list[dict[str, Any]]] = {
     "Email (IMAP)": [
         {"key": "EMAIL_IMAP_SERVER", "label": "IMAP Server", "placeholder": "imap.gmail.com", "secret": False},
         {"key": "EMAIL_ADDRESS", "label": "Email Address", "placeholder": "you@gmail.com", "secret": False},
-        {"key": "EMAIL_PASSWORD", "label": "App Password", "placeholder": "", "secret": True},
+        {"key": "EMAIL_IMAP_PASSWORD", "label": "App Password", "placeholder": "", "secret": True},
     ],
 }
 

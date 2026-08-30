@@ -177,13 +177,22 @@ async def github_resolve_repo(goal_text: str = "", **_: Any) -> ToolResult:
     directory -> GITHUB_DEFAULT_REPO setting.
     """
     # 1. Explicit owner/name mentioned in the goal ("review prs on octocat/hello-world")
-    match = re.search(r"\b([\w.-]+)/([\w.-]+)\b", goal_text.replace("https://", ""))
-    if match:
-        candidate = f"{match.group(1)}/{match.group(2)}"
+    # Scan all candidates and pick the first that looks like a GitHub repo (not a filesystem path)
+    _DENY_REPO_PREFIXES = ("output/", "projects/", "data/", "agent/", "api/", "cloud/", "docs/", "tests/", "scripts/")
+    _DENY_REPO_SUBSTRINGS = ("http", ".env", "step_", ".html", ".css", ".js", ".json", ".md", ".txt", ".py")
+    for m in re.finditer(r"\b([\w.-]+)/([\w.-]+)\b", goal_text.replace("https://", "")):
+        candidate = f"{m.group(1)}/{m.group(2)}"
         lowered = candidate.lower()
-        # Ignore generic words that happen to contain a slash-like pattern
-        if not any(bad in lowered for bad in ["http", ".env", "step_"]):
-            return ToolResult(success=True, output=candidate)
+        # Skip filesystem-like paths and generic slash words
+        if lowered.startswith(_DENY_REPO_PREFIXES):
+            continue
+        if any(bad in lowered for bad in _DENY_REPO_SUBSTRINGS):
+            continue
+        # Owner/repo must start with alphanumeric (GitHub rule)
+        if not re.match(r"^[A-Za-z0-9]", m.group(1)) or not re.match(r"^[A-Za-z0-9]", m.group(2)):
+            continue
+        # Prefer candidates that look like GitHub slugs over generic path fragments
+        return ToolResult(success=True, output=candidate)
 
     # 2. The git remote of the current project directory ("my repository")
     try:
@@ -507,20 +516,33 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
             if status != 200 or not isinstance(pr_data, dict):
                 return ToolResult(success=False, output="", error=f"Cannot fetch PR #{pr_number} metadata")
             clone_url = pr_data.get("head", {}).get("repo", {}).get("clone_url") or f"https://github.com/{repo}.git"
-            if token and "github.com" in clone_url:
-                clone_url = clone_url.replace("https://", f"https://{token}@")
+            clone_url_for_log = clone_url
             branch = pr_data.get("head", {}).get("ref", "")
             if tmpdir.exists():
                 import shutil
 
                 shutil.rmtree(tmpdir, ignore_errors=True)
             tmpdir.mkdir(parents=True, exist_ok=True)
-            clone_cmd = f"git clone --depth 1 --branch {branch} {clone_url} {tmpdir} 2>&1"
-            proc3 = await asyncio.create_subprocess_shell(
-                clone_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
+            import shlex as _shlex
+            # Use http.extraHeader with env var to avoid token in process list / URL
+            if token and "github.com" in clone_url:
+                env_clone = os.environ.copy()
+                env_clone["NEXUSMIND_GH_TOKEN"] = token
+                # Shell expands $NEXUSMIND_GH_TOKEN inside double quotes
+                clone_cmd = f"git -c http.extraHeader=\"Authorization: Bearer $NEXUSMIND_GH_TOKEN\" clone --depth 1 --branch {_shlex.quote(branch)} {_shlex.quote(clone_url)} {_shlex.quote(str(tmpdir))} 2>&1"
+                proc3 = await asyncio.create_subprocess_shell(
+                    clone_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env_clone
+                )
+            else:
+                clone_cmd = f"git clone --depth 1 --branch {_shlex.quote(branch)} {_shlex.quote(clone_url)} {_shlex.quote(str(tmpdir))} 2>&1"
+                proc3 = await asyncio.create_subprocess_shell(
+                    clone_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
             stdout, stderr = await asyncio.wait_for(proc3.communicate(), timeout=90)
             clone_out = (stdout.decode() + stderr.decode())[:800]
+            # Mask token in output to avoid leaking secret (defense in depth)
+            if token:
+                clone_out = clone_out.replace(token, "***")
             if proc3.returncode != 0:
                 return ToolResult(success=False, output="", error=f"Clone failed for PR #{pr_number}: {clone_out}")
             workdir = str(tmpdir)

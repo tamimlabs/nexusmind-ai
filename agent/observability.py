@@ -62,11 +62,12 @@ class TraceCollector:
     def __init__(self, task_id: str) -> None:
         self.task_id = task_id
         self.spans: list[TraceSpan] = []
+        self._stack: list[TraceSpan] = []
         self._active_span: TraceSpan | None = None
 
     def start_span(self, name: str, kind: str = "reasoning", **metadata: Any) -> TraceSpan:
         """Start a new trace span."""
-        parent_id = self._active_span.id if self._active_span else None
+        parent_id = self._stack[-1].id if self._stack else None
         span = TraceSpan(
             name=name,
             kind=kind,
@@ -74,12 +75,17 @@ class TraceCollector:
             metadata=metadata,
         )
         self.spans.append(span)
+        self._stack.append(span)
         self._active_span = span
         return span
 
     def end_span(self, status: str = "success") -> None:
         """End the active span."""
-        if self._active_span:
+        if self._stack:
+            span = self._stack.pop()
+            span.finish(status)
+            self._active_span = self._stack[-1] if self._stack else None
+        elif self._active_span:
             self._active_span.finish(status)
             self._active_span = None
 

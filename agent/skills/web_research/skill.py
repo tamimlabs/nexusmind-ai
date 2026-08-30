@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time
 
 import httpx
@@ -16,6 +17,7 @@ _google_cx = ""
 _google_daily_count = 0
 _google_daily_limit = 100
 _google_day_start = 0
+_google_lock = threading.Lock()
 
 
 def _init_google():
@@ -37,18 +39,20 @@ def _google_available() -> bool:
     if not _google_search_key or not _google_cx:
         return False
 
-    now = time.time()
-    day_boundary = int(now / 86400) * 86400
-    if _google_day_start < day_boundary:
-        _google_daily_count = 0
-        _google_day_start = day_boundary
+    with _google_lock:
+        now = time.time()
+        day_boundary = int(now / 86400) * 86400
+        if _google_day_start < day_boundary:
+            _google_daily_count = 0
+            _google_day_start = day_boundary
 
-    return _google_daily_count < _google_daily_limit
+        return _google_daily_count < _google_daily_limit
 
 
 def _google_used():
     global _google_daily_count
-    _google_daily_count += 1
+    with _google_lock:
+        _google_daily_count += 1
 
 
 async def _search_google(query: str, num_results: int) -> str | None:

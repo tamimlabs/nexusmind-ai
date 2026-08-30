@@ -117,9 +117,9 @@ class TestStepByStepFeedback:
         task = _task()
         await run_adaptive_loop(task, context, decide_fn=decide, execute_fn=execute)
         assert "step_0_result" in context
-        assert "step_1_result" in context
         assert context["step_0_result"] == "RESULT(A)"
-        assert context["step_0_result"] == context["step_1_result"]
+        # 1-indexed fallback is handled by executor at runtime; context stores 0-indexed only
+        # (previous duplication caused overwrite bug where step_1_result was clobbered)
 
 
 class TestSelfCorrection:

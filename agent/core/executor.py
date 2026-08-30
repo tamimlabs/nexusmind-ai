@@ -39,6 +39,7 @@ _pending_approvals: dict[str, asyncio.Event] = {}
 _approval_results: dict[str, bool] = {}
 _approval_timed_out: set[str] = set()
 _approval_metadata: dict[str, dict[str, str]] = {}
+_approval_lock = __import__("threading").Lock()
 
 # Task context for Telegram messages (goal, etc.)
 _task_context: dict[str, str] = {}
@@ -152,8 +153,24 @@ def is_safe_command(command: str) -> bool:
     cmd = command.strip().lower()
 
     # mkdir under allowed roots (projects/, output/) is safe — auto-approve
-    if re.match(r"mkdir\s+(-p\s+)?(projects/|output/)", cmd) and ".." not in cmd and not re.search(r"\s/|\s[a-z]:", cmd):
-        # Only allow relative paths with no traversal
+    # Strict: must be pure mkdir with no shell chaining, no absolute paths, no traversal
+    if re.match(r"^\s*mkdir\s+(-p\s+)?.*$", cmd):
+        if _SHELL_SIDE_EFFECT_RE.search(cmd):
+            return False
+        if ".." in cmd or re.search(r"\s/|\s[a-z]:", cmd):
+            return False
+        # Validate each path arg is under allowed roots
+        payload = re.sub(r"^\s*mkdir\s+(-p\s+)?", "", cmd).strip()
+        if not payload:
+            return False
+        parts = [p.strip().strip("'\"") for p in re.split(r"\s+", payload) if p.strip()]
+        if not parts:
+            return False
+        for part in parts:
+            if not (part.startswith("projects/") or part.startswith("output/") or part.startswith("projects\\") or part.startswith("output\\")):
+                return False
+            if part.startswith("/") or re.match(r"^[a-z]:", part):
+                return False
         return True
 
     # Any redirection/pipe/compound/chaining construct is a side effect —
@@ -278,8 +295,9 @@ async def request_approval(step_id: str, description: str, tool_name: str, tool_
 
     """
     event = asyncio.Event()
-    _pending_approvals[step_id] = event
-    _approval_metadata[step_id] = {"tool_name": tool_name, "description": description, "task_id": task_id}
+    with _approval_lock:
+        _pending_approvals[step_id] = event
+        _approval_metadata[step_id] = {"tool_name": tool_name, "description": description, "task_id": task_id}
     logger.warning("APPROVAL REQUIRED: [%s] %s — %s", step_id, tool_name, description)
 
     # Try Telegram first
@@ -340,15 +358,18 @@ def resolve_approval(step_id: str, approved: bool) -> None:
     steps in the same task auto-approve (one approval per task). Denials never
     trust the task.
     """
-    if step_id not in _pending_approvals:
-        return
-    meta = _approval_metadata.get(step_id, {})
-    if approved and meta.get("task_id"):
-        _task_trusted.add(meta["task_id"])
-        logger.info("Task %s trusted: remaining risky steps will auto-approve", meta["task_id"])
-    _approval_results[step_id] = approved
-    _pending_approvals[step_id].set()
-    _approval_metadata.pop(step_id, None)
+    with _approval_lock:
+        if step_id not in _pending_approvals:
+            return
+        meta = _approval_metadata.get(step_id, {})
+        if approved and meta.get("task_id"):
+            _task_trusted.add(meta["task_id"])
+            logger.info("Task %s trusted: remaining risky steps will auto-approve", meta["task_id"])
+        _approval_results[step_id] = approved
+        ev = _pending_approvals.get(step_id)
+        if ev:
+            ev.set()
+        _approval_metadata.pop(step_id, None)
     logger.info("Approval %s for step %s", "granted" if approved else "denied", step_id)
 
 
@@ -371,15 +392,19 @@ async def wait_for_approval(step_id: str, timeout: float = 300) -> bool:
 
 def get_pending_approvals() -> list[dict[str, str]]:
     """Return all pending approvals for the dashboard."""
+    # Snapshot under lock to avoid 'dictionary changed size during iteration'
+    with _approval_lock:
+        for_snapshot = list(_pending_approvals.items())
+        meta_snapshot = dict(_approval_metadata)
     return [
         {
             "step_id": sid,
             "status": "pending",
-            "tool_name": _approval_metadata.get(sid, {}).get("tool_name", "Unknown"),
-            "description": _approval_metadata.get(sid, {}).get("description", ""),
+            "tool_name": meta_snapshot.get(sid, {}).get("tool_name", "Unknown"),
+            "description": meta_snapshot.get(sid, {}).get("description", ""),
         }
-        for sid in _pending_approvals
-        if not _pending_approvals[sid].is_set()
+        for sid, ev in for_snapshot
+        if not ev.is_set()
     ]
 
 
@@ -542,6 +567,13 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                     fallback_key = f"step_{idx - 1}_result"
                     if fallback_key in (context or {}):
                         v = v.replace(match.group(0), str(context[fallback_key]))
+            # If still unresolved, fail fast instead of sending literal braces to tool
+            if "{{" in v and "}}" in v:
+                # Only error on step_N_result templates; other braces may be legit
+                if re.search(r"\{\{step_\d+_result\}\}", v):
+                    step.status = StepStatus.FAILED
+                    step.error = f"Unresolved template in arg '{k}': {v[:200]} (missing context)"
+                    return ToolResult(success=False, output="", error=step.error)
         resolved_args[k] = v
     # Schema-drift tolerance (Hermes): LLMs vary arg keys ("file_path",
     # "filename"...). Normalize aliases, then derive required args that are
@@ -585,9 +617,10 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                             original_tool, switch_to,
                         )
                     else:
+                        old_tool = step.tool_name
                         tool = _tool_registry[switch_to]
                         step.tool_name = switch_to
-                        logger.info("Switching from %s to %s (attempt %d)", step.tool_name, switch_to, attempt + 1)
+                        logger.info("Switching from %s to %s (attempt %d)", old_tool, switch_to, attempt + 1)
                 current_args.update(corrected)
                 continue
             break  # No correction possible
@@ -784,23 +817,33 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
 async def run_command(command: str, **_: Any) -> ToolResult:
     """Run a shell command. Handles mkdir cross-platform via pathlib when possible."""
     # Cross-platform fix: mkdir -p fails on Windows CMD. Intercept and use pathlib.
-    m = re.match(r"^\s*mkdir\s+(?:-p\s+)?(.+)\s*$", command.strip(), re.IGNORECASE)
-    if m:
-        raw_paths = m.group(1).strip()
-        # Split on space (support "mkdir -p a b c")
-        for part in re.split(r"\s+", raw_paths):
-            p = part.strip().strip("'\"")
-            if not p or ".." in p or p.startswith("/") or re.match(r"^[a-zA-Z]:", p):
-                continue
-            # Only allow projects/ and output/ trees
-            if not (p.startswith("projects/") or p.startswith("output/") or p.startswith("projects\\") or p.startswith("output\\")):
-                continue
-            try:
-                Path(p).mkdir(parents=True, exist_ok=True)
-            except Exception as exc:
-                return ToolResult(success=False, output="", error=f"mkdir failed for {p}: {exc}")
-        # Verify at least one was created
-        return ToolResult(success=True, output=f"Created directories: {raw_paths}")
+    # Reject compound shell operators before fast-path to avoid silently swallowing "&& rm -rf"
+    if _SHELL_SIDE_EFFECT_RE.search(command) or "&&" in command or "||" in command:
+        # Do NOT use mkdir fast-path for compound commands; fall through to real shell (requires approval)
+        # But if the command is an attempt to inject, fail fast
+        if re.match(r"^\s*mkdir\s+", command.strip(), re.IGNORECASE):
+            return ToolResult(success=False, output="", error="Refusing mkdir with shell chaining/operators — split into separate steps")
+    else:
+        m = re.match(r"^\s*mkdir\s+(?:-p\s+)?(.+)\s*$", command.strip(), re.IGNORECASE)
+        if m:
+            raw_paths = m.group(1).strip()
+            # Split on space (support "mkdir -p a b c")
+            created_any = False
+            for part in re.split(r"\s+", raw_paths):
+                p = part.strip().strip("'\"")
+                if not p or ".." in p or p.startswith("/") or re.match(r"^[a-zA-Z]:", p):
+                    continue
+                # Only allow projects/ and output/ trees
+                if not (p.startswith("projects/") or p.startswith("output/") or p.startswith("projects\\") or p.startswith("output\\")):
+                    continue
+                try:
+                    Path(p).mkdir(parents=True, exist_ok=True)
+                    created_any = True
+                except Exception as exc:
+                    return ToolResult(success=False, output="", error=f"mkdir failed for {p}: {exc}")
+            if created_any:
+                return ToolResult(success=True, output=f"Created directories: {raw_paths}")
+            return ToolResult(success=False, output="", error=f"mkdir failed: no valid paths in '{raw_paths}'")
 
     # Load .env vars into subprocess environment (project-root .env)
     env = os.environ.copy()

@@ -77,9 +77,7 @@ ignore = ["E501"]
 known-first-party = ["agent", "cloud", "api"]
 
 [tool.mypy]
-# numpy>=2.x ships type-stubs using PEP 695 `type` statements (needs >=3.12);
-# runtime syntax compatibility with 3.11 stays enforced by ruff's py311 target.
-python_version = "3.12"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

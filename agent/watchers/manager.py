@@ -99,14 +99,80 @@ def _sanitize_config(config: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in config.items() if k not in _SENSITIVE_KEYS}
 
 
+def _rehydrate_config(watcher_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Fill missing sensitive keys from global settings / .env for restored watchers.
+
+    Legacy state files had secrets stripped via _sanitize_config; without this
+    rehydration every watcher would silently lose auth after restart/scale-to-zero.
+    """
+    # Copy to avoid mutating caller's dict in place unexpectedly
+    cfg = dict(config)
+    # GitHub token fallback (most common)
+    if watcher_type == "github" and not cfg.get("token"):
+        try:
+            from agent.config import settings as _s
+
+            if getattr(_s, "github_token", ""):
+                cfg["token"] = _s.github_token
+            else:
+                # Direct .env parse as last resort (mirrors github._resolve_github_token)
+                envf = _PROJECT_ROOT / ".env"
+                if envf.exists():
+                    for line in envf.read_text(encoding="utf-8").splitlines():
+                        if line.strip().startswith("GITHUB_TOKEN="):
+                            cfg["token"] = line.partition("=")[2].strip().strip("'\"")
+                            break
+        except Exception:
+            pass
+    # Precise rehydration: only watcher-specific env keys to avoid cross-contamination
+    import os as _os
+
+    # Explicit per-watcher env mapping to avoid generic API_KEY leaking to wrong watcher
+    _WATCHER_ENV_MAP: dict[str, dict[str, str]] = {
+        "github": {"token": "GITHUB_TOKEN"},
+        "gitlab": {"token": "GITLAB_TOKEN"},
+        "slack": {"token": "SLACK_BOT_TOKEN"},
+        "discord": {"token": "DISCORD_BOT_TOKEN"},
+        "jira": {"token": "JIRA_TOKEN", "api_key": "JIRA_TOKEN", "secret": "JIRA_TOKEN"},
+        "email": {"password": "EMAIL_IMAP_PASSWORD", "imap_password": "EMAIL_IMAP_PASSWORD", "email": "EMAIL_ADDRESS", "token": "EMAIL_IMAP_PASSWORD"},
+        "reddit": {"secret": "REDDIT_CLIENT_SECRET", "api_key": "REDDIT_CLIENT_ID"},
+        "rss": {},
+        "cron": {},
+        "webhook": {"secret": "WEBHOOK_SECRET", "token": "WEBHOOK_TOKEN"},
+        "hackernews": {},
+    }
+    watcher_map = _WATCHER_ENV_MAP.get(watcher_type, {})
+    for k in _SENSITIVE_KEYS:
+        if cfg.get(k):
+            continue
+        # Prefer explicit mapping, fallback to watcher-specific upper only (no generic)
+        explicit = watcher_map.get(k)
+        candidates: list[str] = []
+        if explicit:
+            candidates.append(explicit)
+        candidates.append(f"{watcher_type.upper()}_{k.upper()}")
+        if k == "token":
+            candidates.append(f"{watcher_type.upper()}_TOKEN")
+        for ck in candidates:
+            val = _os.environ.get(ck, "")
+            if val:
+                cfg[k] = val
+                break
+    return cfg
+
+
 def _save_state() -> None:
-    """Persist watcher state (Firestore first, then JSON file)."""
+    """Persist watcher state (Firestore first, then JSON file).
+
+    Full config (including secrets) is persisted so restore can re-auth.
+    Secrets are stripped only for API responses via _sanitize_config/list_watchers.
+    The state file lives under data/ (gitignored) and Firestore has IAM ACLs.
+    """
     state = {}
     for wid, watcher in _active_watchers.items():
-        sanitized = _sanitize_config(watcher.config)
         state[wid] = {
             "type": watcher.config.get("type", "unknown"),
-            "config": sanitized,
+            "config": dict(watcher.config),
             "status": watcher.get_status(),
         }
     store = _firestore_state_store()
@@ -192,7 +258,8 @@ async def restore_watchers() -> None:
     for wid, data in state.items():
         try:
             watcher_type = data.get("type", "unknown")
-            config = data.get("config", {})
+            config = data.get("config", {}) or {}
+            config = _rehydrate_config(watcher_type, config)
             config["id"] = wid
             watcher_class = _WATCHER_TYPES.get(watcher_type)
             if watcher_class is None:

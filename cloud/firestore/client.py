@@ -17,16 +17,19 @@ logger = logging.getLogger(__name__)
 
 _client = None
 _db = None
+_lock = __import__("threading").Lock()
 
 
 def _get_db():
-    """Lazy-init Firestore client."""
+    """Lazy-init Firestore client (thread-safe)."""
     global _client, _db
     if _db is None:
-        from google.cloud import firestore
+        with _lock:
+            if _db is None:
+                from google.cloud import firestore
 
-        _client = firestore.Client(project=settings.google_cloud_project)
-        _db = _client
+                _client = firestore.Client(project=settings.google_cloud_project)
+                _db = _client
     return _db
 
 

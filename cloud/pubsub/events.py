@@ -119,11 +119,21 @@ def subscribe_to_tasks(callback: Callable[[dict[str, Any]], Awaitable[None]]) ->
         try:
             data = json.loads(message.data.decode("utf-8"))
             logger.info("Received task event: %s", data.get("task_id", "unknown"))
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                _background_tasks.add(asyncio.ensure_future(callback(data)))
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None and loop.is_running():
+                task = loop.create_task(callback(data))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
             else:
-                loop.run_until_complete(callback(data))
+                # No running loop (e.g. called from sync context) — run directly
+                try:
+                    nloop = asyncio.get_event_loop()
+                    nloop.run_until_complete(callback(data))
+                except RuntimeError:
+                    asyncio.run(callback(data))
             message.ack()
         except Exception:
             logger.exception("Failed to process message")

@@ -27,9 +27,30 @@ class EmailWatcher(BaseWatcher):
 
     def __init__(self, watcher_id: str, config: dict[str, Any]):
         super().__init__(watcher_id, config)
-        self.imap_server = config.get("imap_server", "imap.gmail.com")
-        self.email_address = config.get("email", "")
-        self.password = config.get("password", "")  # App password (not account password)
+        import os as _os
+
+        def _resolve_env(*keys: str) -> str:
+            for k in keys:
+                v = _os.environ.get(k) or config.get(k) or config.get(k.lower())
+                if v:
+                    return str(v).strip().strip("'\"")
+            # Also check .env file directly
+            try:
+                from pathlib import Path as _P
+                envf = _P(__file__).resolve().parents[2] / ".env"
+                if envf.exists():
+                    data = envf.read_text(encoding="utf-8")
+                    for k in keys:
+                        for line in data.splitlines():
+                            if line.strip().startswith(f"{k}="):
+                                return line.partition("=")[2].strip().strip("'\"")
+            except Exception:
+                pass
+            return ""
+
+        self.imap_server = config.get("imap_server") or config.get("imapServer") or _resolve_env("EMAIL_IMAP_SERVER") or "imap.gmail.com"
+        self.email_address = config.get("email", "") or _resolve_env("EMAIL_ADDRESS", "EMAIL")
+        self.password = config.get("password", "") or _resolve_env("EMAIL_IMAP_PASSWORD", "EMAIL_PASSWORD", "IMAP_PASSWORD")  # App password (not account password)
         self.folder = config.get("folder", "INBOX")
         self.watch_unread = config.get("watch_unread", True)
         self._seen_message_ids: set[str] = set(self._state.get("email_seen_ids", []))
