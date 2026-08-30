@@ -279,22 +279,74 @@ function switchRTab(t){S.rtab=t;document.querySelectorAll('.rpanel-tab').forEach
 function renderPage(){const c=document.getElementById('pageContent');if(S.page==='tasks')renderTasksPage(c);else if(S.page==='memory')renderMemoryPage(c);else if(S.page==='approvals')renderApprovalsPage(c);else if(S.page==='watchers')renderWatchersPage(c);else if(S.page==='settings')renderSettingsPage(c);else if(S.page==='credentials')renderCredentialsPage(c)}
 function renderRPanel(){const c=document.getElementById('rpanelBody');if(S.rtab==='trace')renderTracePanel(c);else if(S.rtab==='thinking')renderThinkingPanel(c);else if(S.rtab==='checklist')renderChecklistPanel(c);else renderApprovalPanel(c)}
 
-/* ── Task Views ───────────────────────────────────────────────── */
-function renderTasksPage(c){
-  const prevVal=document.getElementById('goalInput')?document.getElementById('goalInput').value:'';
-  const prevSteps=document.getElementById('maxStepsInput')?document.getElementById('maxStepsInput').value:'';
-  let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div><div style="font-size:11px;color:var(--t5);margin-top:6px">AI decides steps automatically — short tasks finish in 3–5 steps, large builds stream up to 120.</div></div>';
-  // One cancel per page: loadingBar only in list view, detail header has its own Cancel (S.selected). Prevents duplicate 2× Cancel.
-  if(!S.selected) html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span><button class="btn btn-d btn-sm" style="margin-left:auto" onclick="cancelCurrentTask()">Cancel</button></div>';
-  else html+='<div id="loadingBar" style="display:none"></div>';
-  html+='<div class="task-list" id="taskListEl">';
-  if(S.selected){html+=renderDetail(S.selected)}
-  else if(S.tasks.length===0){html+='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}
-  else{S.tasks.forEach(t=>{
+/* ── Task Views — flicker-free: shell is persistent, only taskListEl diffs ── */
+let _taskRenderRaf=null; let _lastTaskListHtml="";
+function getTaskListInnerHtml(){
+  if(S.selected){return renderDetail(S.selected)}
+  if(S.tasks.length===0){return '<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}
+  let out=""; S.tasks.forEach(t=>{
     const a=S.selected&&S.selected.id===t.id;
     const isNeeds=t.status==='needs_instruction';
-    html+='<div class="task-card'+(a?' sel':'')+(isNeeds?' style="border-left:3px solid var(--yellow)"':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+(isNeeds?'⚠️ ':'')+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span>'+(isNeeds?'<span style="color:var(--yellow)">needs instruction</span>':'')+'</div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions">'+(isNeeds?'<button class="btn btn-p btn-sm" onclick="event.stopPropagation();quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+'<button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}
-  html+='</div>';c.innerHTML=html;const inp=document.getElementById('goalInput');if(inp){inp.value=prevVal;inp.addEventListener('keypress',e=>{if(e.key==='Enter')submitTask()});inp.focus()}}
+    out+='<div class="task-card'+(a?' sel':'')+(isNeeds?' style="border-left:3px solid var(--yellow)"':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+(isNeeds?'⚠️ ':'')+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span>'+(isNeeds?'<span style="color:var(--yellow)">needs instruction</span>':'')+'</div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions">'+(isNeeds?'<button class="btn btn-p btn-sm" onclick="event.stopPropagation();quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+'<button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'});
+  return out;
+}
+function patchTaskListEl(){
+  const el=document.getElementById('taskListEl');
+  if(!el) return;
+  const html=getTaskListInnerHtml();
+  if(html===_lastTaskListHtml) {
+    if(S.selected&&S.selected.elapsed_seconds!=null){
+      const eb=document.getElementById('detailElapsed');
+      if(eb) eb.textContent='⏱ '+S.selected.elapsed_seconds+'s';
+      const sb=document.getElementById('detailStatus');
+      if(sb) { sb.textContent=S.selected.status.replace('_',' '); sb.className='badge b-'+S.selected.status; }
+    }
+    return;
+  }
+  // elapsed-only change → patch badges without full reflow
+  const strip=s=>s.replace(/id="detailElapsed"[^>]*>.*?<\/span>/g,'').replace(/id="detailStatus"[^>]*>.*?<\/span>/g,'');
+  if(_lastTaskListHtml && strip(html)===strip(_lastTaskListHtml)){
+    const eb=document.getElementById('detailElapsed');
+    if(eb && S.selected) eb.textContent='⏱ '+S.selected.elapsed_seconds+'s';
+    const sb=document.getElementById('detailStatus');
+    if(sb && S.selected){ sb.textContent=S.selected.status.replace('_',' '); sb.className='badge b-'+S.selected.status; }
+    _lastTaskListHtml=html;
+    return;
+  }
+  _lastTaskListHtml=html;
+  const page=document.getElementById('pageContent');
+  const sTop=page? page.scrollTop : 0;
+  el.innerHTML=html;
+  if(page) page.scrollTop=sTop;
+  setTimeout(renderStreamBubble,0);
+}
+function queueTaskListPatch(){
+  if(_taskRenderRaf) return;
+  _taskRenderRaf=requestAnimationFrame(()=>{ _taskRenderRaf=null; patchTaskListEl(); });
+}
+function renderTasksPage(c){
+  const hasShell=c.querySelector('#taskListEl') && c.querySelector('#goalInput');
+  if(hasShell){
+    // incremental: keep input focus/value, only update list
+    const inp=document.getElementById('goalInput');
+    const keepVal=inp? inp.value : "";
+    const keepFocus=document.activeElement===inp;
+    patchTaskListEl();
+    const inp2=document.getElementById('goalInput');
+    if(inp2 && keepFocus) { inp2.focus(); try{ inp2.setSelectionRange(keepVal.length, keepVal.length);}catch(e){} }
+    return;
+  }
+  // first build — create shell once
+  _lastTaskListHtml="";
+  let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div><div style="font-size:11px;color:var(--t5);margin-top:6px">AI decides steps automatically — short tasks finish in 3–5 steps, large builds stream up to 120.</div></div>';
+  if(!S.selected) html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span><button class="btn btn-d btn-sm" style="margin-left:auto" onclick="cancelCurrentTask()">Cancel</button></div>';
+  else html+='<div id="loadingBar" style="display:none"></div>';
+  html+='<div class="task-list" id="taskListEl"></div>';
+  c.innerHTML=html;
+  const inp=document.getElementById('goalInput');
+  if(inp){ inp.addEventListener('keypress',e=>{if(e.key==='Enter')submitTask()}); inp.focus(); }
+  patchTaskListEl();
+}
 
 function quickFixInstruction(taskId){
   const t=S.tasks.find(x=>x.id===taskId);
@@ -311,7 +363,7 @@ function quickFixInstruction(taskId){
 function renderDetail(t){
   const isNeeds=t.status==='needs_instruction';
   const isRunning=['planning','executing','pending'].includes(t.status)||(S.liveTaskId===t.id&&!['completed','failed'].includes(S.liveStatus));
-  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span>'+(t.elapsed_seconds?'<span class="badge" style="background:var(--bg3);color:var(--t4);border:1px solid var(--border)">⏱ '+t.elapsed_seconds+'s</span>':'')+(isNeeds?'<button class="btn btn-p btn-sm" onclick="quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+(isRunning?'<button class="btn btn-d btn-sm" onclick="cancelCurrentTask()">⏹ Cancel</button>':'')+'<button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
+  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span id="detailStatus" class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span>'+(t.elapsed_seconds!=null?'<span id="detailElapsed" class="badge" style="background:var(--bg3);color:var(--t4);border:1px solid var(--border)">⏱ '+t.elapsed_seconds+'s</span>':'')+(isNeeds?'<button class="btn btn-p btn-sm" onclick="quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+(isRunning?'<button class="btn btn-d btn-sm" onclick="cancelCurrentTask()">⏹ Cancel</button>':'')+'<button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
   if(isNeeds){h+='<div class="detail-section" style="background:var(--ybg);border:1px solid var(--yad);border-radius:8px;padding:12px"><div style="font-size:13px;font-weight:600;color:var(--yellow);margin-bottom:6px">⚠️ Needs your instruction — nothing was executed</div><div style="font-size:12px;color:var(--t3);line-height:1.6">This watcher detected an event but you have no matching standing instruction. Add one in <b>Memory → instruction</b> to auto-handle future events. Telegram was notified (once per 6h). Click <b>Create Instruction</b> for a suggestion.</div></div>';}
   // "What is doing" banner like opencode — show active todo (in_progress) or fallback to current step
   if(isRunning){
@@ -638,7 +690,10 @@ function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks();refres
 
 async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=await res.json();if(tasks.length>0){S.tasks=tasks;document.getElementById('taskCount').textContent=S.tasks.length;if(S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}}}catch(e){}}
 
-function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selected)}else if(S.tasks.length===0){html='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}el.innerHTML=html;setTimeout(renderStreamBubble,0)}
+function renderTaskList(el){
+  // legacy entry — now routed through flicker-free RAF patch
+  queueTaskListPatch();
+}
 
 /* ── Live word-to-word stream — aggregates token deltas into a typing bubble ── */
 S._streamBuf="";S._streamActive=false;S._lastTokenAt=0;S._streamFlushTimer=null;
@@ -674,7 +729,7 @@ function renderStreamBubble(){
 
 /* ── Live Visibility — WS global + SSE push + poller fallback ───── */
 let S_eventSource=null;let S_ws=null;
-function startLivePoll(id){stopLivePoll();S.liveEvents=[];S._streamBuf="";S._streamActive=false;S._lastTokenAt=0;S._seenPollKeys=new Set();if(S._streamFlushTimer){clearTimeout(S._streamFlushTimer);S._streamFlushTimer=null}S.liveTaskId=id;S.liveStatus='running';pollLive();S.livePoll=setInterval(pollLive,1500);startLiveStream(id);connectGlobalWS()}
+function startLivePoll(id){stopLivePoll();S.liveEvents=[];S._streamBuf="";S._streamActive=false;S._lastTokenAt=0;S._seenPollKeys=new Set();S._seenPollEventKeys=new Set();_lastTaskListHtml="";if(S._streamFlushTimer){clearTimeout(S._streamFlushTimer);S._streamFlushTimer=null}S.liveTaskId=id;S.liveStatus='running';pollLive();S.livePoll=setInterval(pollLive,2800);startLiveStream(id);connectGlobalWS()}
 function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}if(S_eventSource){try{S_eventSource.close()}catch(e){}S_eventSource=null}if(S_ws){try{S_ws.close()}catch(e){}S_ws=null}S.liveTaskId=null;if(S._streamFlushTimer){clearTimeout(S._streamFlushTimer);S._streamFlushTimer=null}S._streamActive=false;renderStreamBubble()}
 function connectGlobalWS(){
   try{
@@ -700,7 +755,35 @@ function startLiveStream(id){
     es.onerror=()=>{try{es.close()}catch(e){}};
   }catch(e){}
 }
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();const raw=(d.events||[]);if(!S._seenPollKeys) S._seenPollKeys=new Set();let hasNewToken=false;for(const e of raw){if(e.type==='token'){const k=(e.time||0)+':'+(e.message||'').slice(0,40);if(!S._seenPollKeys.has(k)){S._seenPollKeys.add(k);if(S._seenPollKeys.size>1000) S._seenPollKeys.clear();const delta=e.message||e.detail||"";if(delta) handleTokenDelta(delta);hasNewToken=true}}}S.liveEvents=raw.filter(e=>e.type!=='token');S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.elapsed_seconds=d.elapsed_seconds||t.elapsed_seconds;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace}if(S.rtab==='thinking'||S.rtab==='checklist'||S.rtab==='trace')renderRPanel();if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl);const lb=document.getElementById('loadingBar');if(lb)lb.style.display=['completed','failed'].includes(d.status)?'none':'flex'}if(['completed','failed'].includes(d.status)){if(S._streamBuf) flushStreamBuf();stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}else if(hasNewToken){renderStreamBubble()}}catch(e){}}
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();const raw=(d.events||[]);if(!S._seenPollKeys) S._seenPollKeys=new Set();let hasNewToken=false;for(const e of raw){if(e.type==='token'){const k=(e.time||0)+':'+(e.message||'').slice(0,40);if(!S._seenPollKeys.has(k)){S._seenPollKeys.add(k);if(S._seenPollKeys.size>1000) S._seenPollKeys.clear();const delta=e.message||e.detail||"";if(delta) handleTokenDelta(delta);hasNewToken=true}}}
+const wsAlive=S_ws && S_ws.readyState===1;
+const filtered=raw.filter(e=>e.type!=='token');
+let eventsChanged=false;
+if(!wsAlive){
+  // poll is primary when WS disconnected — replace
+  if(filtered.length!==S.liveEvents.length || JSON.stringify(filtered.map(e=>e.type+e.message).slice(-6))!==JSON.stringify(S.liveEvents.map(e=>e.type+e.message).slice(-6))){
+    S.liveEvents=filtered; eventsChanged=true;
+  }
+} else {
+  // WS is primary — only append truly new events not yet seen (avoid flicker from full replace)
+  if(!S._seenPollEventKeys) S._seenPollEventKeys=new Set();
+  for(const e of filtered){
+    const k=(e.time||0)+':'+e.type+':'+(e.message||'').slice(0,60);
+    if(!S._seenPollEventKeys.has(k)){ S._seenPollEventKeys.add(k); S.liveEvents.push(e); if(S.liveEvents.length>600) S.liveEvents.shift(); eventsChanged=true; }
+  }
+  if(S._seenPollEventKeys.size>800) S._seenPollEventKeys.clear();
+}
+S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){const prevStatus=t.status, prevSteps=(t.steps||[]).length, prevTodos=(t.todos||[]).length; t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.elapsed_seconds=d.elapsed_seconds||t.elapsed_seconds;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace;
+  if(t.status!==prevStatus || prevSteps!==t.steps.length || prevTodos!==t.todos.length) eventsChanged=true;
+  // keep selected reference in sync for badge patch
+  if(S.selected&&S.selected.id===t.id){ S.selected.status=t.status; S.selected.elapsed_seconds=t.elapsed_seconds; S.selected.steps=t.steps; S.selected.todos=t.todos; }
+}
+if((eventsChanged||hasNewToken) && (S.rtab==='thinking'||S.rtab==='checklist'||S.rtab==='trace'))renderRPanel();
+if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){
+  if(eventsChanged || hasNewToken || d.elapsed_seconds!==S.selected.elapsed_seconds) queueTaskListPatch();
+  const lb=document.getElementById('loadingBar');if(lb)lb.style.display=['completed','failed'].includes(d.status)?'none':'flex'
+}
+if(['completed','failed'].includes(d.status)){if(S._streamBuf) flushStreamBuf();stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}else if(hasNewToken){renderStreamBubble()}}catch(e){}}
 
 /* ── Right Panel Minimize ─────────────────────────────────────── */
 function toggleRPanel(){const min=!document.body.classList.contains('rp-min');document.body.classList.toggle('rp-min',min);try{localStorage.setItem('nm_rpanel_min',min?'1':'0')}catch(e){}}
