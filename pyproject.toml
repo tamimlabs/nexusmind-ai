@@ -1,7 +1,7 @@
 [project]
 name = "nexusmind-ai"
 version = "0.1.0"
-description = "Next-generation autonomous AI agent combining OpenClaw and Hermes patterns"
+description = "Next-generation autonomous AI agent combining OpenClaw, Hermes and opencode patterns"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

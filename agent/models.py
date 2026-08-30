@@ -90,6 +90,15 @@ class TodoStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+
+class TodoPriority(StrEnum):
+    """Priority for a todo item (opencode parity)."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
 class TaskTodo(BaseModel):
@@ -98,14 +107,24 @@ class TaskTodo(BaseModel):
     The adaptive loop seeds the list from the roadmap, marks items in
     progress/completed as steps succeed, and lets the model add items as the
     work unfolds — so the dashboard always shows where the task stands.
+    Supports both `title` and `content` alias for opencode `todowrite` compat.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     task_id: str = ""
     title: str = ""
     status: TodoStatus = TodoStatus.PENDING
+    priority: TodoPriority = TodoPriority.MEDIUM
     order: int = 0
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def content(self) -> str:
+        return self.title
+
+    @content.setter
+    def content(self, value: str) -> None:
+        self.title = value
 
 
 class ToolResult(BaseModel):

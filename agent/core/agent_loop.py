@@ -94,13 +94,13 @@ RULES
    - or, when the goal is fully met (and verified where possible): {"done": true, "result": "<final summary: where files were saved / what the answer is / what changed>"}
 3. NEVER invent results that tools did not produce. If a step failed, read its ERROR in "STEPS EXECUTED SO FAR" and fix the approach — adjust args, switch tool, or finish with the partial result. Never pretend success.
 4. Multi-file websites / web apps are built as SEPARATE steps: first a tiny execute_code that only creates the folder(s) with pathlib, then ONE write_file step per file (e.g. index.html, css/styles.css, js/main.js, README.md). Keep every step's inline content under 20000 characters so the reply stays valid JSON — never dump a whole site into one step. For very large generated files, use a small execute_code that WRITES the file programmatically.
-5. Use EXACT canonical tool names: web_search, fetch_url, run_command, execute_code, read_file, write_file, list_directory, summarize_text, extract_data, parse_json, github_resolve_repo, github_get_repo, github_list_prs, github_get_pr, github_review_pr, github_merge_pr, github_close_pr, github_apply_decisions.
+5. Use EXACT canonical tool names: web_search, fetch_url, run_command, execute_code, read_file, write_file, list_directory, summarize_text, extract_data, parse_json, github_resolve_repo, github_get_repo, github_list_prs, github_get_pr, github_review_pr, github_merge_pr, github_close_pr, github_apply_decisions, todowrite.
 6. Verify before declaring done. For file builds, list the directory or read key files to confirm they exist and are real. If the check shows a problem, add a fixing step instead of claiming success.
 7. Respect MEMORY CONTEXT (user preferences / standing instructions) and LESSONS. Never fabricate branding, text, images, or content that is not in the goal or in prior step results. If the goal needs photos and none are provided, download real ones from the web into an assets folder or build the visuals with CSS/JS.
 8. The loop executes exactly ONE action per reply and returns its result to you. Do not try to do several actions in one reply.
 9. Use {{step_N_result}} style references NEVER — put concrete values directly into tool_args (the actual prior RESULT text is already in your context).
 10. Purely informational questions are completed as soon as the answer is backed by retrieved results — a web_search or summarize step then DONE.
-11. You maintain a live TODO checklist (shown to the user). It is seeded from the suggested roadmap but it is YOUR plan, not an obligation: keep it honest, up to date, and complete. A step reply may carry an OPTIONAL "todo_updates" array (max 5 entries) with items {"kind": "add"|"complete"|"skip", "title": "..."}. Titles must match an existing todo closely (case-insensitive substring). Use it to add new follow-up work you discover, mark items done that your action completes, or drop items that turned out unnecessary. The checklist applies to EVERY task type — research, file builds, GitHub ops, anything — so the user always sees where you are.
+11. You maintain a live TODO checklist via the todowrite tool (shown to the user). It is seeded from the roadmap but it is YOUR plan: call todowrite with the FULL desired todos array (opencode semantics) whenever you want to create/update it — include content/title, status pending/in_progress/completed/cancelled, priority high/medium/low. You may also still use optional "todo_updates" in a step reply for small delta updates (legacy), but prefer todowrite for full overwrites. Keep it honest and complete for EVERY task type.
 12. Keep each step small and single-purpose; for big goals prefer many small steps over one giant step (folder creation, then one file per step, then verification)."""
 
 _DECISION_USER_TEMPLATE = """GOAL
@@ -456,12 +456,40 @@ def _validate_step_decision(decision: dict[str, Any]) -> tuple[dict[str, Any] | 
     }, ""
 
 
-async def _call_decide(decide_fn: Callable[..., Any], state: dict[str, Any]) -> dict[str, Any]:
+async def _call_decide(
+    decide_fn: Callable[..., Any],
+    state: dict[str, Any],
+    on_event: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Invoke ``decide_fn`` with optional streaming sink.
+
+    Inspects the target signature so existing test fakes that only accept
+    ``(state)`` keep working, while :func:`decide_next_step` can receive the
+    live ``on_event`` to emit ``token`` deltas.
+    """
+    import inspect as _inspect
+
+    try:
+        sig = _inspect.signature(decide_fn)
+    except (ValueError, TypeError):
+        return await decide_fn(state)
+    if "on_event" in sig.parameters and on_event is not None:
+        return await decide_fn(state, on_event=on_event)
     return await decide_fn(state)
 
 
-async def decide_next_step(state: dict[str, Any]) -> dict[str, Any]:
+async def decide_next_step(
+    state: dict[str, Any],
+    on_event: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
     """The default decision brain: one Gemini call returning the next action.
+
+    When ``on_event`` is supplied, the LLM reply is streamed token-by-token
+    via ``generate_content_stream`` and each delta is forwarded as
+    ``on_event("token", delta)`` (with a ``(task_id, "token", ...)`` fallback
+    for the loop's 4-arg sink). If streaming is unavailable or yields nothing,
+    the call falls back to the buffered :func:`generate_content` path so
+    existing tests remain green.
 
     The returned dict is either ``{"done": True, "result": "...", "_raw": ...}``
     or a step decision (see ``_validate_step_decision``) with ``_raw`` carrying
@@ -486,6 +514,68 @@ async def decide_next_step(state: dict[str, Any]) -> dict[str, Any]:
         transcript=state.get("transcript") or "_None yet._",
         feedback=(state.get("feedback") or "") + "\n" if state.get("feedback") else "",
     )
+
+    def _emit_token(delta: str) -> None:
+        if on_event is None or not delta:
+            return
+        # Preferred 2-arg form ``on_event("token", delta)`` (spec); fall back
+        # to the loop's 4-arg sink ``on_event(task_id, "token", delta)``.
+        try:
+            on_event("token", delta)
+            return
+        except TypeError:
+            pass
+        except Exception:
+            logger.debug("token sink failed (2-arg)", exc_info=True)
+            return
+        # 4-arg sink needs a task_id — pull from state if present.
+        task_id = state.get("task_id") or state.get("id") or ""
+        try:
+            on_event(task_id, "token", delta, "")
+        except Exception:
+            logger.debug("token sink failed (4-arg)", exc_info=True)
+
+    # B1: attempt token streaming first when a sink is present.
+    if on_event is not None:
+        try:
+            from agent.core.gemini_client import generate_content_stream as _stream
+
+            raw_streamed = ""
+            async for _delta in _stream(
+                model=settings.gemini_model,
+                system=_CONTROLLER_SYSTEM_PROMPT,
+                user=user,
+                temperature=0.2,
+                max_tokens=_DECISION_MAX_TOKENS,
+            ):
+                if _delta:
+                    raw_streamed += _delta
+                    _emit_token(_delta)
+            if raw_streamed:
+                raw = raw_streamed
+                # Parse the streamed reply exactly like the buffered path.
+                obj = _extract_json_object(raw) or {}
+                obj = dict(obj)
+                obj["_raw"] = raw
+                if obj.get("done"):
+                    return {
+                        "done": True,
+                        "result": str(obj.get("result") or ""),
+                        "todo_updates": obj.get("todo_updates"),
+                        "_raw": raw,
+                    }
+                repaired, error = _validate_step_decision(obj)
+                if repaired is None:
+                    return {"_error": error, "_raw": raw}
+                repaired["_raw"] = raw
+                return repaired
+            # Empty stream — fall through to buffered call
+            logger.debug("generate_content_stream yielded no text; falling back to buffered")
+        except (OutputTruncatedError, QuotaExhaustedError):
+            raise
+        except Exception:
+            logger.debug("Streaming decide failed, falling back to buffered generate_content", exc_info=True)
+
     try:
         raw = await generate_content(
             model=settings.gemini_model,
@@ -586,6 +676,9 @@ async def run_adaptive_loop(
     effective_max = max_steps
     loop_start = datetime.now(UTC)
 
+    # D2: Compaction — summarize very long transcripts via Gemini to avoid context blow-up at hard cap
+    _COMPACTION_THRESHOLD = 90
+
     for _round in range(_MAX_STEPS_HARD):
         # Reached the current elastic budget — decide whether to extend or stop
         if _round >= effective_max:
@@ -603,6 +696,19 @@ async def run_adaptive_loop(
                     f"step budget reached ({effective_max} steps). The task may be incomplete; "
                     "partial work and any errors are reported below."
                 )
+        # Periodic compaction for very long runs (opencode session/compaction parity)
+        if _round > 0 and _round % _COMPACTION_THRESHOLD == 0 and len(task.steps) >= _COMPACTION_THRESHOLD:
+            try:
+                from agent.core.gemini_client import generate_content as _gc
+
+                older = task.steps[: len(task.steps) - _TRANSCRIPT_MAX_ENTRIES]
+                summary_prompt = "Summarize these completed steps in 8 bullet lines, keep file paths and errors:\n" + "\n".join(f"{s.order} [{s.tool_name}] {s.description[:80]}: {(s.result or s.error or '')[:120]}" for s in older[-30:])
+                comp = await _gc(system="Summarize agent progress concisely.", user=summary_prompt, temperature=0.2, max_tokens=600)
+                if comp and len(comp) > 40:
+                    # Keep first 10 raw steps + summary instead of 25 window
+                    _emit("thinking", "Compacted transcript", comp[:400])
+            except Exception:
+                logger.debug("compaction failed", exc_info=True)
         task.updated_at = datetime.now(UTC)
         snapshot_text = _snapshot_workspace()
         transcript_text = _build_transcript(task)
@@ -612,6 +718,7 @@ async def run_adaptive_loop(
         )
         state = {
             "goal": goals,
+            "task_id": task.id,
             "memory_context": memory_context or "",
             "lessons": lessons or [],
             "skill_context": skill_context or "",
@@ -633,7 +740,7 @@ async def run_adaptive_loop(
         for _attempt in range(1, _MAX_DECISION_PARSE_RETRIES + 1):
             try:
                 _emit("thinking", f"Gemini deciding… attempt {_attempt}/{_MAX_DECISION_PARSE_RETRIES}", f"model brain thinking (round {_round+1})")
-                decision = await _call_decide(decide_fn, state)
+                decision = await _call_decide(decide_fn, state, on_event=on_event)
                 raw_preview = _trim(str(decision.get("_raw") or decision)[:800], 500)
                 _emit("thinking", "Decision received", raw_preview)
             except QuotaExhaustedError as exc:
@@ -736,7 +843,31 @@ async def run_adaptive_loop(
             f"[{step.tool_name}] decide {decide_ms}ms | budget {effective_max} | elapsed {int((datetime.now(UTC)-loop_start).total_seconds())}s",
         )
         tool_started = datetime.now(UTC)
-        result = await execute_fn(step, context or {})
+        # B2: incremental tool I/O streaming — wire stdout chunks to live
+        # ``tool_delta`` events via context["on_output"] (executor.py drains
+        # stdout per 4 KiB and invokes this sink). The final ToolResult is
+        # unchanged; we just emit live deltas in addition.
+        def _on_tool_chunk(chunk: str) -> None:
+            if not chunk:
+                return
+            # Keep message/detail bounded for the live store
+            _emit("tool_delta", chunk[:800], chunk[:1200])
+
+        call_context: dict[str, Any] = dict(context or {})
+        call_context["on_output"] = _on_tool_chunk
+        # Also stash in the canonical context so execute_step's forwarder sees it
+        # even if the caller passed a different dict identity.
+        _saved_on_output = (context or {}).get("on_output") if isinstance(context, dict) else None
+        if isinstance(context, dict):
+            context["on_output"] = _on_tool_chunk
+        try:
+            result = await execute_fn(step, call_context)
+        finally:
+            if isinstance(context, dict):
+                if _saved_on_output is None:
+                    context.pop("on_output", None)
+                else:
+                    context["on_output"] = _saved_on_output
         tool_ms = int((datetime.now(UTC) - tool_started).total_seconds() * 1000)
         context[f"step_{step.order}_result"] = result.output
         details.append(
@@ -751,6 +882,37 @@ async def run_adaptive_loop(
 
         if result.success:
             consecutive_failures = 0
+            if step.tool_name == "todowrite":
+                # Opencode semantics: overwrite whole checklist
+                try:
+                    from agent.models import TodoPriority
+
+                    raw_todos = (result.metadata or {}).get("todos") or []
+                    if isinstance(raw_todos, list) and raw_todos:
+                        new_todos: list[TaskTodo] = []
+                        for i, td in enumerate(raw_todos[:30]):
+                            title = str(td.get("title") or td.get("content") or "").strip()[:140]
+                            if not title:
+                                continue
+                            s_raw = str(td.get("status") or "pending").lower()
+                            p_raw = str(td.get("priority") or "medium").lower()
+                            try:
+                                status = TodoStatus(s_raw)
+                            except ValueError:
+                                status = TodoStatus.PENDING if s_raw not in ("cancelled",) else TodoStatus.CANCELLED
+                            try:
+                                prio = TodoPriority(p_raw)
+                            except ValueError:
+                                prio = TodoPriority.MEDIUM
+                            new_todos.append(TaskTodo(task_id=task.id, title=title, status=status, priority=prio, order=i))
+                        if new_todos:
+                            task.todos.clear()
+                            task.todos.extend(new_todos)
+                            _emit("todo_update", f"Checklist {sum(1 for t in new_todos if t.status==TodoStatus.COMPLETED)}/{len(new_todos)}", "\n".join(f"[{'x' if t.status==TodoStatus.COMPLETED else ' '}] {t.title}" for t in new_todos[:8]))
+                except Exception:
+                    logger.debug("todowrite apply failed", exc_info=True)
+                _emit("done", f"Step {step.order} checklist updated", _trim(result.output or "", 300))
+                continue
             if step.tool_name in ("read_file", "list_directory"):
                 read_roots.update(_step_target_roots(step))
             if active_todo is not None:

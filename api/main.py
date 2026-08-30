@@ -13,7 +13,7 @@ import pathlib
 import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -187,18 +187,33 @@ def _cleanup_stale_tasks() -> None:
         _live_tasks_created.pop(tid, None)
 
 
-def _emit(task_id: str, event_type: str, message: str, detail: str = "") -> None:
-    """Emit a live event for the dashboard thinking panel."""
+_global_events: list[dict[str, Any]] = []
+_GLOBAL_MAX = 600
+_ws_clients: set[Any] = set()
+
+def _emit(task_id: str, event_type: str, message: str, detail: str = "", *, source: str = "task", extra: dict[str, Any] | None = None) -> None:
+    """Emit a live event for the dashboard thinking panel (per-task + global bus)."""
+    entry = {
+        "type": event_type,
+        "message": message,
+        "detail": detail[:500],
+        "time": time.time(),
+        "task_id": task_id,
+        "source": source,
+        "extra": extra or {},
+    }
     if task_id not in _live_events:
         _live_events[task_id] = []
-    _live_events[task_id].append(
-        {
-            "type": event_type,
-            "message": message,
-            "detail": detail[:500],
-            "time": time.time(),
-        }
-    )
+    _live_events[task_id].append(entry)
+    _global_events.append(entry)
+    if len(_global_events) > _GLOBAL_MAX:
+        del _global_events[: len(_global_events) - _GLOBAL_MAX]
+    # fan-out to WebSocket clients (best-effort)
+    for q in list(_ws_clients):
+        try:
+            q.put_nowait(entry)
+        except Exception:
+            pass
 
 
 def _update_task_status(task_id: str, status: str, **extra) -> None:
@@ -629,6 +644,32 @@ async def get_task_live_stream(task_id: str):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_event_gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/events/live")
+async def get_global_events(limit: int = 100):
+    """Global live bus — every work (tasks/watchers/memory/skills/approvals) streams here."""
+    lim = max(1, min(limit, 500))
+    return {"events": _global_events[-lim:], "count": len(_global_events)}
+
+
+@app.websocket("/api/ws")
+async def websocket_global(ws: WebSocket):
+    """WebSocket global fan-out for realtime dashboard (every work)."""
+    await ws.accept()
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _ws_clients.add(q)
+    try:
+        # replay last 30
+        for ev in _global_events[-30:]:
+            await ws.send_json(ev)
+        while True:
+            ev = await q.get()
+            await ws.send_json(ev)
+    except Exception:
+        pass
+    finally:
+        _ws_clients.discard(q)
 
 
 @app.post("/api/tasks/{task_id}/cancel")

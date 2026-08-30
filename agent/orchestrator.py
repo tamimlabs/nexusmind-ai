@@ -24,7 +24,7 @@ from agent.core.executor import execute_step, list_tools, set_task_context, untr
 from agent.core.memory import memory_store
 from agent.core.planner import plan_task
 from agent.core.skill_library import skill_library as _skill_library
-from agent.models import StepStatus, Task, TaskStatus
+from agent.models import StepStatus, Task, TaskStatus, TaskStep
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -85,6 +85,298 @@ def _is_trivial(task: Task) -> bool:
             if goal_lower.startswith(pattern):
                 return True
     return False
+
+
+# ── Phase A1: Complexity Router helpers ──────────────────────────
+
+# Tier2: single-tool intent patterns (regex -> canonical tool).
+# Order matters — more specific first; github single before generic web.
+_TIER2_TOOL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # read_file — explicit "read file <path>" / open / cat
+    (re.compile(r"\bread(_file)?\b|\bopen\s+file\b|\bcat\s+[^\s]+\b|\bshow\s+file\b", re.I), "read_file"),
+    # write_file — "write file" / "create file" / "save to"
+    (re.compile(r"\bwrite(_file)?\b|\bcreate\s+(?:a\s+)?file\b|\bsave\s+(?:to|as)\b", re.I), "write_file"),
+    # list_directory — "list files/directory/folder" / ls / dir
+    (re.compile(r"\blist(_directory)?\b|\blist\s+(?:files?|directory|folder)|\b\bls\b|\bdir\b", re.I), "list_directory"),
+    # fetch_url — explicit fetch/get url or bare https://
+    (re.compile(r"\bfetch(_url)?\b|https?://\S+", re.I), "fetch_url"),
+    # github single-action — one github tool only (not multi-step pipeline)
+    (re.compile(r"\bgithub_(?:get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b|\b(?:list|get|show|merge|close)\s+(?:pr|pull\s*request|repo)\b", re.I), "github"),
+    # web_search — last, broadest
+    (re.compile(r"\bweb_search\b|\bsearch\s+(?:the\s+)?web\b|\bweb\s+search\b|\bgoogle\s+search\b", re.I), "web_search"),
+]
+
+# Fallback broad search hint for very short "search for X" queries.
+_WEB_SEARCH_FALLBACK_RE = re.compile(r"^\s*search\s+for\s+.+", re.I)
+
+
+def _is_tier1_goal(goal: str) -> bool:
+    """A3 slicing check: <50 chars and starts with a trivial prefix."""
+    gl = goal.lower().strip()
+    if len(gl) >= 50:
+        return False
+    return any(gl.startswith(pat) for pat in _TRIVIAL_PATTERNS)
+
+
+def _classify_tier(task: Task) -> int:
+    """Return 1 (trivial), 2 (single-tool), or 3 (complex).
+
+    Tier1: _is_trivial or _is_tier1_goal -> single Gemini, no tools.
+    Tier2: regex-detect single tool intent -> one TaskStep via execute_step.
+    Tier3: default — full memory/skill/roadmap + adaptive loop.
+    """
+    # Tier1 — lightest possible, no tools, minimal prompt
+    if _is_trivial(task) or _is_tier1_goal(task.goal):
+        return 1
+    # Tier2 — single-tool shortcut. Guard: very long or multi-conjunction goals stay Tier3.
+    goal = task.goal or ""
+    if len(goal) > 280 or goal.lower().count(" and ") > 2:
+        return 3
+    # Multi-intent guard: if goal contains mentions of >=2 distinct tool families, keep Tier3
+    # e.g. "research AI news and then write a report" mentions search + write -> complex.
+    distinct_hits: set[str] = set()
+    for pat, tool in _TIER2_TOOL_PATTERNS:
+        if pat.search(goal):
+            distinct_hits.add(tool)
+    if _WEB_SEARCH_FALLBACK_RE.match(goal):
+        distinct_hits.add("web_search")
+    # Also treat "research" + "write" as two intents even when "research" is not an explicit web_search phrase
+    gl = goal.lower()
+    if len(distinct_hits) >= 2:
+        return 3
+    if "research" in gl and "write" in gl:
+        return 3
+    # Need 2+ conjunctions or sequencers like "then" with mixed verbs.
+    if (" and then " in gl or " then " in gl) and distinct_hits:
+        # if the detected single tool is not the whole goal, it's a multi-step pipeline
+        if len(goal) > 60:
+            return 3
+    # Single-tool fast path
+    if distinct_hits:
+        return 2
+    return 3
+
+
+def _extract_first_path(goal: str) -> str | None:
+    """Heuristic path extraction for Tier2 file tools."""
+    # quoted projects/output path first
+    m = re.search(r"[\"']((?:projects|output)[/\w.\-\\]+)[\"']", goal)
+    if m:
+        return m.group(1).strip().strip(",.;")
+    m = re.search(r"\b((?:projects|output)/[^\s\"',;]+)", goal)
+    if m:
+        return m.group(1).strip().strip(",.;\"'")
+    m = re.search(r"\b([\w\-./\\]+\.(?:txt|md|html|js|css|json|py|yaml|yml|csv))\b", goal, re.I)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _extract_url(goal: str) -> str | None:
+    m = re.search(r"https?://[^\s\"'<>]+", goal)
+    return m.group(0).strip().strip(",.;") if m else None
+
+
+def _extract_repo(goal: str) -> str | None:
+    """owner/name slug for github single-tool tier2."""
+    m = re.search(r"\b([\w.\-]+/[\w.\-]+)\b", goal)
+    if m:
+        cand = m.group(1)
+        # avoid matching plain english like "search for"
+        if "/" in cand and not cand.lower().startswith("http"):
+            return cand
+    return None
+
+
+def _detect_simple_step(task: Task) -> TaskStep | None:
+    """Map a Tier2 goal to a single TaskStep with heuristic args.
+
+    Returns None if the goal is not a clean single-tool intent (caller falls back to Tier3).
+    """
+    goal = (task.goal or "").strip()
+    if not goal:
+        return None
+    gl = goal.lower()
+
+    # — Helpers to build step —
+    def _step(tool: str, args: dict[str, Any], desc: str) -> TaskStep:
+        return TaskStep(task_id=task.id, description=desc, tool_name=tool, tool_args=args, order=0)
+
+    # github single-tool (one call only — not the deterministic multi-step pipeline)
+    if re.search(r"\bgithub_(?:get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b", goal, re.I):
+        # explicit tool name mentioned — extract it
+        m = re.search(r"\bgithub_(get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b", goal, re.I)
+        tool = f"github_{m.group(1).lower()}" if m else "github_get_repo"
+        repo = _extract_repo(goal)
+        args: dict[str, Any] = {"repo": repo} if repo else {"goal_text": goal}
+        # pr number variants
+        pm = re.search(r"#(\d{1,6})\b|\bpr\s*#?(\d{1,6})\b", goal, re.I)
+        if pm and tool in ("github_get_pr", "github_review_pr", "github_merge_pr", "github_close_pr"):
+            num = int(pm.group(1) or pm.group(2))
+            args["pr_number"] = num
+            if repo:
+                args["repo"] = repo
+            else:
+                args.pop("repo", None)
+                args["goal_text"] = goal
+        return _step(tool, args, goal[:120])
+
+    if re.search(r"\b(?:list|get|show|merge|close)\s+(?:pr|pull\s*request|repo)\b", gl) and "github" in gl:
+        # short github natural-language single action — infer tool
+        repo = _extract_repo(goal)
+        prm = re.search(r"#(\d{1,6})\b|\bpr\s*#?(\d{1,6})\b", goal, re.I)
+        if prm:
+            num = int(prm.group(1) or prm.group(2))
+            return _step("github_get_pr", {"repo": repo or "owner/repo", "pr_number": num}, goal[:120])
+        if "list" in gl and "pr" in gl:
+            return _step("github_list_prs", {"repo": repo or "owner/repo"}, goal[:120])
+        if "repo" in gl:
+            return _step("github_get_repo", {"repo": repo or "owner/repo"}, goal[:120])
+
+    # read_file
+    if re.search(r"\bread(_file)?\b|\bopen\s+file\b|\bcat\s+[^\s]+\b|\bshow\s+file\b", goal, re.I):
+        path = _extract_first_path(goal) or "output/"
+        return _step("read_file", {"path": path}, f"Read file {path}")
+
+    # write_file — needs path + content
+    if re.search(r"\bwrite(_file)?\b|\bcreate\s+(?:a\s+)?file\b|\bsave\s+(?:to|as)\b", goal, re.I):
+        path = _extract_first_path(goal)
+        # try to pull content after "content" / ":" / quoted block
+        content: str | None = None
+        cm = re.search(r"content\s*[:=]\s*[\"']?(.+?)[\"']?\s*$", goal, re.I | re.S)
+        if cm:
+            content = cm.group(1).strip()
+        elif ":" in goal and len(goal.split(":", 1)[1].strip()) > 5:
+            content = goal.split(":", 1)[1].strip().strip("\"'")
+        if not path:
+            # derive from goal slug
+            slug = "-".join(re.findall(r"[a-z0-9]+", gl)[:5])[:30] or "output"
+            path = f"output/{slug}.txt"
+        if not content:
+            content = f"Generated for task: {goal[:300]}"
+        return _step("write_file", {"path": path, "content": content}, f"Write file {path}")
+
+    # list_directory
+    if re.search(r"\blist(_directory)?\b|\blist\s+(?:files?|directory|folder)", goal, re.I) or re.match(r"^\s*ls\b", gl) or re.match(r"^\s*dir\b", gl):
+        path = _extract_first_path(goal)
+        # directory not file — strip filename if extracted path looks like a file
+        if path and re.search(r"\.\w{1,5}$", path) and "/" in path:
+            path = path.rsplit("/", 1)[0] or "projects"
+        path = path or "projects"
+        return _step("list_directory", {"path": path}, f"List directory {path}")
+
+    # fetch_url
+    url = _extract_url(goal)
+    if url and ("fetch" in gl or "url" in gl or url in goal):
+        # only treat as fetch_url tier2 when fetch intent explicit or goal is basically a URL fetch
+        if re.search(r"\bfetch", gl) or len(goal) < 300:
+            return _step("fetch_url", {"url": url}, f"Fetch URL {url[:80]}")
+
+    # web_search — explicit tool or "search for ..." / "google"
+    if re.search(r"\bweb_search\b|\bsearch\s+(?:the\s+)?web\b|\bweb\s+search\b|\bgoogle\b", goal, re.I) or _WEB_SEARCH_FALLBACK_RE.match(goal):
+        # strip leading search phrasing for query
+        query = re.sub(r"^\s*(?:web_search|web search|search\s+for|search|google)\s*[:\-]?\s*", "", goal, flags=re.I).strip()
+        query = query or goal
+        return _step("web_search", {"query": query[:300], "num_results": 5}, f"Web search: {query[:80]}")
+
+    return None
+
+
+def _safe_emit(emit: Any | None, task_id: str, event_type: str, message: str, detail: str = "") -> None:
+    if emit is None:
+        return
+    try:
+        emit(task_id, event_type, message, detail)
+    except Exception:
+        logger.debug("emit failed for %s %s", task_id, event_type, exc_info=True)
+
+
+async def _handle_tier1(task: Task, emit: Any | None = None) -> Task:
+    """Tier1: single Gemini generate_content without tools, FAST.
+
+    A3: prompt slicing — omit snapshot/lessons/skill_context entirely.
+    Router must still emit live events (thinking/tool_output/done) so the
+    dashboard shows realtime progress for every tier.
+    """
+    _safe_emit(emit, task.id, "thinking", "Tier1 trivial — direct answer (no tools)", task.goal[:160])
+    task.status = TaskStatus.EXECUTING
+    task.updated_at = datetime.now(UTC)
+    try:
+        from agent.config import settings as _s
+        from agent.core.gemini_client import generate_content as _gen
+
+        # Minimal prompt — goal only, no memory/lessons/skills/snapshot
+        raw = await _gen(
+            model=_s.gemini_model,
+            system="You are NexusMind, a helpful assistant. Answer concisely and accurately.",
+            user=task.goal,
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        text = (raw or "").strip() or "Done."
+        task.status = TaskStatus.COMPLETED
+        task.result = text
+        task.updated_at = datetime.now(UTC)
+        _safe_emit(emit, task.id, "tool_output", "LLM answer", text[:1500])
+        _safe_emit(emit, task.id, "done", "Task complete", text[:400])
+        from agent.telegram import is_configured as _is_cfg, notify_task_completed as _notify_done
+
+        if _is_cfg():
+            await _notify_done(task.id, task.goal, text[:300])
+        untrust_task(task.id)
+        return task
+    except Exception as exc:
+        logger.exception("Tier1 failed for %s", task.id)
+        task.status = TaskStatus.FAILED
+        task.error = str(exc)
+        task.updated_at = datetime.now(UTC)
+        _safe_emit(emit, task.id, "error", "Tier1 failed", str(exc)[:400])
+        untrust_task(task.id)
+        return task
+
+
+async def _handle_tier2(task: Task, step: TaskStep, emit: Any | None = None) -> Task:
+    """Tier2: one TaskStep executed via execute_step directly, no adaptive loop."""
+    _safe_emit(emit, task.id, "thinking", "Tier2 single-tool — direct execution", f"[{step.tool_name}] {step.description[:140]}")
+    task.steps.append(step)
+    task.status = TaskStatus.EXECUTING
+    task.updated_at = datetime.now(UTC)
+    _safe_emit(emit, task.id, "step_running", f"Step 0: {step.description[:90]}", f"[{step.tool_name}] direct")
+    context: dict[str, Any] = {"task_id": task.id, "task_goal": task.goal}
+    result = await execute_step(step, context)
+    # Mirror executor's in-place step mutation for dashboard
+    _safe_emit(
+        emit,
+        task.id,
+        "tool_output" if result.success else "error",
+        f"Step 0 {'output' if result.success else 'failed'}",
+        (result.output or result.error or "")[:1500],
+    )
+    if result.success:
+        task.status = TaskStatus.COMPLETED
+        task.result = result.output or "Task completed"
+        # surface saved file locations for write_file similar to Tier3
+        if step.tool_name == "write_file" and step.tool_args.get("path"):
+            task.result = task.result.rstrip() + f"\n\n📁 Saved to:\n- {step.tool_args['path']}"
+        _safe_emit(emit, task.id, "done", "Task complete", task.result[:400])
+        from agent.telegram import is_configured as _is_cfg2, notify_task_completed as _notify2
+
+        if _is_cfg2():
+            await _notify2(task.id, task.goal, task.result[:300])
+    else:
+        task.status = TaskStatus.FAILED
+        task.error = result.error or "Step failed"
+        task.result = ""
+        hint = _credential_hint(task.error)
+        detail = task.error + ("\n\n" + hint if hint else "")
+        _safe_emit(emit, task.id, "error", "Task failed", detail[:600])
+        from agent.telegram import is_configured as _is_cfg3, notify_task_failed as _notify_fail
+
+        if _is_cfg3():
+            await _notify_fail(task.id, task.goal, task.error[:300])
+    task.updated_at = datetime.now(UTC)
+    untrust_task(task.id)
+    return task
 
 
 def _clean_lessons(raw: str) -> list[str]:
@@ -311,6 +603,23 @@ class Orchestrator:
             await notify_task_started(task.id, task.goal)
 
         try:
+            # ── Phase A1: Complexity Router (before heavy memory/skill/planning) ──
+            # Tier1 trivial -> single Gemini, FAST. Tier2 single-tool -> one execute_step.
+            # Tier3 complex (default) -> full flow with lazy roadmap.
+            tier = _classify_tier(task)
+            logger.info("Router classified task %s as Tier%d: %.60s", task.id, tier, task.goal)
+            if tier == 1:
+                return await _handle_tier1(task, emit=emit)
+            if tier == 2:
+                simple_step = _detect_simple_step(task)
+                if simple_step is not None:
+                    return await _handle_tier2(task, simple_step, emit=emit)
+                # fallthrough to Tier3 if detection ambiguous
+                logger.info("Tier2 detection ambiguous for %s; falling through to Tier3", task.id)
+                tier = 3
+            # Tier3 — full Hermes/OpenClaw flow (heavy memory/skill/planning only here)
+            _safe_emit(emit, task.id, "thinking", "Tier3 complex — full planning & adaptive loop", f"goal: {task.goal[:120]}")
+
             # Prefetch relevant memory for this turn (Hermes pattern): a fenced
             # <memory-context> block with trust-ranked, hybrid-retrieved facts.
             # Trivial prompts are gated inside prefetch() and return "".
@@ -342,10 +651,8 @@ class Orchestrator:
                 e.metadata.get("skill_name", "") for e in self.memory.get_by_category("skill")
             ]
 
-            # Best-effort initial roadmap (may fail; failure is NOT fatal).
-            # The adaptive loop below reasons ONE action at a time with full
-            # result feedback, so a rough or even missing roadmap still
-            # produces the goal step by step.
+            # Best-effort initial roadmap — LAZY: only for Tier3.
+            # Tier1/2 already returned; this Gemini call is skipped entirely for them.
             roadmap: list = []
             try:
                 roadmap = await plan_task(

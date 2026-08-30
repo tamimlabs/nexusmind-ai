@@ -478,6 +478,220 @@ async def generate_content(
             # _reuse_client/_reuse_key already set so next loop retries same key
 
 
+async def generate_content_stream(
+    model: str | None = None,
+    system: str = "",
+    user: str = "",
+    temperature: float = 0.3,
+    max_tokens: int = 4096,
+):
+    """Yield text deltas via the streaming API (google.genai).
+
+    Uses ``client.models.generate_content_stream`` so callers can emit
+    token-by-token updates (e.g. ``on_event("token", delta)`` on the
+    dashboard). Mirrors :func:`generate_content` quota/rate-limit handling:
+    the stream is retried on the same key for ~45 s (RPS/RPM) or handed to
+    the next key on a per-day cap, with the same ``RETRY_CONTEXT_MARKER``
+    continuation note. Falls back to the stronger model on ``MAX_TOKENS``
+    truncation. Callers should keep the non-streaming ``generate_content``
+    fallback — streamed decoding may be unavailable in tests or on older
+    SDK shapes.
+
+    Yields:
+        Incremental ``str`` deltas as they arrive.
+
+    Example:
+        ``async for delta in generate_content_stream(user="hello"): ...``
+    """
+    from google.genai import types as _types  # type: ignore
+
+    primary_model = model or settings.gemini_model
+    fallback_model = settings.gemini_model_pro
+    model_name = primary_model
+    active_max = max_tokens
+    used_fallback = False
+    fallback_rounds = 1 if (fallback_model and fallback_model != primary_model) else 0
+    retry_note = ""
+    rate_retry_start: float | None = None
+    _reuse_client: Any | None = None
+    _reuse_key: str | None = None
+
+    while True:
+        if _reuse_client is not None and _reuse_key is not None and rate_retry_start is not None:
+            client, key_used = _reuse_client, _reuse_key
+        else:
+            if rotator.active_keys == 0 and rotator._cooldowns:
+                shortest = min(rotator._cooldowns.values()) - time.monotonic()
+                if shortest > 0:
+                    await asyncio.sleep(min(shortest, 5))
+            client, key_used = rotator.get_client()
+            _reuse_client, _reuse_key = client, key_used
+
+        effective_user = f"{user}\n\n— {retry_note} —" if retry_note else user
+
+        def _build_contents(prompt: str) -> list[Any]:
+            contents: list[Any] = []
+            if system:
+                contents.append(
+                    _types.Content(
+                        role="user",
+                        parts=[_types.Part.from_text(text=f"[System Instructions]\n{system}")],
+                    )
+                )
+                contents.append(
+                    _types.Content(
+                        role="model",
+                        parts=[_types.Part.from_text(text="Understood. I will follow these instructions.")],
+                    )
+                )
+            contents.append(_types.Content(role="user", parts=[_types.Part.from_text(text=prompt)]))
+            return contents
+
+        contents = _build_contents(effective_user)
+        config = _types.GenerateContentConfig(temperature=temperature, max_output_tokens=active_max)
+
+        # Acquire throttle before opening the stream
+        await _throttle.acquire()
+
+        # Try streaming; retry the whole stream on quota/rate errors (before any
+        # delta has been yielded the caller can safely retry).
+        stream = None
+        yielded_any = False
+        collected = ""
+        try:
+
+            def _open_stream():
+                # Support fakes that only implement generate_content
+                if hasattr(client.models, "generate_content_stream"):
+                    return client.models.generate_content_stream(
+                        model=model_name, contents=contents, config=config
+                    )
+                # Fallback shim: synthesize a single-chunk stream from the
+                # non-streaming call (keeps tests that mock generate_content
+                # working while still yielding via the streaming path).
+                resp = client.models.generate_content(model=model_name, contents=contents, config=config)
+                txt = getattr(resp, "text", None) or ""
+                if _was_truncated(resp):
+                    raise OutputTruncatedError(txt)
+
+                class _OneChunk:
+                    text = txt
+                    candidates = getattr(resp, "candidates", None)
+
+                return iter([_OneChunk()])
+
+            stream = await asyncio.to_thread(_open_stream)
+
+            # Incremental iteration: each next() may block on the network, so
+            # hop it to a thread and yield deltas as they arrive.
+            it = iter(stream)
+            while True:
+                try:
+                    chunk = await asyncio.to_thread(next, it)
+                except StopIteration:
+                    break
+                # Truncation reported on the chunk (or final chunk)
+                if _was_truncated(chunk):
+                    partial = collected + (getattr(chunk, "text", None) or "")
+                    raise OutputTruncatedError(partial)
+                delta = getattr(chunk, "text", None) or ""
+                if delta:
+                    collected += delta
+                    yielded_any = True
+                    yield delta
+            # Stream completed without truncation
+            return
+
+        except OutputTruncatedError:
+            if not fallback_rounds or used_fallback:
+                raise
+            used_fallback = True
+            logger.warning(
+                "Max output tokens reached (stream) on %s; switching to %s",
+                model_name,
+                fallback_model,
+            )
+            model_name = fallback_model
+            active_max = min(max_tokens * 2, _FALLBACK_TOKEN_CEILING)
+            # If we already yielded deltas, the caller has partial output;
+            # don't restart streaming — surface the partial so the caller can
+            # fall back to non-streaming.
+            if yielded_any:
+                raise OutputTruncatedError(collected)
+            continue
+
+        except Exception as exc:
+            error_str = str(exc).lower()
+            if "invalid" in error_str and "key" in error_str:
+                rotator.mark_rate_limited(key_used, retry_after=86400)
+                logger.error("Invalid API key ...%s, removing from rotation (stream)", key_used[-6:])
+                _reuse_client = _reuse_key = None
+                rate_retry_start = None
+                # If nothing yielded yet, retry; otherwise surface.
+                if yielded_any:
+                    raise
+                continue
+            if not _is_quota_error(error_str):
+                raise
+            delay = _extract_retry_delay(exc)
+            if _is_daily_quota(error_str):
+                retry_note = _retry_context_note(
+                    "the previous API key hit its per-day request cap and was replaced; nothing was executed or lost — continue this request exactly as asked, over the same context."
+                )
+                rotator.mark_rate_limited(key_used, retry_after=_DAILY_KEY_PARK_SECONDS)
+                logger.warning(
+                    "Daily Gemini request cap (stream) on key ...%s; parking key and switching",
+                    key_used[-6:],
+                )
+                _reuse_client = _reuse_key = None
+                rate_retry_start = None
+                if yielded_any:
+                    raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
+                if rotator.key_count <= 1 or rotator.active_keys == 0:
+                    raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
+                if delay > 0:
+                    await asyncio.sleep(min(delay, 2.0))
+                continue
+            # RPS/RPM
+            if rate_retry_start is None:
+                rate_retry_start = time.monotonic()
+            elapsed = time.monotonic() - rate_retry_start
+            if elapsed >= _MAX_RATE_RETRY_SECONDS:
+                logger.warning(
+                    "Rate-limit (stream) on key ...%s persisted %.0fs; parking key and rotating",
+                    key_used[-6:],
+                    elapsed,
+                )
+                rotator.mark_rate_limited(key_used, retry_after=_RATE_POLL_SECONDS * 2)
+                retry_note = _retry_context_note(
+                    "the previous API key was rate-limited for ~45s and was replaced; nothing was executed or lost — continue this request exactly as asked, over the same context."
+                )
+                _reuse_client = _reuse_key = None
+                rate_retry_start = None
+                if yielded_any:
+                    raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
+                if rotator.key_count <= 1 or rotator.active_keys == 0:
+                    raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
+                continue
+            retry_note = _retry_context_note(
+                "the previous attempt was paused by a per-minute/second rate limit and is now being retried after the window reset; nothing was executed or lost — respond exactly as requested."
+            )
+            poll_seconds = max(delay, _RATE_POLL_SECONDS)
+            remaining = _MAX_RATE_RETRY_SECONDS - elapsed
+            sleep_for = min(poll_seconds, remaining) if remaining > 0 else 0
+            rotator.mark_rate_limited(key_used, retry_after=poll_seconds)
+            logger.warning(
+                "Rate-limit (stream) on key ...%s, retrying same key in ~%.0fs",
+                key_used[-6:],
+                sleep_for,
+            )
+            if sleep_for > 0:
+                await asyncio.sleep(sleep_for)
+            if yielded_any:
+                raise
+            continue
+
+
 async def generate_structured(
     model: str | None = None,
     system: str = "",

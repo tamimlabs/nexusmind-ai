@@ -134,6 +134,6 @@ docs/gallery/
 
 # Agent-generated project scaffolds (runtime output)
 projects/
-
+opencode-dev/
 data/*.json.imported
 architecture_diagram_spec.md

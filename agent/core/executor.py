@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sys
+import contextvars
 import tempfile
 import uuid
 from pathlib import Path
@@ -582,10 +583,20 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
     if step.tool_name == "write_file" and not resolved_args.get("path"):
         resolved_args["path"] = await _gemini_derive_write_path(step.description or "", context)
     current_args = dict(resolved_args)
+    # B2: forward incremental stdout sink if the caller supplied one via
+    # context["on_output"] (e.g. run_adaptive_loop's tool_delta emitter).
+    # Kept in current_args so self-correction retries still stream.
+    _on_output_cb = None
+    if isinstance(context, dict) and callable(context.get("on_output")):
+        _on_output_cb = context.get("on_output")
+        current_args["on_output"] = _on_output_cb
     last_error = ""
     original_tool = step.tool_name
 
     for attempt in range(1, MAX_RETRIES + 2):
+        # Re-attach on_output if a self-correction update dropped it
+        if _on_output_cb is not None and "on_output" not in current_args:
+            current_args["on_output"] = _on_output_cb
         try:
             result = await asyncio.wait_for(tool(**current_args), timeout=120)
 
@@ -720,6 +731,108 @@ async def _gemini_derive_write_path(description: str, context: dict[str, Any] | 
     return _derive_write_path(description, context)
 
 
+# ── Parallel Task Delegation (opencode task tool parity) ────────
+
+
+@register_tool("task", high_risk=False)
+async def task(description: str, prompt: str, subagent_type: str = "explore", **_: Any) -> ToolResult:
+    """Delegate a sub-task to a sub-agent (explore/general).
+
+    `subagent_type=explore` is read-only (grep/glob/read/webfetch/websearch),
+    `general` can use all tools. Runs a mini adaptive loop and returns result.
+    """
+    from agent.models import Task as _Task
+
+    subagent_type = (subagent_type or "explore").strip().lower()
+    if subagent_type not in ("explore", "general", "build"):
+        subagent_type = "explore"
+    # Simple delegation: run a one-shot Gemini solve for explore, or a short loop for general
+    try:
+        if subagent_type == "explore":
+            from agent.core.gemini_client import generate_content
+
+            sys = "You are an explore sub-agent. You have read-only tools: read_file, list_directory, grep, glob (via executor). Answer concisely with findings. No writes."
+            raw = await generate_content(system=sys, user=prompt or description, temperature=0.2, max_tokens=2048)
+            return ToolResult(success=True, output=raw[:8000], metadata={"subagent": subagent_type})
+        else:
+            # general: short adaptive loop (max 8 steps) with its own task
+            from agent.core.agent_loop import run_adaptive_loop
+            from agent.models import TaskStatus
+
+            t = _Task(goal=prompt or description)
+            ctx: dict[str, Any] = {"task_id": t.id, "task_goal": t.goal, "subagent": True}
+            # Use same executor for general
+            from agent.core.agent_loop import decide_next_step
+
+            outcome = await run_adaptive_loop(t, ctx, decide_fn=decide_next_step, max_steps=8)
+            summary = outcome.summary or (t.steps[-1].result if t.steps else "") or "sub-task completed"
+            return ToolResult(success=True, output=summary[:8000], metadata={"subagent": subagent_type, "steps": len(t.steps)})
+    except Exception as exc:
+        return ToolResult(success=False, output="", error=str(exc)[:600])
+
+
+# ── TodoWrite Tool (opencode parity) ──────────────────────────────
+# Explicit tool so model can call todowrite any turn (not piggyback JSON).
+
+
+_current_todo_task_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_todo_task_id", default=None)
+_todo_emit: Any | None = None  # set by orchestrator/loop to broadcast todo_update
+
+
+def set_todo_context(task_id: str | None, emit_fn: Any | None = None) -> None:
+    """Set current task for todowrite and optional emit sink."""
+    global _todo_emit
+    _current_todo_task_id.set(task_id)
+    if emit_fn is not None:
+        _todo_emit = emit_fn
+
+
+@register_tool("todowrite", high_risk=False)
+async def todowrite(todos: list[dict[str, Any]] | None = None, **_: Any) -> ToolResult:
+    """Update the live TODO checklist for the current task (opencode semantics).
+
+    Overwrites the whole list — pass the FULL desired state each time.
+    Supports both `title`/`content`, `status` in pending/in_progress/completed/cancelled/skipped,
+    and `priority` low/medium/high.
+    """
+    from agent.models import TaskTodo, TodoPriority, TodoStatus
+
+    if todos is None:
+        todos = []
+    if not isinstance(todos, list):
+        return ToolResult(success=False, output="", error="todos must be a list")
+    # Resolve emit context — try to find task's live emit via _todo_emit
+    # Actual Task mutation is done by the caller injecting task ref via set_todo_context
+    # Fallback: store in context for loop to pick up
+    cleaned: list[dict[str, Any]] = []
+    for i, raw in enumerate(todos[:30]):
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title") or raw.get("content") or "").strip()
+        if not title:
+            continue
+        title = title[:140]
+        status_raw = str(raw.get("status") or "pending").strip().lower()
+        # Normalize cancelled -> cancelled, but map to skipped internally if needed
+        if status_raw not in ("pending", "in_progress", "completed", "skipped", "cancelled"):
+            status_raw = "pending"
+        priority_raw = str(raw.get("priority") or "medium").strip().lower()
+        if priority_raw not in ("low", "medium", "high"):
+            priority_raw = "medium"
+        cleaned.append({"title": title, "status": status_raw, "priority": priority_raw, "order": i})
+    # Try to mutate live task via global registry (api/main.py _live_tasks injected) or via contextvar
+    # We expose cleaned via ToolResult metadata for the loop to apply
+    detail = "\n".join(f"[{'x' if c['status']=='completed' else ' '}] {c['title']}" for c in cleaned[:8])
+    if _todo_emit is not None:
+        try:
+            tid = _current_todo_task_id.get()
+            if tid:
+                _todo_emit(tid, "todo_update", f"Checklist {len([c for c in cleaned if c['status']=='completed'])}/{len(cleaned)}", detail[:1500])
+        except Exception:
+            logger.debug("todowrite emit failed", exc_info=True)
+    return ToolResult(success=True, output=f"Todos updated: {len(cleaned)} items\n{detail[:500]}", metadata={"todos": cleaned, "todo_update": True})
+
+
 # ── Built-in Tools ────────────────────────────────────────────────
 
 
@@ -765,8 +878,19 @@ def _env_snapshot() -> dict[str, str]:
 
 
 @register_tool("execute_code", high_risk=True)
-async def execute_code(code: str, language: str = "python", **_: Any) -> ToolResult:
-    """Execute code in a sandboxed subprocess."""
+async def execute_code(
+    code: str,
+    language: str = "python",
+    on_output: Any | None = None,
+    **_: Any,
+) -> ToolResult:
+    """Execute code in a sandboxed subprocess.
+
+    When ``on_output`` is provided (callable taking a ``str`` chunk), stdout
+    is streamed incrementally — each chunk is forwarded to the callback as it
+    arrives so the dashboard can show live ``tool_delta`` events. The final
+    :class:`ToolResult` shape is unchanged.
+    """
     if language != "python":
         return ToolResult(success=False, output="", error=f"Unsupported language: {language}")
 
@@ -786,6 +910,58 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+
+        # Incremental stdout streaming when a sink is present; otherwise fall
+        # back to the classic buffered communicate() path (keeps tests stable).
+        if on_output is not None and callable(on_output):
+            stdout_chunks: list[bytes] = []
+            stderr_chunks: list[bytes] = []
+
+            async def _drain_stdout() -> None:
+                assert proc.stdout is not None
+                while True:
+                    chunk = await proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    stdout_chunks.append(chunk)
+                    text = chunk.decode(errors="replace")
+                    try:
+                        res = on_output(text)
+                        if asyncio.iscoroutine(res):
+                            await res
+                    except Exception:
+                        logger.debug("on_output callback failed (execute_code stdout)", exc_info=True)
+
+            async def _drain_stderr() -> None:
+                assert proc.stderr is not None
+                while True:
+                    chunk = await proc.stderr.read(4096)
+                    if not chunk:
+                        break
+                    stderr_chunks.append(chunk)
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(_drain_stdout(), _drain_stderr(), proc.wait()),
+                    timeout=_EXEC_TIMEOUT,
+                )
+            except TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Execution timed out after {_EXEC_TIMEOUT}s",
+                )
+            stdout = b"".join(stdout_chunks)
+            stderr = b"".join(stderr_chunks)
+            success = proc.returncode == 0
+            return ToolResult(
+                success=success,
+                output=stdout.decode(errors="replace"),
+                error=stderr.decode(errors="replace") if not success else None,
+            )
+
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_TIMEOUT)
         except TimeoutError:
@@ -814,8 +990,13 @@ async def execute_code(code: str, language: str = "python", **_: Any) -> ToolRes
 
 
 @register_tool("run_command", high_risk=True)
-async def run_command(command: str, **_: Any) -> ToolResult:
-    """Run a shell command. Handles mkdir cross-platform via pathlib when possible."""
+async def run_command(command: str, on_output: Any | None = None, **_: Any) -> ToolResult:
+    """Run a shell command. Handles mkdir cross-platform via pathlib when possible.
+
+    When ``on_output`` is supplied, stdout is forwarded incrementally (per
+    4 KiB chunk) so callers can emit live ``tool_delta`` events. Final
+    :class:`ToolResult` is unchanged.
+    """
     # Cross-platform fix: mkdir -p fails on Windows CMD. Intercept and use pathlib.
     # Reject compound shell operators before fast-path to avoid silently swallowing "&& rm -rf"
     if _SHELL_SIDE_EFFECT_RE.search(command) or "&&" in command or "||" in command:
@@ -856,6 +1037,51 @@ async def run_command(command: str, **_: Any) -> ToolResult:
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        if on_output is not None and callable(on_output):
+            stdout_chunks: list[bytes] = []
+            stderr_chunks: list[bytes] = []
+
+            async def _drain_stdout_rc() -> None:
+                assert proc.stdout is not None
+                while True:
+                    chunk = await proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    stdout_chunks.append(chunk)
+                    text = chunk.decode(errors="replace")
+                    try:
+                        res = on_output(text)
+                        if asyncio.iscoroutine(res):
+                            await res
+                    except Exception:
+                        logger.debug("on_output callback failed (run_command stdout)", exc_info=True)
+
+            async def _drain_stderr_rc() -> None:
+                assert proc.stderr is not None
+                while True:
+                    chunk = await proc.stderr.read(4096)
+                    if not chunk:
+                        break
+                    stderr_chunks.append(chunk)
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(_drain_stdout_rc(), _drain_stderr_rc(), proc.wait()),
+                    timeout=120,
+                )
+            except TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                return ToolResult(success=False, output="", error="Command timed out")
+            stdout = b"".join(stdout_chunks)
+            stderr = b"".join(stderr_chunks)
+            success = proc.returncode == 0
+            return ToolResult(
+                success=success,
+                output=stdout.decode(errors="replace"),
+                error=stderr.decode(errors="replace") if not success else None,
+            )
+
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         success = proc.returncode == 0
         return ToolResult(

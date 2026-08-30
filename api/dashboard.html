@@ -279,7 +279,9 @@ function renderTasksPage(c){
   const prevVal=document.getElementById('goalInput')?document.getElementById('goalInput').value:'';
   const prevSteps=document.getElementById('maxStepsInput')?document.getElementById('maxStepsInput').value:'';
   let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><input class="input-field" id="maxStepsInput" type="number" min="5" max="120" placeholder="steps" title="Max steps — elastic. Leave blank for auto (40→120 as needed, opencode-style long runs)" style="max-width:78px" /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div><div style="font-size:11px;color:var(--t5);margin-top:6px">Auto = short tasks finish fast, long builds auto-extend to 120 steps (opencode-like). Set a cap if you want it longer/shorter.</div></div>';
-  html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span><button class="btn btn-d btn-sm" style="margin-left:auto" onclick="cancelCurrentTask()">Cancel</button></div>';
+  // One cancel per page: loadingBar only in list view, detail header has its own Cancel (S.selected). Prevents duplicate 2× Cancel.
+  if(!S.selected) html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span><button class="btn btn-d btn-sm" style="margin-left:auto" onclick="cancelCurrentTask()">Cancel</button></div>';
+  else html+='<div id="loadingBar" style="display:none"></div>';
   html+='<div class="task-list" id="taskListEl">';
   if(S.selected){html+=renderDetail(S.selected)}
   else if(S.tasks.length===0){html+='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}
@@ -325,15 +327,18 @@ function thinkIcon(e,isLast,running){
   if(e.type==='error')return'<span style="color:var(--red)">&#10007;</span>';
   if(e.type==='step_running')return(running&&isLast)?'<div class="spinner" style="width:10px;height:10px;border-width:1.5px;border-top-color:var(--blue)"></div>':'<span style="color:var(--blue)">&#9679;</span>';
   if(e.type==='received')return'<span style="color:var(--blue)">&#9679;</span>';
+  if(e.type==='token')return'<span style="color:var(--purple)">▌</span>';
+  if(e.type==='tool_delta')return'<span style="color:var(--blue)">▸</span>';
+  if(e.type==='todo_update')return'<span style="color:var(--accent)">☑</span>';
   return''}
 
 function renderThinkingPanel(c){
   const evs=S.liveEvents||[];
-  if(!evs.length){c.innerHTML='<div class="empty empty-big">No live events yet<div class="empty-sub">Submit a task to see agent thinking — opencode-style full visibility</div></div>';return}
+  if(!evs.length){c.innerHTML='<div class="empty empty-big">No live events yet<div class="empty-sub">Submit a task to see agent thinking — opencode-style full visibility (token/tool_delta/todo live)</div></div>';return}
   const running=!['completed','failed'].includes(S.liveStatus);
   const elapsed=S.tasks.find(x=>x.id===S.liveTaskId)?.elapsed_seconds||0;
-  let h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--t5)">'+evs.length+' event'+(evs.length!==1?'s':'')+' · '+elapsed+'s'+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</span><span style="font-size:10px;color:var(--t5);font-family:var(--mono)">SSE+poller like opencode</span></div><div class="think-list">';
-  evs.forEach((e,i)=>{const isTool=e.type==='tool_output'||e.type==='step_running';h+='<div class="think-item '+esc(e.type)+'" style="'+(isTool?'border-left-color:var(--blue)':'')+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')"><div class="think-msg">'+thinkIcon(e,i===evs.length-1,running)+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail'+(i>=evs.length-2||e.type==='error'?' show':'')+'" style="'+(e.detail.length>400?'max-height:220px;overflow-y:auto':'')+'">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
+  let h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--t5)">'+evs.length+' event'+(evs.length!==1?'s':'')+' · '+elapsed+'s'+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</span><span style="font-size:10px;color:var(--t5);font-family:var(--mono)">WS+SSE+poller</span></div><div class="think-list">';
+  evs.forEach((e,i)=>{const isTool=e.type==='tool_output'||e.type==='step_running'||e.type==='tool_delta';const isToken=e.type==='token';if(isToken&&S.liveEvents.length>200&&i<S.liveEvents.length-20)return; h+='<div class="think-item '+esc(e.type)+'" style="'+(isTool?'border-left-color:var(--blue)':isToken?'border-left-color:var(--purple);opacity:.8':'')+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')"><div class="think-msg">'+thinkIcon(e,i===evs.length-1,running)+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail'+(i>=evs.length-2||e.type==='error'||e.type==='todo_update'?' show':'')+'" style="'+(e.detail.length>400?'max-height:220px;overflow-y:auto':'')+'">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
   h+='</div>';c.innerHTML=h;c.scrollTop=c.scrollHeight}
 
 function renderApprovalPanel(c){
@@ -344,16 +349,17 @@ function renderChecklistPanel(c){
   let todos=null;
   if(S.liveTaskId){const lt=S.tasks.find(x=>x.id===S.liveTaskId);if(lt&&lt.todos)todos=lt.todos}
   if(!todos&&S.selected&&S.selected.todos)todos=S.selected.todos;
-  if(!todos||!todos.length){c.innerHTML='<div class="empty empty-big">No checklist yet<div class="empty-sub">The agent\'s live TODO list appears here while it works</div></div>';return}
+  if(!todos||!todos.length){c.innerHTML='<div class="empty empty-big">No checklist yet<div class="empty-sub">The agent\'s live TODO list appears here while it works (todowrite live)</div></div>';return}
   const done=todos.filter(x=>x.status==='completed').length;
   const running=!['completed','failed'].includes(S.liveStatus);
-  let h='<div style="font-size:11px;color:var(--t5);margin-bottom:8px">TODO Checklist '+done+'/'+todos.length+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</div><div class="task-list">';
-  todos.forEach(td=>{const st=td.status||'pending';let dot,chk;
+  let h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--t5)">TODO Checklist '+done+'/'+todos.length+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</span><span style="font-size:10px;color:var(--t5);font-family:var(--mono)">WS live</span></div><div class="task-list">';
+  todos.forEach(td=>{const st=td.status||'pending';let dot,chk,pri=td.priority||'medium';
     if(st==='completed'){dot='<span class="sdot on" style="background:var(--accent)"></span>';chk='[x]'}
-    else if(st==='in_progress'){dot='<span class="tl-dot running" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[ ]'}
-    else if(st==='skipped'){dot='<span class="tl-dot skipped" style="position:static;display:inline-block;background:var(--red);opacity:.6;margin-left:-2px"></span>';chk='[ ]'}
+    else if(st==='in_progress'){dot='<span class="tl-dot running" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[~]'}
+    else if(st==='skipped'||st==='cancelled'){dot='<span class="tl-dot skipped" style="position:static;display:inline-block;background:var(--red);opacity:.6;margin-left:-2px"></span>';chk='[-]'}
     else{dot='<span class="tl-dot pending" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[ ]'}
-    h+='<div class="todo-row"><span class="todo-check">'+chk+'</span>'+dot+'<span class="todo-title'+((st==='completed'||st==='skipped')?' done':'')+'">'+esc(td.title||'')+'</span></div>'});
+    const priColor=pri==='high'?'var(--red)':pri==='low'?'var(--t4)':'var(--yellow)';
+    h+='<div class="todo-row"><span class="todo-check">'+chk+'</span>'+dot+'<span class="todo-title'+((st==='completed'||st==='skipped'||st==='cancelled')?' done':'')+'">'+esc(td.title||td.content||'')+'</span><span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:100px;border:1px solid '+priColor+';color:'+priColor+'">'+esc(pri)+'</span></div>'});
   h+='</div>';c.innerHTML=h;c.scrollTop=c.scrollHeight}
 
 /* ── Memory Page ──────────────────────────────────────────────── */
@@ -605,10 +611,22 @@ async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=a
 
 function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selected)}else if(S.tasks.length===0){html='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}el.innerHTML=html}
 
-/* ── Live Visibility — opencode-like: SSE push + poller fallback ───── */
-let S_eventSource=null;
-function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveStatus='running';S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500);startLiveStream(id)}
-function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}if(S_eventSource){try{S_eventSource.close()}catch(e){}S_eventSource=null}S.liveTaskId=null}
+/* ── Live Visibility — WS global + SSE push + poller fallback ───── */
+let S_eventSource=null;let S_ws=null;
+function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveStatus='running';S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500);startLiveStream(id);connectGlobalWS()}
+function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}if(S_eventSource){try{S_eventSource.close()}catch(e){}S_eventSource=null}if(S_ws){try{S_ws.close()}catch(e){}S_ws=null}S.liveTaskId=null}
+function connectGlobalWS(){
+  try{
+    if(typeof WebSocket==='undefined')return;
+    if(S_ws&&S_ws.readyState===1)return;
+    const proto=location.protocol==='https:'?'wss:':'ws:';
+    const ws=new WebSocket(proto+'//'+location.host+'/api/ws');
+    S_ws=ws;
+    ws.onmessage=e=>{try{const msg=JSON.parse(e.data);const key=(msg.time||0)+':'+(msg.type||'')+':'+(msg.message||'').slice(0,40);if(S._seenWSKeys&&S._seenWSKeys.has(key))return;if(!S._seenWSKeys)S._seenWSKeys=new Set();S._seenWSKeys.add(key);if(S._seenWSKeys.size>800)S._seenWSKeys.clear();if(!msg.task_id||msg.task_id===S.liveTaskId){if(msg.type&&msg.message){S.liveEvents.push(msg);if(S.liveEvents.length>600)S.liveEvents.shift();if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel()}}if(msg.task_id){const t=S.tasks.find(x=>x.id===msg.task_id);if(t&&msg.type==='todo_update'&&msg.extra&&msg.extra.todos)t.todos=msg.extra.todos;if(t&&msg.type==='step_running')t.steps_count=(t.steps_count||0)}if(msg.source==='memory'||msg.source==='skill'||msg.source==='watcher'){refreshMemoryCount();if(msg.source==='watcher')refreshWatchers()}}catch(err){}};
+    ws.onclose=()=>{S_ws=null;if(S.liveTaskId)setTimeout(connectGlobalWS,3000)};
+    ws.onerror=()=>{try{ws.close()}catch(e){}};
+  }catch(e){}
+}
 function startLiveStream(id){
   try{
     if(typeof EventSource==='undefined')return;

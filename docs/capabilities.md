@@ -27,10 +27,10 @@ Give NexusMind a goal in plain English. It uses **Gemini Flash** to break it int
 > 2. Fetch detailed comparison data
 > 3. Summarize findings into a structured comparison
 
-### 2. Tool Execution — 18 Registered Tools
-The agent has **18 registered tools** across two groups.
+### 2. Tool Execution — 20 Registered Tools
+The agent has **20 registered tools** across two groups (+ 2 opencode-parity).
 
-**Core Tools (10):**
+**Core Tools (12):**
 
 | Tool | What It Does |
 |------|-------------|
@@ -65,14 +65,16 @@ When a goal mentions repos or pull requests, NexusMind doesn't gamble on free-fo
 
 Action goals never degrade into a generic web search — if you ask it to review your PRs, it reviews your PRs.
 
-### 4. Adaptive Step-by-Step Execution (opencode-style)
-NexusMind does **not** run a goal as a one-shot script. It works like a programmer in an IDE: it decides ONE action, executes it, and feeds the **real outcome — including errors — back into the very next decision**.
+### 4. Adaptive Step-by-Step Execution (opencode-style + Router)
+NexusMind does **not** run a goal as a one-shot script. It works like a programmer in an IDE: it decides ONE action, executes it, and feeds the **real outcome — including errors — back into the very next decision**. From opencode `session/prompt.ts:1081` + `processor.ts` + `EventV2Bridge`:
 
-- **Decide → Execute → Observe** — one Gemini call per step picks the single next action; the true result (not the hoped-for one) becomes the transcript the next decision sees
+- **Complexity Router** — `Tier1` trivial 1-call direct, `Tier2` single-tool direct, `Tier3` full `40→120` elastic loop (lazy roadmap, prompt slicing) — normal tasks single-call fast, heavy builds keep going
+- **Decide → Execute → Observe** — one Gemini call per step picks the single next action; the true result (not the hoped-for one) becomes the transcript the next decision sees; streams via `generate_content_stream` → `token` events
 - **Self-corrects from errors** — a failed step (missing dependency, approval timeout, bad result) lands in the transcript and the next decision fixes it: install the module, switch tools, verify the files
 - **Verifies before done** — steps like `list_directory` / `read_file` confirm the artifacts actually exist before the agent declares success
-- **Keeps working until satisfied** — a generous 40-step budget lets ambitious builds (like a full multi-file website) run start-to-finish instead of being batched into one giant call that can truncate
-- **Live progress** — every step is appended to the task in real time, so the dashboard shows the agent working step by step, not after the fact
+- **Keeps working until satisfied** — elastic `40→120` budget (`+20` when `pending>0` & `recent_ok>0`), `3` consecutive failures abort, compaction every 90 steps (Gemini summary) lets ambitious builds run
+- **Live progress for every work** — `token` + `tool_delta` (4 KiB stdout) + `step_running/tool_output/todo_update` via global `WebSocket /api/ws` + `SSE` + poll, dashboard Thinking/Checklist live
+- **Dedicated `todowrite` + `task`** — explicit checklist overwrite (opencode `tool/todo.ts`, priority `high/medium/low`) + `task` `explore`/`general` subagents; collision guard + `tool_delta` streaming
 - **Guardrail:** a failed action tool can never quietly get switched to `web_search` during self-correction. If the agent was supposed to act, it keeps trying to act
 
 > **Step 3 fails:** "File /data.csv not found"
@@ -152,7 +154,7 @@ NexusMind fits into event-driven workflows:
 - A **webhook endpoint** accepts external events and turns them into tasks
 
 ### 11. Persistent Memory (SQLite + Hybrid Retrieval + Trust)
-Memory persists across restarts — a Hermes-inspired system, not a flat list:
+Memory persists across restarts — a Hermes-inspired system (adapted) + opencode-style traceability, not a flat list:
 - **Local SQLite store** (`data/memory.db`) with **FTS5 full-text search** kept in sync by triggers; zero-config, works out of the box (legacy `memory.json` is migrated automatically on first run)
 - **Hybrid retrieval:** BM25 candidates → token-overlap rerank → **holographic phase-vector similarity (HRR)** — no embedding API required → trust weighting
 - **Trust scoring:** rate memories helpful (+0.05) or unhelpful (−0.10); good memories rise, outdated ones sink faster than they rise. Retrieval is weighted by trust
@@ -164,8 +166,8 @@ Memory persists across restarts — a Hermes-inspired system, not a flat list:
 - **Curated:** global cap with instruction protection — standing instructions can never be evicted by task-outcome churn; exact duplicates rejected automatically
 - **Full CRUD + feedback:** add manually, delete single or bulk, clear per category, rate after use — via the dashboard or REST API
 
-### 12. Self-Evolving Skill Library (Hermes Adaptation)
-The agent doesn't just solve tasks — it **remembers how** it solved them:
+### 12. Self-Evolving Skill Library (Hermes Adaptation + opencode task delegation)
+The agent doesn't just solve tasks — it **remembers how** it solved them (Hermes) and can delegate via `task` subagents (`explore`/`general`) as in opencode `tool/task.ts`:
 - **SKILL.md packages:** each skill is a markdown folder (`data/skills/<name>/`) with frontmatter metadata (name, description, version, provenance) and a procedure body
 - **Auto-synthesis:** when a task finishes with ≥2 successful steps across ≥2 distinct tools, Gemini distills the workflow into a reusable skill — gated by a similarity dedup check so near-duplicates are never saved; failures never break the task
 - **Skills steer planning:** before every plan, the planner receives a fenced `<available-skills>` index (descriptions only); the single best-matched skill's full procedure is auto-injected via lexical scoring with light stemming — no embedding API required
@@ -175,8 +177,8 @@ The agent doesn't just solve tasks — it **remembers how** it solved them:
 - **Hard validation gates:** name slug rules, description budgets (60 chars for agent-created, trigger-first), content caps — the same gates for manual and auto-created skills
 - **Full REST API:** list, create, inspect, archive, restore, purge, and audit (`/api/skills*`)
 
-### 13. Deterministic Routing (Command Gate + Plan Validation)
-Adapted from Hermes and OpenClaw — the right action happens without wasting model calls:
+### 13. Deterministic Routing (Command Gate + Plan Validation) + opencode streaming
+Adapted from Hermes, OpenClaw **and opencode** (`tool/todo` + `EventV2Bridge`) — the right action happens without wasting model calls, with live `todowrite` + streaming:
 - **Zero-cost command gate:** `/status`, `/tasks`, `/tools`, `/skills`, `/memory <query>`, `/pending`, `/help` are resolved deterministically (Telegram + `POST /api/command`) with **zero LLM calls**; unknown or natural-language input falls through to the agent loop
 - **Path-safe detection:** `/Users/x/file.md fix this` is correctly treated as a task, not a command (first-token slash heuristic)
 - **Dynamic tool catalog:** the planner prompt is generated from the live tool registry (name + docstring), so prompts can never drift from what actually exists
@@ -192,18 +194,19 @@ All API keys and secrets managed in one place:
 - **Auto-fill:** Watchers use saved credentials automatically
 
 ### 15. Traceability Dashboard
-Every step is logged and visible in real-time:
+Every step is logged and visible in real-time (opencode `EventV2Bridge`/`session/status.ts` + `tool/todo` live):
 - **Tool calls** (blue) — what the agent did
 - **Reasoning steps** (purple) — what the agent was thinking
 - **Approval gates** (yellow) — where it asked for permission
 - **Errors** (red) — what went wrong and how it recovered
-- **Live Thinking tab** polls while a task runs, in a minimize-able side panel
+- **Token deltas** (purple `▌`) + **tool stdout `tool_delta`** (blue `▸`) streaming + **`todo_update` `☑`** priority badge (`high/medium/low`)
+- **Live Thinking tab** = `WebSocket /api/ws` global + `SSE /api/tasks/live/{id}/stream` + poll fallback, deduped, in a minimize-able side panel
 
-### 16. Multi-Step Task Decomposition
-Complex goals are automatically broken into manageable steps:
+### 16. Multi-Step Task Decomposition + Adaptive Loop (opencode-style)
+Complex goals are automatically broken into manageable steps (OpenClaw planning + opencode `session/prompt.ts` adaptive loop):
 - Gemini produces a **best-effort roadmap** up front (dependencies resolved, each step mapped to a tool, results flowing step-to-step)
-- Execution is **adaptive** — the roadmap is a starting point, not a script: unexpected errors just change the path, never kill the task
-- If planning fails or truncates, the agent still starts working — the step-by-step loop handles anything the roadmap didn't cover
+- Execution is **adaptive** — the roadmap is a starting point, not a script: unexpected errors just change the path, never kill the task; loop is `40→120` elastic, extends `+20` when `pending>0` & `recent_ok>0`, compacts every 90 steps (Gemini summary)
+- If planning fails or truncates, the agent still starts working — the step-by-step loop handles anything the roadmap didn't cover; `Complexity Router` (`Tier1` trivial 1-call / `Tier2` single-tool / `Tier3` heavy) + lazy roadmap + prompt slicing keeps normal tasks fast
 
 ---
 

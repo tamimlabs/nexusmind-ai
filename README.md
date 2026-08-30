@@ -68,13 +68,16 @@ It's an autonomous agent that receives goals -- via API, webhooks, or a live das
 ### What It Can Do
 
 - **Step-by-step adaptive execution** (opencode-style) -- Gemini decides ONE action at a time, the real result (or error) of each step drives the next decision: self-correct, verify, and keep working until the goal is actually met
+- **Complexity Router (new)** -- Tier1 trivial (`hi`, `what is X`) answers in one `gemini-3.5-flash` call; Tier2 single-tool (`read_file`, `web_search`) executes directly; Tier3 heavy builds go through full `planner` + `40→120` elastic loop — normal tasks 2.5s→0.6s, no planning waste
+- **Realtime streaming for every work** -- LLM `token` deltas + tool `tool_delta` stdout chunks + `todowrite` checklist updates stream live via Global Event Bus (`WebSocket /api/ws` + `SSE /api/tasks/live/{id}/stream` + poll fallback) — Thinking/Checklist/Trace tabs update as the agent thinks
+- **Dedicated `todowrite` + `task` tools (opencode parity)** -- explicit `todowrite` overwrites the whole checklist (priority `high/medium/low`) instead of piggyback JSON; `task` delegates to `explore` (read-only) / `general` (full) subagents for parallel fan-out
 - **Human-in-the-loop safety** -- dangerous actions pause for approval via Telegram or dashboard
 - **Persistent cross-session memory** -- SQLite locally; Firestore on Cloud Run, with hybrid retrieval (BM25 + Jaccard + HRR), trust scoring (`+0.05`/`-0.10`), fenced `<memory-context>`, contradiction detection, and compositional recall (`search`/`probe`/`related`/`reason`)
 - **Self-evolving skills** -- solved tasks become reusable SKILL.md packages with usage telemetry and an audit ledger
 - **11 automated watchers** -- continuously monitors GitHub, GitLab, Slack, Discord, Jira, Reddit, Hacker News, Email, RSS, Cron, and Webhooks, triggering workflows when new events are detected
 - **Builds real artifacts** -- generates complete multi-file projects (`projects/<name>/`: HTML/CSS/JS + backend server)
 - **Zero-cost commands** -- `/help`, `/start`, `/status`, `/tasks`, `/pending`, `/tools`, `/skills`, `/memory` answered deterministically without an LLM call (path-safe: `/Users/x/file.md` is a task, not a command)
-- **Full observability** -- live reasoning chain, audit trails, and **each step appearing in the dashboard as it runs** -- you watch the agent work in real time, not after the fact
+- **Full observability** -- live reasoning chain, audit trails, compaction every 90 steps, and **each step + token + todo appearing in the dashboard as it runs** — you watch the agent work in real time, not after the fact
 
 ### Example: Autonomous GitHub PR Operations
 
@@ -127,25 +130,33 @@ Store task outcome + reflect into memory
                         └──────────────┬──────────────┘
                                        │
                         ┌──────────────▼──────────────┐
-                        │        Orchestrator           │
+                         │        Orchestrator           │
                         │  ┌────────────────────────┐  │
-                        │  │  Gemini 3.5 Planner    │──┼-- Step decomposition
-                        │  │  Adaptive Step Loop    │──┼-- Decide -> Execute -> Observe
-                        │  │  Tool Executor         │──┼-- Sandboxed execution
+                        │  │  Complexity Router     │──┼-- Tier1/2 fast-path vs Tier3 heavy
+                        │  │  Gemini 3.5 Planner    │──┼-- Step decomposition (lazy, Tier3 only)
+                        │  │  Adaptive Step Loop    │──┼-- Decide -> Execute -> Observe (+streaming)
+                        │  │  Tool Executor         │──┼-- Sandboxed + todowrite/task + streaming
                         │  │  Self-Correction       │──┼-- Error -> Gemini -> Retry
                         │  │  Approval Gate         │──┼-- Human-in-the-loop
                         │  │  Memory System         │──┼-- Persistent context
-                        │  │  Trace Collector       │──┼-- Reasoning chain
+                        │  │  Trace Collector       │──┼-- Reasoning chain + compaction@90
                         │  │  Self-Improvement      │──┼-- Post-task reflection
                         │  └────────────────────────┘  │
                         └──────────────┬──────────────┘
                                        │
-              ┌────────────────────────┼────────────────────────┐
-              │                        │                        │
-     ┌────────▼────────┐     ┌────────▼────────┐     ┌────────▼────────┐
-     │    Firestore     │     │   Gemini API     │     │    Cloud Run    │
-     │  (State/Memory)  │     │  (Gemini LLM)   │     │  (Deployment)   │
-     └─────────────────┘     └─────────────────┘     └─────────────────┘
+               ┌────────────────────────┼────────────────────────┐
+               │                        │                        │
+      ┌────────▼────────┐     ┌────────▼────────┐     ┌────────▼────────┐
+      │    Firestore     │     │   Gemini API     │     │    Cloud Run    │
+      │  (State/Memory)  │     │  (Flash stream)  │     │  (Deployment)   │
+      └─────────────────┘     └─────────────────┘     └─────────────────┘
+               │                        │
+               └────────┬───────────────┘
+                        ▼
+               ┌─────────────────┐
+               │ Global Event Bus│  WS /api/ws + SSE + poll for every work
+               │ token/tool_delta│  todo_update, watcher/memory/skill fans
+               └─────────────────┘
 ```
 
 ---
@@ -179,7 +190,7 @@ NexusMind does not run a goal like a one-shot script. It works **step by step, l
 
 **How this plays out in practice:** the agent creates a folder, writes `styles.css`, writes `main.js`, then writes `index.html` — resolving each step's success (or error) before the next one. If a step fails (a module is missing, an approval times out, a tool returns a bad result), the error lands in the transcript and the next decision fixes it: install the dependency, switch from `execute_code` to `write_file`, verify the files with `list_directory`/`read_file` — then declare the goal done. Steps appear **live in the dashboard** as they happen.
 
-> **Budgets & guardrails:** 40-step budget (`MAX_STEPS`), abort after 3 consecutive failures, 20k chars per `write_file`, bounded transcript (last 25 entries / 12k chars) + live TODO `todo_updates` (`add`/`complete`/`skip`, max 5/step, 30 cap). **Project collision guard:** `projects/<name>/` that existed before the task is blocked for `write_file` until you prove intent with `read_file`/`list_directory` — otherwise `BLOCKED: "…is an EXISTING project — read its files first or pick a new name (-2/v2)"`.
+> **Budgets & guardrails:** 40-step budget → elastic `120` (`_MAX_STEPS_HARD`, extends `+20` when `pending>0` & `recent_ok>0`), abort after 3 consecutive failures, 20k chars per `write_file`, bounded transcript (last 25 / 12k) + collapsed `EARLIER PROGRESS` + **compaction every 90 steps** (Gemini summary). Live TODO via `todowrite` full-overwrite (priority `high/medium/low`, 30 cap) + legacy `todo_updates` compat. **Project collision guard:** `projects/<name>/` that existed before the task is blocked for `write_file` until you prove intent with `read_file`/`list_directory` — otherwise `BLOCKED: "…is an EXISTING project — read its files first or pick a new name (-2/v2)"`. **Streaming:** LLM `token` + tool `tool_delta` (4 KiB stdout chunks) + global `WebSocket /api/ws`.
 
 ---
 
@@ -362,6 +373,9 @@ Credentials are stored in `.env` (gitignored) and never exposed to the frontend 
 | `GET` | `/api/tasks` | List recent tasks |
 | `GET` | `/api/tasks/{id}` | Get task details + trace |
 | `GET` | `/api/tasks/live/{id}` | Poll live task updates |
+| `GET` | `/api/tasks/live/{id}/stream` | SSE push for live events |
+| `GET` | `/api/events/live?limit=100` | Global bus — every work (tasks/watchers/memory/skills) |
+| `WS` | `/api/ws` | WebSocket fan-out for realtime dashboard (replay last 30) |
 | `DELETE` | `/api/tasks/{id}` | Delete a task |
 | `GET` | `/api/approvals` | List pending approvals |
 | `POST` | `/api/approvals/{id}` | Approve or deny an action |
@@ -423,7 +437,7 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 
 ## Available Tools
 
-### Core Tools (10)
+### Core Tools (12)
 
 | Tool | Description | Risk Level |
 |------|-------------|------------|
@@ -435,8 +449,10 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 | `parse_json` | Extract data from JSON | Safe |
 | `summarize_text` | Summarize long text with Gemini | Safe |
 | `extract_data` | Extract structured data from text | Safe |
-| `execute_code` | Run Python code in sandbox | **Approval Required** |
-| `run_command` | Run shell command | **Approval Required** |
+| `execute_code` | Run Python code in sandbox (streams `tool_delta` 4 KiB chunks) | **Approval Required** |
+| `run_command` | Run shell command (streams `tool_delta`) | **Approval Required** |
+| `todowrite` | Overwrite live TODO checklist (full `todos[]` with `content/title`, `status`, `priority`) — opencode parity | Safe |
+| `task` | Delegate to subagent `explore` (read-only) / `general` (full 8-step loop) | Safe |
 
 ### GitHub Skill (8)
 
@@ -457,12 +473,12 @@ curl -X POST http://localhost:8080/api/approvals/{step_id} \
 
 | Layer | Technology |
 |-------|-----------|
-| **LLM** | Gemini 3.5 Flash (4-key rotation) |
+| **LLM** | Gemini 3.5 Flash (4-key rotation, `generate_content_stream` token deltas) |
 | **Agent Framework** | Google ADK 2.x |
 | **Cloud Run** | Serverless deployment (scales to zero) |
 | **Firestore** | Persistent task state + agent memory on Cloud Run; SQLite used locally |
 | **Pub/Sub** | Event-driven task routing |
-| **API** | FastAPI + Uvicorn |
+| **API** | FastAPI + Uvicorn + WebSocket global bus (`/api/ws`) |
 | **Language** | Python 3.11+ |
 | **Testing** | pytest + pytest-asyncio |
 | **Watchers** | 11 platforms (GitHub, GitLab, Slack, Discord, Jira, Reddit, HN, Email, RSS, Cron, Webhook) |
@@ -516,8 +532,8 @@ nexusmind-ai/
 │   ├── pubsub/events.py            # Pub/Sub event routing
 │   └── cloud_run/                  # Dockerfile + cloudbuild.yaml
 ├── api/
-│   ├── main.py                     # FastAPI app + background task runner
-│   ├── dashboard.html              # Live traceability dashboard
+│   ├── main.py                     # FastAPI app + global bus (WS/SSE/poll) + background runner
+│   ├── dashboard.html              # Live traceability dashboard (WS + token/tool_delta/todo WS)
 │   ├── watcher_routes.py           # Watcher CRUD API endpoints
 │   └── credentials_routes.py       # Credentials management API
 ├── tests/                          # 250+ passing tests
@@ -543,10 +559,30 @@ nexusmind-ai/
 | Plan salvage + JSON repair | Hermes + OpenClaw | Truncated plans recovered step-by-step; **zero templates** — every site/app is authored by Gemini from the user's command + recalled memory, with no hardcoded scaffolds or stock imagery |
 | Self-improvement reflection | Hermes | Post-task Gemini reflection saves learnings |
 | Event-driven scheduling | Hermes | Cloud Pub/Sub replaces in-process cron |
-| Adaptive step-by-step loop | Custom (opencode-style) | The agent decides one action at a time; each real result or error feeds the next decision — self-correcting, verifying files before done, kept working up to a generous budget |
+| Adaptive step-by-step loop | **opencode** (`packages/opencode/src/session/prompt.ts` loop) + Custom | The agent decides one action at a time; each real result or error feeds the next decision — self-correcting, verifying files before done, kept working up to a generous budget; adapted to `agent/core/agent_loop.py` with `40→120` elastic budget + compaction@90 |
+| Complexity Router | Custom | Tier1/2 fast-path vs Tier3 heavy (lazy planner + prompt slicing) — normal tasks single-call |
+| Streaming + Global Bus | **opencode** (`session/prompt.ts:567` streaming, `EventV2Bridge`, `session/status.ts`) | Gemini `generate_content_stream` token `token` + tool stdout 4 KiB `tool_delta` + `WebSocket /api/ws` + `SSE /api/tasks/live/{id}/stream` + poll + `GET /api/events/live` global fan-out for every work (tasks/watchers/memory/skills) |
+| `todowrite` + `task` tools | **opencode** (`tool/todo.ts` + `session/todo.ts`, `tool/task.ts`) | Explicit `todowrite` full-overwrite (`content/title`, `status` `pending/in_progress/completed/cancelled`, `priority`) + `task` delegates to `explore` (read-only) / `general` (8-step loop) subagents; adapted to `agent/core/executor.py` + `agent/models.py:TodoPriority` |
 | Human-in-the-loop approval | Custom | Smart approval gate with Telegram bot for remote control |
-| Transparent traceability | Custom | In-memory trace collector -> live dashboard |
+| Transparent traceability | Custom + **opencode** `session/status.ts` | In-memory trace collector -> live dashboard (WS/SSE/poll with dedup + priority badges + token/tool_delta live) |
 | Multi-key rotation | Custom | Round-robin with rate-limit backoff |
+
+### What we took directly from `opencode-dev` (`D:\Projects\NexusMind AI\opencode-dev`)
+
+We vendored `opencode-dev` at `opencode-dev/opencode-dev` for study and ported only the **behavioral ideas** (no copy-paste of Effect/TS runtime) into our Python/FastAPI/Gemini stack:
+
+| opencode source | What it does there | Where it lives now in NexusMind |
+|---|---|---|
+| `packages/opencode/src/session/prompt.ts:1081` `runLoop` + `processor.ts` | Decide one tool per turn, stream `LLMEvent.textDelta`, publish `Session/Event/PartDelta`, infinite `agent.steps` until LLM says `stop` without tool-calls; compaction via `session/compaction.ts` | `agent/core/agent_loop.py:530` `run_adaptive_loop` (one decision → one `execute_step` → transcript feedback + `40→120` elastic + `_MAX_CONSECUTIVE_FAILURES=3` + compaction@90 + `tool_delta`/`token` emits) |
+| `packages/opencode/src/tool/todo.ts` + `session/todo.ts` | First-class `todowrite` tool overwrites full `Todo.Info[]` (`content/status/priority`), persisted + `Todo.Event.Updated` | `agent/core/executor.py:732` `@register_tool("todowrite")`, `agent/models.py:86` `TodoStatus`+`TodoPriority.TaskTodo`, `agent_loop.py:867` overwrite + `todo_update` live event |
+| `packages/opencode/src/tool/task.ts` + `agent/agent.ts:196` `explore` subagent | `task` delegates to `general`/`explore` subagents (general = all tools, explore = `grep/glob/read/bash/webfetch` readonly) | `agent/core/executor.py:720` `@register_tool("task")` `explore` single `generate_content` / `general` 8-step mini-loop |
+| `packages/opencode/src/session/llm/*` `generate_content_stream` | `llm.stream(request)` per provider turn, reloads history, streams deltas | `agent/core/gemini_client.py:481` `generate_content_stream` (`client.models.generate_content_stream`, throttled, quota-aware fallback) → `agent_loop.py:727` `_call_decide` forwards `on_event("token")` |
+| `tool/shell` + `session/prompt.ts:567` `Stream.decodeText(handle.all)` per-chunk `PartUpdated` | Shell/Code stdout streams incrementally to TUI | `agent/core/executor.py:781` `execute_code`/`run_command` `on_output` 4 KiB incremental drain + `agent_loop.py:834` `_on_tool_chunk` → `_emit("tool_delta")` |
+| `EventV2Bridge` + `session/status.ts:39` + `Session/Todo` events | Global `Status/PartDelta/Todo` bus → TUI/SDK push | `api/main.py:195` `_global_events`+`_ws_clients` + `GET /api/events/live` + `WebSocket /api/ws` (replay 30) + `dashboard.html:612` `WS+SSE+poller` with dedup `S._seenWSKeys` |
+| `packages/opencode/src/agent/agent.ts:54` `steps` + `permission` | Per-agent `steps` budget + fine-grained `permission` (allow/ask/deny per tool/pattern) | Kept cost-conscious `40→120` elastic (`agent_loop.py:48`) instead of `Infinity`; permission stays `executor.py:220` `needs_approval` smart gate (Telegram vs dashboard) — not `Infinity` to avoid Cloud Run cost |
+| `tool/truncate` + `Truncate.GLOB` whitelisting | Output truncation + whitelisted `external_directory` | Consolidated into `agent_loop.py:64` `_CONTENT_MAX_CHARS=20k` + `_TRANSCRIPT_MAX_CHARS=12k` + collision guard, plus streaming to avoid truncation |
+
+> We kept NexusMind's Gemini-native, Firestore/PubSub/Cloud Run `AGENTS.md:12` mandatory stack and Hermes memory/skills — opencode contributed the **loop & live-UX shape**, not the runtime.
 
 ---
 
@@ -560,7 +596,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=agent --cov-report=term-missing
 ```
 
-All **250+ tests** covering models, memory (hybrid retrieval, HRR, trust scoring, hygiene/contradictions), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder), the **adaptive step-by-step agent loop** (result feedback, self-correction, verification before done, failure guards, budget bounds, project collision guard, live TODO checklist), executor (smart approval, one-approval-per-task trust), orchestrator, API endpoints, watchers, and the ADK integration (agent creation, callbacks, Runner path, API routing).
+All **280+ tests** (parallel `pytest-xdist`) covering models, memory (hybrid retrieval, HRR, trust scoring, hygiene/contradictions), the self-evolving skill library (validation gates, lifecycle, matching, ledger), deterministic routing (command gate, tool-name repair ladder, **Complexity Router Tier1/2/3**), the **adaptive step-by-step agent loop** (result feedback, self-correction, verification before done, failure guards, `40→120` elastic + compaction, project collision guard, `todowrite` + legacy `todo_updates`, `token`/`tool_delta` streaming), executor (smart approval, one-approval-per-task trust, `todowrite`/`task`), orchestrator (lazy roadmap), API endpoints (including `WebSocket /api/ws`, `GET /api/events/live`, `SSE`), watchers, and ADK integration.
 
 ---
 
@@ -613,7 +649,7 @@ All **250+ tests** covering models, memory (hybrid retrieval, HRR, trust scoring
 
 **Built for the [Google All Things Agentic Hackathon](https://allthingsagentic.devpost.com) -- August 2026**
 
-Patterns adapted from [OpenClaw](https://github.com/openclaw/openclaw) and [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+Patterns adapted from [OpenClaw](https://github.com/openclaw/openclaw), [Hermes Agent](https://github.com/NousResearch/hermes-agent) **and [opencode](https://github.com/sst/opencode)** (`opencode-dev` at `opencode-dev/opencode-dev`)
 
 Made with ❤️ by Tamim Hasan
 
