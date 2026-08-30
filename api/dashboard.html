@@ -308,6 +308,15 @@ function renderDetail(t){
   const isRunning=['planning','executing','pending'].includes(t.status)||(S.liveTaskId===t.id&&!['completed','failed'].includes(S.liveStatus));
   let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span>'+(t.elapsed_seconds?'<span class="badge" style="background:var(--bg3);color:var(--t4);border:1px solid var(--border)">⏱ '+t.elapsed_seconds+'s</span>':'')+(isNeeds?'<button class="btn btn-p btn-sm" onclick="quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+(isRunning?'<button class="btn btn-d btn-sm" onclick="cancelCurrentTask()">⏹ Cancel</button>':'')+'<button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
   if(isNeeds){h+='<div class="detail-section" style="background:var(--ybg);border:1px solid var(--yad);border-radius:8px;padding:12px"><div style="font-size:13px;font-weight:600;color:var(--yellow);margin-bottom:6px">⚠️ Needs your instruction — nothing was executed</div><div style="font-size:12px;color:var(--t3);line-height:1.6">This watcher detected an event but you have no matching standing instruction. Add one in <b>Memory → instruction</b> to auto-handle future events. Telegram was notified (once per 6h). Click <b>Create Instruction</b> for a suggestion.</div></div>';}
+  // "What is doing" banner like opencode — show active todo (in_progress) or fallback to current step
+  if(isRunning){
+    let activeTodo=null, activeStep=null;
+    if(t.todos&&t.todos.length){activeTodo=t.todos.find(x=>x.status==='in_progress')||t.todos.find(x=>x.status==='pending')}
+    if(t.steps&&t.steps.length) activeStep=t.steps[t.steps.length-1];
+    const doing = activeTodo? ('Working on: '+activeTodo.title) : (activeStep? ('Doing: '+activeStep.description) : 'Thinking...');
+    const tool = activeTodo? '' : (activeStep&&activeStep.tool_name? ' — '+activeStep.tool_name : '');
+    h+='<div class="detail-section" style="background:var(--abg);border:1px solid var(--abad);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:8px"><div class="spinner" style="width:14px;height:14px;border-width:2px;border-top-color:var(--accent)"></div><div style="flex:1"><div style="font-size:12px;font-weight:600;color:var(--accent)">'+esc(doing)+'<span style="font-weight:400;color:var(--t3)">'+esc(tool)+'</span></div><div style="font-size:11px;color:var(--t4)">Live — what the agent is thinking / writing right now</div></div><span style="font-size:10px;color:var(--t5)">WS live</span></div>';
+  }
   if(S.liveEvents.length>0&&S.liveTaskId===t.id){h+='<div class="detail-section"><div class="detail-label">Live Activity <span style="font-weight:400;color:var(--t5)">('+S.liveEvents.length+' events · click detail to expand)</span></div><div class="think-list">';S.liveEvents.forEach((e,i)=>{h+='<div class="think-item '+esc(e.type)+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')" style="cursor:pointer"><div class="think-msg">'+thinkIcon(e,i===S.liveEvents.length-1,!['completed','failed'].includes(S.liveStatus))+esc(e.message)+'<span style="margin-left:auto;font-size:10px;color:var(--t5);font-family:var(--mono)">'+new Date(e.time*1000).toLocaleTimeString()+'</span></div>'+(e.detail?'<div class="think-detail'+(i>=S.liveEvents.length-3?' show':'')+'">'+esc(e.detail)+'</div>':'')+'</div>'});h+='</div></div>'}
   if(t.result){const isFileResult=t.result.includes('Saved to:');h+='<div class="detail-section"><div class="detail-label">Result</div><div class="detail-code" style="'+(isFileResult?'border-left:3px solid var(--accent);background:var(--abg)':'')+'">'+esc(t.result)+'</div>'+(isFileResult?'<div style="margin-top:8px;font-size:11px;color:var(--accent)">📁 Check <code>output/</code> or <code>projects/</code> folder for saved files</code></div>':'')+'</div>';}
   if(t.error)h+='<div class="detail-section"><div class="detail-label">Error</div><div class="tc-error">'+esc(t.error)+'</div></div>';
@@ -338,15 +347,22 @@ function renderThinkingPanel(c){
   const running=!['completed','failed'].includes(S.liveStatus);
   const elapsed=S.tasks.find(x=>x.id===S.liveTaskId)?.elapsed_seconds||0;
   let h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--t5)">'+evs.length+' event'+(evs.length!==1?'s':'')+' · '+elapsed+'s'+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</span><span style="font-size:10px;color:var(--t5);font-family:var(--mono)">WS+SSE+poller</span></div><div class="think-list">';
-  // Hide raw token deltas and raw JSON-decision fragments ({"description":...) from Live Activity — they flood as 4 rows per decision (see screenshot)
+  // Hide raw token deltas and raw JSON fragments; keep meaningful thinking/step/tool/todo
   const filtered=evs.filter(e=>{
     if(e.type==='token') return false;
     const m=(e.message||'')+''; const d=(e.detail||'')+'';
-    if(m.trim().startsWith('{"description"')||d.trim().startsWith('{"description"')||m.includes('"tool_name":')&&m.includes('"tool_args"')) return false;
-    if(m.length>300 && m.includes('"title":') && m.includes('"status":')) return false;
+    if(m.trim().startsWith('{"description"')||d.trim().startsWith('{"description"')) return false;
+    if(m.includes('"tool_name":')&&m.includes('"tool_args"')&&m.length<400) return false;
+    if(m.length>500 && m.includes('"title":') && m.includes('"status":')) return false;
+    // Keep short todo JSON as detail, but not as message row
     return true;
   });
-  filtered.forEach((e,i)=>{const isTool=e.type==='tool_output'||e.type==='step_running'||e.type==='tool_delta'; h+='<div class="think-item '+esc(e.type)+'" style="'+(isTool?'border-left-color:var(--blue)':'')+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')"><div class="think-msg">'+thinkIcon(e,i===filtered.length-1,running)+esc(e.message)+'</div>'+(e.detail?'<div class="think-detail'+(i>=filtered.length-2||e.type==='error'||e.type==='todo_update'?' show':'')+'" style="'+(e.detail.length>400?'max-height:220px;overflow-y:auto':'')+'">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
+  // Show what is thinking vs what is writing — map types to labels like opencode Task tab
+  filtered.forEach((e,i)=>{
+    const isTool=e.type==='tool_output'||e.type==='step_running'||e.type==='tool_delta';
+    const isThinking=e.type==='thinking';
+    const label = isThinking? '💭 Thinking: ' : (e.type==='step_running'? '⚙️ Doing: ' : (e.type==='tool_output'? '📝 Wrote: ' : (e.type==='todo_update'? '☑ Checklist: ' : '')));
+    h+='<div class="think-item '+esc(e.type)+'" style="'+(isTool?'border-left-color:var(--blue)':isThinking?'border-left-color:var(--purple)':'')+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')"><div class="think-msg">'+thinkIcon(e,i===filtered.length-1,running)+esc(label+e.message)+'</div>'+(e.detail?'<div class="think-detail'+(i>=filtered.length-2||e.type==='error'||e.type==='todo_update'?' show':'')+'" style="'+(e.detail.length>400?'max-height:220px;overflow-y:auto':'')+'">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
   h+='</div>';c.innerHTML=h;c.scrollTop=c.scrollHeight}
 
 function renderApprovalPanel(c){
