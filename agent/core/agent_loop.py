@@ -100,7 +100,13 @@ RULES
 8. The loop executes exactly ONE action per reply and returns its result to you. Do not try to do several actions in one reply.
 9. Use {{step_N_result}} style references NEVER — put concrete values directly into tool_args (the actual prior RESULT text is already in your context).
 10. Purely informational questions are completed as soon as the answer is backed by retrieved results — a web_search or summarize step then DONE.
-11. You maintain a live TODO checklist via the todowrite tool (shown to the user). It is seeded from the roadmap but it is YOUR plan: call todowrite with the FULL desired todos array (opencode semantics) whenever you want to create/update it — include content/title, status pending/in_progress/completed/cancelled, priority high/medium/low. You may also still use optional "todo_updates" in a step reply for small delta updates (legacy), but prefer todowrite for full overwrites. Keep it honest and complete for EVERY task type.
+11. TODO checklist — use todowrite (shown to user live, like opencode). Rules from opencode todowrite.txt:
+   - When to use: task needs 3+ distinct steps, non-trivial work, or user gave multiple tasks — also when new instructions arrive.
+   - You start a task: call todowrite BEFORE working — mark that item `in_progress` (exactly ONE at a time).
+   - You finish a task: call todowrite immediately — mark it `completed` only after work is actually done including verification — add any follow-ups discovered.
+   - Keep exactly one `in_progress` while work remains. If blocked, keep `in_progress` and add a follow-up todo describing blocker.
+   - States: `pending` (not started), `in_progress` (actively working — one only), `completed` (done + verified), `cancelled` (no longer needed).
+   - Don't batch completions — update in real time. Preserve user goal text verbatim. Break large work into smaller steps. The list is YOUR plan, seeded from roadmap but you own it.
 12. Keep each step small and single-purpose; for big goals prefer many small steps over one giant step (folder creation, then one file per step, then verification)."""
 
 _DECISION_USER_TEMPLATE = """GOAL
@@ -794,17 +800,14 @@ async def run_adaptive_loop(
             )
 
         _apply_todo_updates(task, decision)
-        # Emit todo_update for legacy delta so dashboard checklist moves in realtime even if model doesn't call todowrite
         if decision.get("todo_updates"):
             _emit("todo_update", f"Checklist {sum(1 for t in task.todos if t.status==TodoStatus.COMPLETED)}/{len(task.todos)}", _todo_state(task)[:1200])
-        # Don't mark IN_PROGRESS for todowrite itself — it resets the whole list and would lose the mark (seen as 0/6 gray)
-        _is_todowrite = str(decision.get("tool_name") or "").lower() == "todowrite"
-        active_todo = _next_open_todo(task)
-        if active_todo is not None and not _is_todowrite:
-            _set_todo_status(active_todo, TodoStatus.IN_PROGRESS)
-            _emit("todo_update", f"Working: {active_todo.title[:80]}", _todo_state(task)[:1200])
-        elif _is_todowrite:
-            active_todo = None  # todowrite is meta, not real work — don't auto-complete it as a todo
+        # Pure model-driven like opencode: todowrite owns status. No auto IN_PROGRESS here — model must call todowrite with one in_progress before work.
+        active_todo = None
+        # Keep legacy fallback: if no todowrite and we have an open todo, track it for auto-complete on success (but don't mutate status pre-step)
+        _fallback_open = _next_open_todo(task)
+        if _fallback_open is not None:
+            active_todo = _fallback_open
 
         step = TaskStep(
             task_id=task.id,
