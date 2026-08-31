@@ -5,11 +5,11 @@
 
 <div align="center">
 
-[![Demo Video](https://img.shields.io/badge/🎬_Watch_Demo-YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=woSOCuzfabg)
+[![Demo Video](https://img.shields.io/badge/🎬_Watch_Demo-YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/57qWqvspqjs?si=zxbkq8q0HBcCeZ7D)
 [![No Code Required](https://img.shields.io/badge/No_Code-Required-brightgreen?style=flat)](#)
 [![Gemini](https://img.shields.io/badge/Powered_by-Gemini_3.5_Flash-4285F4?style=flat&logo=google&logoColor=white)](https://aistudio.google.com/apikey)
 
-**[▶️ Watch 4-min Demo](https://www.youtube.com/watch?v=woSOCuzfabg) before you start — see the whole flow in one take.**
+**[▶️ Watch 4-min Demo](https://youtu.be/57qWqvspqjs?si=zxbkq8q0HBcCeZ7D) before you start — see the whole flow in one take.**
 
 </div>
 
@@ -467,7 +467,7 @@ EMAIL_PASSWORD=your-app-password
 
 ## Need Help?
 
-- **Video walkthrough:** [Watch 4-min Demo](https://www.youtube.com/watch?v=woSOCuzfabg)
+- **Video walkthrough:** [Watch 4-min Demo](https://youtu.be/57qWqvspqjs?si=zxbkq8q0HBcCeZ7D)
 - **Full docs:** [README.md](../README.md) and [Architecture](../README.md#architecture)
 - **Issues:** https://github.com/tamimlabs/nexusmind-ai/issues
 - **Email:** contact.tamimlabs@gmail.com

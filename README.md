@@ -10,7 +10,7 @@
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Run%20%7C%20Firestore%20%7C%20Pub%2FSub-4285F4?style=flat&logo=googlecloud&logoColor=white)](https://cloud.google.com)
 [![Google ADK](https://img.shields.io/badge/Google%20ADK-2.x-4285F4?style=flat&logo=google&logoColor=white)](https://cloud.google.com/vertex-ai/generative-ai/docs/agent-development-kit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Demo Video](https://img.shields.io/badge/🎬_Demo_Video-Watch_on_YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=woSOCuzfabg)
+[![Demo Video](https://img.shields.io/badge/🎬_Demo_Video-Watch_on_YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/57qWqvspqjs?si=zxbkq8q0HBcCeZ7D)
 
 **Built for the [Google "All Things Agentic" Hackathon](https://allthingsagentic.devpost.com) — Track: The Taskmaster**
 
@@ -20,9 +20,9 @@
 
 ### Demo Video — See NexusMind AI in Action (4 min)
 
-[![Watch Demo on YouTube](https://img.youtube.com/vi/woSOCuzfabg/maxresdefault.jpg)](https://www.youtube.com/watch?v=woSOCuzfabg)
+[![Watch Demo on YouTube](https://img.youtube.com/vi/57qWqvspqjs/maxresdefault.jpg)](https://youtu.be/57qWqvspqjs?si=zxbkq8q0HBcCeZ7D)
 
-**[WATCH DEMO ON YOUTUBE — 4 MIN](https://www.youtube.com/watch?v=woSOCuzfabg)** &nbsp;|&nbsp; *Autonomous PR reviews, multi-step builds, Telegram approvals and self-learning — all in one take*
+**[WATCH DEMO ON YOUTUBE — 4 MIN](https://youtu.be/57qWqvspqjs?si=zxbkq8q0HBcCeZ7D)** &nbsp;|&nbsp; *Autonomous PR reviews, multi-step builds, Telegram approvals and self-learning — all in one take*
 
 </div>
 
