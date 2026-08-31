@@ -4,6 +4,7 @@ Supported platforms:
     GitHub, GitLab, Slack, Discord, Jira, Reddit,
     Hacker News, Email (IMAP), RSS/Atom, Cron, Custom Webhook
 """
+
 from agent.watchers.base import BaseWatcher
 from agent.watchers.cron import CronWatcher
 from agent.watchers.discord import DiscordWatcher

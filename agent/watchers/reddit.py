@@ -2,6 +2,7 @@
 
 Token-efficient: only calls Gemini when new events are detected.
 """
+
 from __future__ import annotations
 
 import logging
@@ -53,20 +54,22 @@ class RedditWatcher(BaseWatcher):
                             # Skip stickied posts (mod announcements)
                             if post.get("stickied"):
                                 continue
-                            events.append({
-                                "event_type": "reddit.post.new",
-                                "external_id": f"reddit_{post['id']}",
-                                "payload": {
-                                    "id": post["id"],
-                                    "subreddit": post.get("subreddit", subreddit),
-                                    "title": post.get("title", ""),
-                                    "selftext": (post.get("selftext") or "")[:500],
-                                    "author": post.get("author", ""),
-                                    "num_comments": post.get("num_comments", 0),
-                                    "score": post.get("score", 0),
-                                    "url": f"https://www.reddit.com{post.get('permalink', '')}",
-                                },
-                            })
+                            events.append(
+                                {
+                                    "event_type": "reddit.post.new",
+                                    "external_id": f"reddit_{post['id']}",
+                                    "payload": {
+                                        "id": post["id"],
+                                        "subreddit": post.get("subreddit", subreddit),
+                                        "title": post.get("title", ""),
+                                        "selftext": (post.get("selftext") or "")[:500],
+                                        "author": post.get("author", ""),
+                                        "num_comments": post.get("num_comments", 0),
+                                        "score": post.get("score", 0),
+                                        "url": f"https://www.reddit.com{post.get('permalink', '')}",
+                                    },
+                                }
+                            )
                     else:
                         logger.warning(
                             "Reddit r/%s check failed (%s): %s",

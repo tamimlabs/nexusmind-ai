@@ -108,7 +108,9 @@ def _error_result(status: int, data: Any, action: str) -> ToolResult:
         hint = " (Check GITLAB_TOKEN has api scope and access to the project)"
     elif status == 404:
         hint = " (Not found — check project_id and GITLAB_BASE_URL; private projects need a valid GITLAB_TOKEN)"
-    return ToolResult(success=False, output="", error=f"GitLab API {action} failed [{status}]: {message}{hint}")
+    return ToolResult(
+        success=False, output="", error=f"GitLab API {action} failed [{status}]: {message}{hint}"
+    )
 
 
 @register_tool("gitlab_list_mrs")
@@ -121,7 +123,9 @@ async def gitlab_list_mrs(project_id: str, state: str = "opened", **_: Any) -> T
     """
     base_url, token = _config()
     if not token:
-        logger.warning("GitLab call WITHOUT token — private projects will 401/404. Set GITLAB_TOKEN in .env")
+        logger.warning(
+            "GitLab call WITHOUT token — private projects will 401/404. Set GITLAB_TOKEN in .env"
+        )
     url = f"{base_url}/api/v4/projects/{project_id}/merge_requests"
     params = {"state": state}
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
@@ -148,7 +152,11 @@ async def gitlab_list_mrs(project_id: str, state: str = "opened", **_: Any) -> T
             }
             for mr in data
         ]
-        return ToolResult(success=True, output=json.dumps(mrs), metadata={"count": len(mrs), "project_id": str(project_id)})
+        return ToolResult(
+            success=True,
+            output=json.dumps(mrs),
+            metadata={"count": len(mrs), "project_id": str(project_id)},
+        )
 
 
 @register_tool("gitlab_get_mr")
@@ -199,9 +207,15 @@ async def gitlab_merge_mr(project_id: str, mr_iid: int, **_: Any) -> ToolResult:
             if isinstance(data, dict):
                 sha = str(data.get("sha", "") or data.get("merge_commit_sha", ""))
             suffix = f" (sha {sha[:7]})" if sha else ""
-            return ToolResult(success=True, output=f"Merged MR !{mr_iid} in project {project_id}{suffix}")
+            return ToolResult(
+                success=True, output=f"Merged MR !{mr_iid} in project {project_id}{suffix}"
+            )
         if resp.status_code == 405:
-            return ToolResult(success=False, output="", error=f"MR !{mr_iid} is not mergeable (405 Method Not Allowed — check conflicts/pipeline)")
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"MR !{mr_iid} is not mergeable (405 Method Not Allowed — check conflicts/pipeline)",
+            )
         if resp.status_code == 401:
             return _error_result(resp.status_code, data, "merge_mr")
         return _error_result(resp.status_code, data, "merge_mr")

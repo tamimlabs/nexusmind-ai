@@ -66,11 +66,13 @@ _task_trusted: set[str] = set()
 
 def register_tool(name: str, high_risk: bool = False) -> Callable:
     """Decorator to register a tool. Set high_risk=True for tools needing approval."""
+
     def decorator(func: Callable[..., Awaitable[ToolResult]]) -> Callable:
         _tool_registry[name] = func
         if high_risk or name in _high_risk_tools:
             _high_risk_tools.add(name)
         return func
+
     return decorator
 
 
@@ -91,50 +93,83 @@ def set_task_context(task_id: str, goal: str) -> None:
 
 # Safe commands that never need approval (read-only, no side effects)
 _SAFE_COMMANDS = {
-    "ls", "dir", "pwd", "whoami", "date", "echo", "cat", "head", "tail",
-    "grep", "find", "wc", "sort", "uniq", "diff", "file", "stat",
-    "git status", "git log", "git diff", "git show", "git branch",
-    "git remote", "git config --list",
-    "pip list", "pip show", "pip freeze",
-    "node --version", "npm --version",
-    "docker ps", "docker images", "docker logs",
-    "ps aux", "top", "df", "du", "free", "uptime",
-    "curl -I", "curl -s", "curl", "wget --spider",
+    "ls",
+    "dir",
+    "pwd",
+    "whoami",
+    "date",
+    "echo",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "find",
+    "wc",
+    "sort",
+    "uniq",
+    "diff",
+    "file",
+    "stat",
+    "git status",
+    "git log",
+    "git diff",
+    "git show",
+    "git branch",
+    "git remote",
+    "git config --list",
+    "pip list",
+    "pip show",
+    "pip freeze",
+    "node --version",
+    "npm --version",
+    "docker ps",
+    "docker images",
+    "docker logs",
+    "ps aux",
+    "top",
+    "df",
+    "du",
+    "free",
+    "uptime",
+    "curl -I",
+    "curl -s",
+    "curl",
+    "wget --spider",
 }
 
 # Dangerous patterns that ALWAYS need approval
 _DANGEROUS_PATTERNS = [
-    r"rm\s+-rf",           # recursive force delete
-    r"rm\s+/",            # delete from root
-    r"del\s+/[sfq]",      # Windows force delete
-    r"format\s+[a-z]",    # format disk
-    r"shutdown",           # shutdown
-    r"reboot",             # reboot
-    r"sudo\s+",           # sudo commands
-    r"chmod\s+777",       # world-writable
-    r"chown\s+",          # change ownership
-    r"eval\s+",           # eval (code injection)
-    r"exec\s+",           # exec
-    r"\|\s*bash",         # pipe to bash
-    r"\|\s*sh",           # pipe to sh
-    r">\s*/dev/sd",       # write to disk device
-    r"dd\s+if=",          # dd (disk destroyer)
-    r"mkfs\.",            # format filesystem
-    r"mount\s+",          # mount
-    r"umount\s+",         # unmount
-    r"iptables",          # firewall rules
+    r"rm\s+-rf",  # recursive force delete
+    r"rm\s+/",  # delete from root
+    r"del\s+/[sfq]",  # Windows force delete
+    r"format\s+[a-z]",  # format disk
+    r"shutdown",  # shutdown
+    r"reboot",  # reboot
+    r"sudo\s+",  # sudo commands
+    r"chmod\s+777",  # world-writable
+    r"chown\s+",  # change ownership
+    r"eval\s+",  # eval (code injection)
+    r"exec\s+",  # exec
+    r"\|\s*bash",  # pipe to bash
+    r"\|\s*sh",  # pipe to sh
+    r">\s*/dev/sd",  # write to disk device
+    r"dd\s+if=",  # dd (disk destroyer)
+    r"mkfs\.",  # format filesystem
+    r"mount\s+",  # mount
+    r"umount\s+",  # unmount
+    r"iptables",  # firewall rules
     r"systemctl\s+(stop|restart|disable)",  # stop/restart services
-    r"kill\s+-9",         # force kill
-    r"killall",           # kill all
-    r"pkill",             # pkill
-    r"curl.*\|\s*bash",   # curl pipe to bash
-    r"wget.*\|\s*sh",     # wget pipe to sh
-r"find\s+.*-delete\b(?:\s|$)",  # silent recursive delete
-    r"find\s+.*-exec\b",          # arbitrary command execution
-    r"git\s+branch\s+-[dD]\b",       # delete/force-delete a branch
-    r"transfer_funds",    # financial transfers
-    r"deploy",            # deployments
-    r"send_email",        # emails (potentially spam)
+    r"kill\s+-9",  # force kill
+    r"killall",  # kill all
+    r"pkill",  # pkill
+    r"curl.*\|\s*bash",  # curl pipe to bash
+    r"wget.*\|\s*sh",  # wget pipe to sh
+    r"find\s+.*-delete\b(?:\s|$)",  # silent recursive delete
+    r"find\s+.*-exec\b",  # arbitrary command execution
+    r"git\s+branch\s+-[dD]\b",  # delete/force-delete a branch
+    r"transfer_funds",  # financial transfers
+    r"deploy",  # deployments
+    r"send_email",  # emails (potentially spam)
 ]
 
 # Shell constructs that turn a "safe-looking" read into a write or compound
@@ -145,19 +180,19 @@ _SHELL_SIDE_EFFECT_RE = re.compile(r"[;|`>]|&&|\|\||\$\(")
 
 # Dangerous patterns in code
 _DANGEROUS_CODE_PATTERNS = [
-    r"os\.system\s*\(",         # os.system
-    r"subprocess\.",            # subprocess calls
-    r"shutil\.rmtree",          # recursive delete
-    r"os\.remove",              # file removal
-    r"os\.unlink",              # file removal
-    r"os\.rmdir",               # directory removal
+    r"os\.system\s*\(",  # os.system
+    r"subprocess\.",  # subprocess calls
+    r"shutil\.rmtree",  # recursive delete
+    r"os\.remove",  # file removal
+    r"os\.unlink",  # file removal
+    r"os\.rmdir",  # directory removal
     r"open\s*\([^)]*['\"]w['\"]",  # file write
     r"open\s*\([^)]*['\"]a['\"]",  # file append
-    r"__import__",              # dynamic imports
-    r"eval\s*\(",               # eval
-    r"exec\s*\(",               # exec
-    r"globals\s*\(",            # globals access
-    r"locals\s*\(",             # locals access
+    r"__import__",  # dynamic imports
+    r"eval\s*\(",  # eval
+    r"exec\s*\(",  # exec
+    r"globals\s*\(",  # globals access
+    r"locals\s*\(",  # locals access
 ]
 
 
@@ -180,7 +215,12 @@ def is_safe_command(command: str) -> bool:
         if not parts:
             return False
         for part in parts:
-            if not (part.startswith("projects/") or part.startswith("output/") or part.startswith("projects\\") or part.startswith("output\\")):
+            if not (
+                part.startswith("projects/")
+                or part.startswith("output/")
+                or part.startswith("projects\\")
+                or part.startswith("output\\")
+            ):
                 return False
             if part.startswith("/") or re.match(r"^[a-z]:", part):
                 return False
@@ -203,7 +243,8 @@ def is_safe_command(command: str) -> bool:
     if cmd.startswith("python "):
         payload = cmd[len("python ") :]
         return not any(
-            d in payload for d in ["os.", "subprocess", "shutil", "exec(", "eval(", "open(", "__import__"]
+            d in payload
+            for d in ["os.", "subprocess", "shutil", "exec(", "eval(", "open(", "__import__"]
         )
 
     return False
@@ -279,7 +320,9 @@ def needs_approval(tool_name: str, tool_args: dict[str, Any]) -> bool:
             # Only block if it contains actual traversal like "../" or "projects/.." or dangerous ops.
             if "pathlib" in code and ("projects/" in code or "output/" in code):
                 has_traversal = bool(re.search(r"\.\./|projects/\.\.|output/\.\.", code))
-                has_dangerous = bool(re.search(r"os\.system|subprocess|shutil\.rmtree|os\.remove|rm\s+-rf", code))
+                has_dangerous = bool(
+                    re.search(r"os\.system|subprocess|shutil\.rmtree|os\.remove|rm\s+-rf", code)
+                )
                 if not has_traversal and not has_dangerous:
                     logger.info("Auto-approving safe pathlib scaffold to projects/output")
                     return False
@@ -299,7 +342,15 @@ def needs_approval(tool_name: str, tool_args: dict[str, Any]) -> bool:
 
 # ── Human-in-the-Loop ─────────────────────────────────────────────
 
-async def request_approval(step_id: str, description: str, tool_name: str, tool_args: dict[str, Any] | None = None, task_goal: str = "", task_id: str = "") -> dict[str, Any]:
+
+async def request_approval(
+    step_id: str,
+    description: str,
+    tool_name: str,
+    tool_args: dict[str, Any] | None = None,
+    task_goal: str = "",
+    task_id: str = "",
+) -> dict[str, Any]:
     """Request human approval for a high-risk action.
 
     Tries Telegram first (remote), falls back to dashboard (local).
@@ -310,7 +361,11 @@ async def request_approval(step_id: str, description: str, tool_name: str, tool_
     event = asyncio.Event()
     with _approval_lock:
         _pending_approvals[step_id] = event
-        _approval_metadata[step_id] = {"tool_name": tool_name, "description": description, "task_id": task_id}
+        _approval_metadata[step_id] = {
+            "tool_name": tool_name,
+            "description": description,
+            "task_id": task_id,
+        }
     logger.warning("APPROVAL REQUIRED: [%s] %s — %s", step_id, tool_name, description)
 
     # Try Telegram first
@@ -348,12 +403,17 @@ async def request_approval(step_id: str, description: str, tool_name: str, tool_
             telegram_status = result.get("status", "failed")
             logger.info("Telegram approval send for %s -> %s", step_id[:8], telegram_status)
             if telegram_status == "failed":
-                logger.warning("Telegram send failed for %s (check TELEGRAM_BOT_TOKEN/CHAT_ID)", step_id[:8])
+                logger.warning(
+                    "Telegram send failed for %s (check TELEGRAM_BOT_TOKEN/CHAT_ID)", step_id[:8]
+                )
         except Exception as exc:
             logger.exception("Telegram approval exception for %s: %s", step_id[:8], exc)
             telegram_status = "exception"
     else:
-        logger.warning("Telegram not configured (is_configured=False) for approval %s — dashboard only", step_id[:8])
+        logger.warning(
+            "Telegram not configured (is_configured=False) for approval %s — dashboard only",
+            step_id[:8],
+        )
 
     return {
         "status": "pending_approval",
@@ -447,7 +507,10 @@ def get_trusted_tasks() -> list[str]:
 # Tools whose failures may legitimately be retried via web_search.
 _RESEARCH_TOOLS = {"web_search", "fetch_url"}
 
-async def self_correct(error: str, tool_name: str, original_args: dict[str, Any]) -> dict[str, Any] | None:
+
+async def self_correct(
+    error: str, tool_name: str, original_args: dict[str, Any]
+) -> dict[str, Any] | None:
     """Analyze a failed tool call and suggest a fix or alternative approach.
 
     Action tools are NEVER switched to web_search — a failed GitHub/API/file
@@ -495,7 +558,11 @@ Return ONLY one of:
             return None
         corrected = json.loads(response)
         if isinstance(corrected, dict):
-            logger.info("Self-correction: adjusted approach for %s → %s", tool_name, corrected.get("switch_to", "same tool"))
+            logger.info(
+                "Self-correction: adjusted approach for %s → %s",
+                tool_name,
+                corrected.get("switch_to", "same tool"),
+            )
             return corrected
     except Exception:
         logger.debug("Self-correction failed for %s", tool_name)
@@ -551,7 +618,9 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                 else ""
             )
             await request_approval(
-                step.id, step.description + hint, step.tool_name,
+                step.id,
+                step.description + hint,
+                step.tool_name,
                 tool_args=step.tool_args,
                 task_goal=ctx_task_goal,
                 task_id=ctx_task_id,
@@ -561,7 +630,9 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                 step.status = StepStatus.FAILED
                 if step.id in _approval_timed_out:
                     step.error = "Approval timed out (5 minutes)"
-                    return ToolResult(success=False, output="", error="Approval timed out (5 minutes)")
+                    return ToolResult(
+                        success=False, output="", error="Approval timed out (5 minutes)"
+                    )
                 step.error = "Human denied approval"
                 return ToolResult(success=False, output="", error="Denied by human")
 
@@ -583,11 +654,7 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
             # If still unresolved, fail fast instead of sending literal braces
             # to the tool — but only for step_N_result templates; other braces
             # may be legit.
-            if (
-                "{{" in v
-                and "}}" in v
-                and re.search(r"\{\{step_\d+_result\}\}", v)
-            ):
+            if "{{" in v and "}}" in v and re.search(r"\{\{step_\d+_result\}\}", v):
                 step.status = StepStatus.FAILED
                 step.error = f"Unresolved template in arg '{k}': {v[:200]} (missing context)"
                 return ToolResult(success=False, output="", error=step.error)
@@ -624,7 +691,9 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                 return result
 
             last_error = result.error or "Tool returned failure"
-            logger.warning("Tool %s failed (attempt %d): %s", step.tool_name, attempt, last_error[:200])
+            logger.warning(
+                "Tool %s failed (attempt %d): %s", step.tool_name, attempt, last_error[:200]
+            )
 
         except TimeoutError:
             last_error = "Tool execution timed out (120s)"
@@ -641,13 +710,16 @@ async def execute_step(step: TaskStep, context: dict[str, Any] | None = None) ->
                         # Never turn failed actions into web searches
                         logger.warning(
                             "Blocked self-correction switch %s -> %s (action tools must not search the web)",
-                            original_tool, switch_to,
+                            original_tool,
+                            switch_to,
                         )
                     else:
                         old_tool = step.tool_name
                         tool = _tool_registry[switch_to]
                         step.tool_name = switch_to
-                        logger.info("Switching from %s to %s (attempt %d)", old_tool, switch_to, attempt + 1)
+                        logger.info(
+                            "Switching from %s to %s (attempt %d)", old_tool, switch_to, attempt + 1
+                        )
                 current_args.update(corrected)
                 continue
             break  # No correction possible
@@ -686,7 +758,8 @@ def _derive_write_path(description: str, context: dict[str, Any] | None) -> str:
     d = (description or "").lower()
     goal = str((context or {}).get("task_goal") or "")
     goal_slug = "-".join(
-        w for w in re.findall(r"[a-z0-9]+", goal.lower())
+        w
+        for w in re.findall(r"[a-z0-9]+", goal.lower())
         if w not in {"the", "a", "an", "that", "can", "for", "with"}
     )[:40]
     base = f"projects/{goal_slug}" if goal_slug else "output"
@@ -751,7 +824,9 @@ async def _gemini_derive_write_path(description: str, context: dict[str, Any] | 
 
 
 @register_tool("task", high_risk=False)
-async def task(description: str, prompt: str, subagent_type: str = "explore", **_: Any) -> ToolResult:
+async def task(
+    description: str, prompt: str, subagent_type: str = "explore", **_: Any
+) -> ToolResult:
     """Delegate a sub-task to a sub-agent (explore/general).
 
     `subagent_type=explore` is read-only (grep/glob/read/webfetch/websearch),
@@ -768,7 +843,9 @@ async def task(description: str, prompt: str, subagent_type: str = "explore", **
             from agent.core.gemini_client import generate_content
 
             sys = "You are an explore sub-agent. You have read-only tools: read_file, list_directory, grep, glob (via executor). Answer concisely with findings. No writes."
-            raw = await generate_content(system=sys, user=prompt or description, temperature=0.2, max_tokens=2048)
+            raw = await generate_content(
+                system=sys, user=prompt or description, temperature=0.2, max_tokens=2048
+            )
             return ToolResult(success=True, output=raw[:8000], metadata={"subagent": subagent_type})
         else:
             # general: short adaptive loop (max 8 steps) with its own task
@@ -780,8 +857,14 @@ async def task(description: str, prompt: str, subagent_type: str = "explore", **
             from agent.core.agent_loop import decide_next_step
 
             outcome = await run_adaptive_loop(t, ctx, decide_fn=decide_next_step, max_steps=8)
-            summary = outcome.summary or (t.steps[-1].result if t.steps else "") or "sub-task completed"
-            return ToolResult(success=True, output=summary[:8000], metadata={"subagent": subagent_type, "steps": len(t.steps)})
+            summary = (
+                outcome.summary or (t.steps[-1].result if t.steps else "") or "sub-task completed"
+            )
+            return ToolResult(
+                success=True,
+                output=summary[:8000],
+                metadata={"subagent": subagent_type, "steps": len(t.steps)},
+            )
     except Exception as exc:
         return ToolResult(success=False, output="", error=str(exc)[:600])
 
@@ -790,7 +873,9 @@ async def task(description: str, prompt: str, subagent_type: str = "explore", **
 # Explicit tool so model can call todowrite any turn (not piggyback JSON).
 
 
-_current_todo_task_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_todo_task_id", default=None)
+_current_todo_task_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_todo_task_id", default=None
+)
 _todo_emit: Any | None = None  # set by orchestrator/loop to broadcast todo_update
 
 
@@ -850,15 +935,26 @@ async def todowrite(todos: list[dict[str, Any]] | None = None, **_: Any) -> Tool
         cleaned.append({"title": title, "status": status_raw, "priority": priority_raw, "order": i})
     # Try to mutate live task via global registry (api/main.py _live_tasks injected) or via contextvar
     # We expose cleaned via ToolResult metadata for the loop to apply
-    detail = "\n".join(f"[{'x' if c['status']=='completed' else ' '}] {c['title']}" for c in cleaned[:8])
+    detail = "\n".join(
+        f"[{'x' if c['status'] == 'completed' else ' '}] {c['title']}" for c in cleaned[:8]
+    )
     if _todo_emit is not None:
         try:
             tid = _current_todo_task_id.get()
             if tid:
-                _todo_emit(tid, "todo_update", f"Checklist {len([c for c in cleaned if c['status']=='completed'])}/{len(cleaned)}", detail[:1500])
+                _todo_emit(
+                    tid,
+                    "todo_update",
+                    f"Checklist {len([c for c in cleaned if c['status'] == 'completed'])}/{len(cleaned)}",
+                    detail[:1500],
+                )
         except Exception:
             logger.debug("todowrite emit failed", exc_info=True)
-    return ToolResult(success=True, output=f"Todos updated: {len(cleaned)} items\n{detail[:500]}", metadata={"todos": cleaned, "todo_update": True})
+    return ToolResult(
+        success=True,
+        output=f"Todos updated: {len(cleaned)} items\n{detail[:500]}",
+        metadata={"todos": cleaned, "todo_update": True},
+    )
 
 
 # ── Built-in Tools ────────────────────────────────────────────────
@@ -933,7 +1029,8 @@ async def execute_code(
     script.write_text(code, encoding="utf-8")
     try:
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, str(script),
+            sys.executable,
+            str(script),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
@@ -958,7 +1055,9 @@ async def execute_code(
                         if asyncio.iscoroutine(res):
                             await res
                     except Exception:
-                        logger.debug("on_output callback failed (execute_code stdout)", exc_info=True)
+                        logger.debug(
+                            "on_output callback failed (execute_code stdout)", exc_info=True
+                        )
 
             async def _drain_stderr() -> None:
                 assert proc.stderr is not None
@@ -1031,7 +1130,11 @@ async def run_command(command: str, on_output: Any | None = None, **_: Any) -> T
         # Do NOT use mkdir fast-path for compound commands; fall through to real shell (requires approval)
         # But if the command is an attempt to inject, fail fast
         if re.match(r"^\s*mkdir\s+", command.strip(), re.IGNORECASE):
-            return ToolResult(success=False, output="", error="Refusing mkdir with shell chaining/operators — split into separate steps")
+            return ToolResult(
+                success=False,
+                output="",
+                error="Refusing mkdir with shell chaining/operators — split into separate steps",
+            )
     else:
         m = re.match(r"^\s*mkdir\s+(?:-p\s+)?(.+)\s*$", command.strip(), re.IGNORECASE)
         if m:
@@ -1043,16 +1146,25 @@ async def run_command(command: str, on_output: Any | None = None, **_: Any) -> T
                 if not p or ".." in p or p.startswith("/") or re.match(r"^[a-zA-Z]:", p):
                     continue
                 # Only allow projects/ and output/ trees
-                if not (p.startswith("projects/") or p.startswith("output/") or p.startswith("projects\\") or p.startswith("output\\")):
+                if not (
+                    p.startswith("projects/")
+                    or p.startswith("output/")
+                    or p.startswith("projects\\")
+                    or p.startswith("output\\")
+                ):
                     continue
                 try:
                     Path(p).mkdir(parents=True, exist_ok=True)
                     created_any = True
                 except Exception as exc:
-                    return ToolResult(success=False, output="", error=f"mkdir failed for {p}: {exc}")
+                    return ToolResult(
+                        success=False, output="", error=f"mkdir failed for {p}: {exc}"
+                    )
             if created_any:
                 return ToolResult(success=True, output=f"Created directories: {raw_paths}")
-            return ToolResult(success=False, output="", error=f"mkdir failed: no valid paths in '{raw_paths}'")
+            return ToolResult(
+                success=False, output="", error=f"mkdir failed: no valid paths in '{raw_paths}'"
+            )
 
     # Load .env vars into subprocess environment (project-root .env)
     env = os.environ.copy()
@@ -1082,7 +1194,9 @@ async def run_command(command: str, on_output: Any | None = None, **_: Any) -> T
                         if asyncio.iscoroutine(res):
                             await res
                     except Exception:
-                        logger.debug("on_output callback failed (run_command stdout)", exc_info=True)
+                        logger.debug(
+                            "on_output callback failed (run_command stdout)", exc_info=True
+                        )
 
             async def _drain_stderr_rc() -> None:
                 assert proc.stderr is not None

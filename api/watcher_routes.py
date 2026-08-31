@@ -1,4 +1,5 @@
 """Watcher API endpoints - manage event-driven watchers."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -27,6 +28,7 @@ class WatcherResponse(BaseModel):
 async def list_watchers():
     """List all active watchers."""
     from agent.watchers.manager import list_watchers
+
     return list_watchers()
 
 
@@ -34,6 +36,7 @@ async def list_watchers():
 async def create_watcher(req: CreateWatcherRequest):
     """Create and start a new watcher."""
     from agent.watchers.manager import create_watcher, start_watcher
+
     try:
         watcher = create_watcher(req.type, req.config)
         await start_watcher(watcher.watcher_id)
@@ -46,6 +49,7 @@ async def create_watcher(req: CreateWatcherRequest):
 async def start(watcher_id: str):
     """Start a stopped watcher."""
     from agent.watchers.manager import start_watcher
+
     success = await start_watcher(watcher_id)
     if not success:
         raise HTTPException(status_code=404, detail="Watcher not found")
@@ -56,6 +60,7 @@ async def start(watcher_id: str):
 async def stop(watcher_id: str):
     """Stop a running watcher."""
     from agent.watchers.manager import stop_watcher
+
     success = await stop_watcher(watcher_id)
     if not success:
         raise HTTPException(status_code=404, detail="Watcher not found")
@@ -66,6 +71,7 @@ async def stop(watcher_id: str):
 async def remove(watcher_id: str):
     """Stop and remove a watcher."""
     from agent.watchers.manager import remove_watcher
+
     success = await remove_watcher(watcher_id)
     if not success:
         raise HTTPException(status_code=404, detail="Watcher not found")
@@ -76,6 +82,7 @@ async def remove(watcher_id: str):
 async def get_watcher(watcher_id: str):
     """Get watcher status."""
     from agent.watchers.manager import get_watcher
+
     watcher = get_watcher(watcher_id)
     if not watcher:
         raise HTTPException(status_code=404, detail="Watcher not found")

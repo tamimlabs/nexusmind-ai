@@ -17,7 +17,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -97,14 +97,14 @@ def _save_draft(to: str, subject: str, body: str, cc: str = "") -> str:
     try:
         _DRAFT_DIR.mkdir(parents=True, exist_ok=True)
         safe_to = re.sub(r"[^a-zA-Z0-9._@-]", "_", to)[:60] or "unknown"
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         fname = f"{ts}_{safe_to}.eml"
         path = _DRAFT_DIR / fname
         header = [
             f"To: {to}",
             f"Cc: {cc}" if cc else None,
             f"Subject: {subject}",
-            f"Date: {datetime.now(timezone.utc).isoformat()}",
+            f"Date: {datetime.now(UTC).isoformat()}",
             "",
             body,
         ]
@@ -116,7 +116,14 @@ def _save_draft(to: str, subject: str, body: str, cc: str = "") -> str:
 
 
 def _send_sync(
-    smtp_server: str, port: int, address: str, password: str, to: str, subject: str, body: str, cc: str
+    smtp_server: str,
+    port: int,
+    address: str,
+    password: str,
+    to: str,
+    subject: str,
+    body: str,
+    cc: str,
 ) -> None:
     """Blocking SMTP send (run in thread)."""
     import smtplib
@@ -169,7 +176,15 @@ async def send_email(to: str, subject: str, body: str, cc: str = "", **_: Any) -
     # Fallback when SMTP not configured — save draft and guide user
     if not smtp_server or not address or not password:
         draft = _save_draft(to, subject, body, cc)
-        missing = [k for k, v in [("EMAIL_SMTP_SERVER/EMAIL_IMAP_SERVER", smtp_server), ("EMAIL_ADDRESS", address), ("EMAIL_PASSWORD", password)] if not v]
+        missing = [
+            k
+            for k, v in [
+                ("EMAIL_SMTP_SERVER/EMAIL_IMAP_SERVER", smtp_server),
+                ("EMAIL_ADDRESS", address),
+                ("EMAIL_PASSWORD", password),
+            ]
+            if not v
+        ]
         hint = (
             f"SMTP not configured (missing: {', '.join(missing)}). "
             "Set EMAIL_SMTP_SERVER (or EMAIL_IMAP_SERVER), EMAIL_ADDRESS and EMAIL_PASSWORD "
@@ -181,8 +196,12 @@ async def send_email(to: str, subject: str, body: str, cc: str = "", **_: Any) -
         return ToolResult(success=False, output="", error=hint)
 
     try:
-        await asyncio.to_thread(_send_sync, smtp_server, port, address, password, to.strip(), subject, body, cc)
-        return ToolResult(success=True, output=f"Email sent to {to} via {smtp_server}:{port} from {address}")
+        await asyncio.to_thread(
+            _send_sync, smtp_server, port, address, password, to.strip(), subject, body, cc
+        )
+        return ToolResult(
+            success=True, output=f"Email sent to {to} via {smtp_server}:{port} from {address}"
+        )
     except Exception as exc:
         draft = _save_draft(to, subject, body, cc)
         err = str(exc)[:600]

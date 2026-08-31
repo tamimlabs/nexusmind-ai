@@ -39,6 +39,7 @@ def _is_available() -> bool:
         return False
     try:
         from google.cloud import firestore  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -279,9 +280,7 @@ class FirestoreMemoryStore:
 
     def clear_category(self, category: str) -> int:
         """Delete ALL entries in a category."""
-        docs = list(
-            self._col().where("category", "==", category).stream()
-        )
+        docs = list(self._col().where("category", "==", category).stream())
         for doc in docs:
             doc.reference.delete()
         return len(docs)

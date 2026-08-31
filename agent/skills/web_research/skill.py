@@ -23,10 +23,16 @@ _google_lock = threading.Lock()
 def _init_google():
     global _google_search_key, _google_cx
     import os
+
     try:
         from agent.config import settings
-        _google_search_key = getattr(settings, 'google_search_api_key', '') or os.environ.get("GOOGLE_SEARCH_API_KEY", "")
-        _google_cx = getattr(settings, 'google_search_cx', '') or os.environ.get("GOOGLE_SEARCH_CX", "")
+
+        _google_search_key = getattr(settings, "google_search_api_key", "") or os.environ.get(
+            "GOOGLE_SEARCH_API_KEY", ""
+        )
+        _google_cx = getattr(settings, "google_search_cx", "") or os.environ.get(
+            "GOOGLE_SEARCH_CX", ""
+        )
     except Exception:
         _google_search_key = os.environ.get("GOOGLE_SEARCH_API_KEY", "")
         _google_cx = os.environ.get("GOOGLE_SEARCH_CX", "")
@@ -129,7 +135,10 @@ async def web_search(query: str, num_results: int = 5, **_) -> ToolResult:
         return ToolResult(
             success=True,
             output=google_result[:3000],
-            metadata={"engine": "google", "daily_remaining": _google_daily_limit - _google_daily_count},
+            metadata={
+                "engine": "google",
+                "daily_remaining": _google_daily_limit - _google_daily_count,
+            },
         )
 
     try:
@@ -169,7 +178,10 @@ async def fetch_url(url: str, max_chars: int = 5000, **_) -> ToolResult:
             return ToolResult(
                 success=True,
                 output=content[:max_chars],
-                metadata={"content_type": resp.headers.get("content-type", ""), "status": resp.status_code},
+                metadata={
+                    "content_type": resp.headers.get("content-type", ""),
+                    "status": resp.status_code,
+                },
             )
     except Exception as exc:
         return ToolResult(success=False, output="", error=str(exc))

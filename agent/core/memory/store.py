@@ -231,9 +231,7 @@ class FactStore:
             ).fetchone()
             if row is None:
                 return False
-            self._conn.execute(
-                "DELETE FROM fact_entities WHERE fact_id = ?", (row["fact_id"],)
-            )
+            self._conn.execute("DELETE FROM fact_entities WHERE fact_id = ?", (row["fact_id"],))
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (row["fact_id"],))
             return True
 
@@ -244,9 +242,7 @@ class FactStore:
                 "SELECT fact_id FROM facts WHERE category = ?", (category,)
             ).fetchall()
             for row in rows:
-                self._conn.execute(
-                    "DELETE FROM fact_entities WHERE fact_id = ?", (row["fact_id"],)
-                )
+                self._conn.execute("DELETE FROM fact_entities WHERE fact_id = ?", (row["fact_id"],))
             cur = self._conn.execute("DELETE FROM facts WHERE category = ?", (category,))
             return int(cur.rowcount)
 
@@ -311,9 +307,7 @@ class FactStore:
 
     def get_fact(self, fact_id: int) -> dict[str, Any] | None:
         with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()
+            row = self._conn.execute("SELECT * FROM facts WHERE fact_id = ?", (fact_id,)).fetchone()
             return self._row_to_dict(row) if row is not None else None
 
     def all_fact_ids_for_entities(self, entity_name: str) -> list[int]:
@@ -401,9 +395,7 @@ class FactStore:
         if alias_row is not None:
             return int(alias_row["entity_id"])
 
-        cur = self._conn.execute(
-            "INSERT INTO entities (name, aliases) VALUES (?, '')", (name,)
-        )
+        cur = self._conn.execute("INSERT INTO entities (name, aliases) VALUES (?, '')", (name,))
         last_id = cur.lastrowid
         return int(last_id) if last_id is not None else 0
 

@@ -128,6 +128,8 @@ async def slack_reply_thread(channel: str, thread_ts: str, text: str, **_: Any) 
         text: Reply text.
     """
     if not channel or not thread_ts or not text:
-        return ToolResult(success=False, output="", error="channel, thread_ts and text are required")
+        return ToolResult(
+            success=False, output="", error="channel, thread_ts and text are required"
+        )
     logger.info("Slack reply_thread to %s thread %s (%d chars)", channel, thread_ts, len(text))
     return await _post({"channel": channel, "thread_ts": thread_ts, "text": text})

@@ -90,7 +90,9 @@ class Settings(BaseSettings):
     # comma-separated list — each model has its own quota bucket, so a build
     # keeps going instead of dying with "retry in 86400s". Change via .env.
     # Valid 2026 names: gemini-3.5-flash-lite, gemini-2.5-flash, gemini-1.5-flash
-    gemini_fallback_models: str = "gemini-3.5-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-1.5-flash"
+    gemini_fallback_models: str = (
+        "gemini-3.5-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-1.5-flash"
+    )
     gemini_api_key: str = ""
     # Manual key selection: 1-based index into the comma-separated GEMINI_API_KEY list.
     # The dashboard lets the user add as many keys as needed (Key 1, Key 2, ...) and

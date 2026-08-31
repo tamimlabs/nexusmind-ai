@@ -3,6 +3,7 @@
 Doesn't poll: events arrive through a registered FastAPI route and
 are queued until the watcher loop drains them.
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,11 +48,13 @@ class WebhookWatcher(BaseWatcher):
                 dropped.get("external_id", "unknown"),
             )
 
-        self._queue.append({
-            "event_type": event_type,
-            "external_id": external_id,
-            "payload": payload,
-        })
+        self._queue.append(
+            {
+                "event_type": event_type,
+                "external_id": external_id,
+                "payload": payload,
+            }
+        )
         logger.info("Webhook %s received event '%s'", self.watcher_id, event_type)
         return external_id
 
@@ -77,9 +80,7 @@ class WebhookWatcher(BaseWatcher):
         try:
             return template.format(**payload)
         except (KeyError, IndexError, ValueError) as e:
-            logger.warning(
-                "Failed to format goal template for event '%s': %s", event_type, e
-            )
+            logger.warning("Failed to format goal template for event '%s': %s", event_type, e)
             return template
 
     def register_routes(self, app: Any) -> None:

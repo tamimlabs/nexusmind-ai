@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client():
     from api.main import app
+
     return TestClient(app)
 
 
@@ -119,16 +120,22 @@ class TestManualMemoryAdd:
 
     def test_add_instruction_is_visible_and_categorised(self, client, monkeypatch, tmp_path):
         store = self._fresh_store(monkeypatch, tmp_path)
-        client.post("/api/memory", json={"content": "when a pr opens, review it", "category": "instruction"})
+        client.post(
+            "/api/memory", json={"content": "when a pr opens, review it", "category": "instruction"}
+        )
         instructions = store.get_by_category("instruction")
         assert len(instructions) == 1
         # Shows up in the API listing too
         listing = client.get("/api/memory?category=instruction").json()
         assert any("pr opens" in e["content"] for e in listing)
 
-    def test_instruction_phrasing_autodetected_without_category(self, client, monkeypatch, tmp_path):
+    def test_instruction_phrasing_autodetected_without_category(
+        self, client, monkeypatch, tmp_path
+    ):
         self._fresh_store(monkeypatch, tmp_path)
-        res = client.post("/api/memory", json={"content": "whenever a pr opens, review it and merge if clean"})
+        res = client.post(
+            "/api/memory", json={"content": "whenever a pr opens, review it and merge if clean"}
+        )
         assert res.json()["category"] == "instruction"
 
     def test_empty_content_rejected(self, client, monkeypatch, tmp_path):

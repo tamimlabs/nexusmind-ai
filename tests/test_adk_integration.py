@@ -198,7 +198,9 @@ class TestADKCallbacks:
 
             mock_memory.add.assert_called_once()
             call_kwargs = mock_memory.add.call_args
-            assert "reflection" in call_kwargs.kwargs.get("category", "") or "reflection" in str(call_kwargs)
+            assert "reflection" in call_kwargs.kwargs.get("category", "") or "reflection" in str(
+                call_kwargs
+            )
 
     @pytest.mark.asyncio
     async def test_after_agent_skips_nothing_to_save(self):
@@ -285,9 +287,11 @@ class TestAPITasksUseADK:
                 task.goal = "test goal"
                 task.steps = []
 
-                with patch("api.main._emit"), \
-                     patch("api.main._update_task_status"), \
-                     patch("api.main.get_trace") as mock_trace:
+                with (
+                    patch("api.main._emit"),
+                    patch("api.main._update_task_status"),
+                    patch("api.main.get_trace") as mock_trace,
+                ):
                     mock_trace.return_value = None
 
                     # Import and patch within the function's scope
@@ -317,9 +321,11 @@ class TestAPITasksUseADK:
                 task = MagicMock()
                 task.goal = "test goal"
 
-                with patch("api.main._emit"), \
-                     patch("api.main._update_task_status"), \
-                     patch("api.main.get_trace") as mock_trace:
+                with (
+                    patch("api.main._emit"),
+                    patch("api.main._update_task_status"),
+                    patch("api.main.get_trace") as mock_trace,
+                ):
                     mock_trace.return_value = None
 
                     await _run_task_background("task-005", task)
@@ -345,9 +351,11 @@ class TestAPITasksUseADK:
                 task = MagicMock()
                 task.goal = "test goal"
 
-                with patch("api.main._emit"), \
-                     patch("api.main._update_task_status"), \
-                     patch("api.main.get_trace") as mock_trace:
+                with (
+                    patch("api.main._emit"),
+                    patch("api.main._update_task_status"),
+                    patch("api.main.get_trace") as mock_trace,
+                ):
                     mock_trace.return_value = None
 
                     await _run_task_background("task-004", task)

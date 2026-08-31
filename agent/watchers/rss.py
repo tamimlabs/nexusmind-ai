@@ -1,4 +1,5 @@
 """RSS/Atom feed watcher - monitors any RSS or Atom feed for new items."""
+
 from __future__ import annotations
 
 import logging
@@ -25,7 +26,9 @@ class RSSWatcher(BaseWatcher):
     async def check_for_events(self) -> list[dict[str, Any]]:
         # Early validation — no request if URL missing/invalid
         if not self.feed_url or not self.feed_url.startswith(("http://", "https://")):
-            logger.debug("RSS watcher %s skipped: invalid feed_url %r", self.watcher_id, self.feed_url)
+            logger.debug(
+                "RSS watcher %s skipped: invalid feed_url %r", self.watcher_id, self.feed_url
+            )
             return []
         events = []
         try:
@@ -40,7 +43,10 @@ class RSSWatcher(BaseWatcher):
                     raise ValueError("Feed too large")
                 # XXE / entity-expansion protection
                 if "<!ENTITY" in content or "<!DOCTYPE" in content:
-                    logger.warning("RSS feed contains entity declaration - possible XXE, skipping %s", self.feed_url)
+                    logger.warning(
+                        "RSS feed contains entity declaration - possible XXE, skipping %s",
+                        self.feed_url,
+                    )
                     return []
 
             # Use defusedxml if available to prevent XXE / entity expansion
@@ -61,12 +67,14 @@ class RSSWatcher(BaseWatcher):
                 link = item.findtext("link", "")
                 guid = item.findtext("guid", link)
                 description = item.findtext("description", "")
-                items.append({
-                    "title": title,
-                    "link": link,
-                    "guid": guid or link,
-                    "description": (description or "")[:500],
-                })
+                items.append(
+                    {
+                        "title": title,
+                        "link": link,
+                        "guid": guid or link,
+                        "description": (description or "")[:500],
+                    }
+                )
 
             # Atom
             if not items:
@@ -75,25 +83,31 @@ class RSSWatcher(BaseWatcher):
                     link_el = entry.find("atom:link", ns)
                     link = link_el.get("href", "") if link_el is not None else ""
                     guid = entry.findtext("atom:id", "", ns) or link
-                    summary = entry.findtext("atom:summary", "", ns) or entry.findtext("atom:content", "", ns)
-                    items.append({
-                        "title": title,
-                        "link": link,
-                        "guid": guid,
-                        "description": (summary or "")[:500],
-                    })
+                    summary = entry.findtext("atom:summary", "", ns) or entry.findtext(
+                        "atom:content", "", ns
+                    )
+                    items.append(
+                        {
+                            "title": title,
+                            "link": link,
+                            "guid": guid,
+                            "description": (summary or "")[:500],
+                        }
+                    )
 
-            for item in items[:self.max_items]:
-                events.append({
-                    "event_type": "rss.new_item",
-                    "external_id": item["guid"],
-                    "payload": {
-                        "title": item["title"],
-                        "link": item["link"],
-                        "description": item["description"],
-                        "feed_url": self.feed_url,
-                    },
-                })
+            for item in items[: self.max_items]:
+                events.append(
+                    {
+                        "event_type": "rss.new_item",
+                        "external_id": item["guid"],
+                        "payload": {
+                            "title": item["title"],
+                            "link": item["link"],
+                            "description": item["description"],
+                            "feed_url": self.feed_url,
+                        },
+                    }
+                )
 
         except Exception as e:
             logger.warning("RSS feed check failed for %s: %s", self.feed_url, e)

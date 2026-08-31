@@ -89,7 +89,9 @@ class TraceCollector:
             self._active_span.finish(status)
             self._active_span = None
 
-    def record_tool_call(self, tool_name: str, args: dict[str, Any], result: str, success: bool) -> None:
+    def record_tool_call(
+        self, tool_name: str, args: dict[str, Any], result: str, success: bool
+    ) -> None:
         """Record a tool call as a trace span."""
         span = self.start_span(f"tool:{tool_name}", kind="tool_call")
         span.input_data = args

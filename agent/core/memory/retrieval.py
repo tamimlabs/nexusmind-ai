@@ -34,23 +34,134 @@ _HRR_WEIGHT = 0.3
 
 # Short English function words with no retrieval signal; dropped before FTS5
 # OR-expansion so natural-language queries don't AND-match to zero results.
-_FTS_STOPWORDS = frozenset({
-    "a", "about", "above", "after", "again", "all", "am", "an", "and",
-    "any", "are", "as", "at", "be", "because", "been", "before", "being",
-    "between", "both", "but", "by", "can", "could", "did", "do", "does",
-    "doing", "down", "during", "each", "few", "for", "from", "further",
-    "had", "has", "have", "having", "he", "her", "here", "hers", "herself",
-    "him", "himself", "his", "how", "i", "if", "in", "into", "is", "it",
-    "its", "itself", "just", "me", "more", "most", "my", "myself", "no",
-    "nor", "not", "now", "of", "off", "on", "once", "only", "or", "other",
-    "our", "ours", "ourselves", "out", "over", "own", "same", "she",
-    "should", "so", "some", "such", "than", "that", "the", "their",
-    "theirs", "them", "themselves", "then", "there", "these", "they",
-    "this", "those", "through", "to", "too", "under", "until", "up",
-    "very", "was", "we", "were", "what", "when", "where", "which", "while",
-    "who", "whom", "why", "will", "with", "would", "you", "your", "yours",
-    "yourself", "yourselves",
-})
+_FTS_STOPWORDS = frozenset(
+    {
+        "a",
+        "about",
+        "above",
+        "after",
+        "again",
+        "all",
+        "am",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "be",
+        "because",
+        "been",
+        "before",
+        "being",
+        "between",
+        "both",
+        "but",
+        "by",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "doing",
+        "down",
+        "during",
+        "each",
+        "few",
+        "for",
+        "from",
+        "further",
+        "had",
+        "has",
+        "have",
+        "having",
+        "he",
+        "her",
+        "here",
+        "hers",
+        "herself",
+        "him",
+        "himself",
+        "his",
+        "how",
+        "i",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "itself",
+        "just",
+        "me",
+        "more",
+        "most",
+        "my",
+        "myself",
+        "no",
+        "nor",
+        "not",
+        "now",
+        "of",
+        "off",
+        "on",
+        "once",
+        "only",
+        "or",
+        "other",
+        "our",
+        "ours",
+        "ourselves",
+        "out",
+        "over",
+        "own",
+        "same",
+        "she",
+        "should",
+        "so",
+        "some",
+        "such",
+        "than",
+        "that",
+        "the",
+        "their",
+        "theirs",
+        "them",
+        "themselves",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "through",
+        "to",
+        "too",
+        "under",
+        "until",
+        "up",
+        "very",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "while",
+        "who",
+        "whom",
+        "why",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "yourselves",
+    }
+)
 
 _FTS_SPECIAL = '"()*^:-+'
 
@@ -61,9 +172,7 @@ def _sanitize_fts_query(query: str) -> str:
         return ""
     tokens: list[str] = []
     for raw in query.lower().split():
-        cleaned = raw.strip(".,;:!?\"'()[]{}#@<>").translate(
-            str.maketrans("", "", _FTS_SPECIAL)
-        )
+        cleaned = raw.strip(".,;:!?\"'()[]{}#@<>").translate(str.maketrans("", "", _FTS_SPECIAL))
         if len(cleaned) < 2 or cleaned in _FTS_STOPWORDS:
             continue
         tokens.append(f'"{cleaned}"')
@@ -153,9 +262,7 @@ class FactRetriever:
                 score = relevance * float(fact["trust_score"])
 
                 if self.half_life > 0:
-                    score *= self._temporal_decay(
-                        fact.get("updated_at") or fact.get("created_at")
-                    )
+                    score *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
 
                 fact["score"] = round(score, 6)
                 scored.append(fact)
@@ -167,7 +274,9 @@ class FactRetriever:
         self.store.bump_retrieval_counts([int(f["fact_id"]) for f in results])
         return results
 
-    def probe(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    def probe(
+        self, entity: str, category: str | None = None, limit: int = 10
+    ) -> list[dict[str, Any]]:
         """Entity recall via HRR algebra: facts where the entity plays a role.
 
         Falls back to keyword search when numpy is unavailable.
@@ -204,7 +313,9 @@ class FactRetriever:
             fact.pop("hrr_vector", None)
         return results
 
-    def related(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    def related(
+        self, entity: str, category: str | None = None, limit: int = 10
+    ) -> list[dict[str, Any]]:
         """Facts structurally connected to an entity through shared context."""
         if not hrr.HAS_NUMPY:
             return self.search(entity, category=category, min_trust=0.0, limit=limit)
@@ -246,35 +357,29 @@ class FactRetriever:
         (AND semantics via min), something no keyword index can do.
         """
         if not hrr.HAS_NUMPY or not entities:
-            return self.search(
-                " ".join(entities), category=category, min_trust=0.0, limit=limit
-            )
+            return self.search(" ".join(entities), category=category, min_trust=0.0, limit=limit)
 
         candidate_ids: set[int] = set()
         for entity in entities:
             candidate_ids.update(self.store.all_fact_ids_for_entities(entity))
         if not candidate_ids:
-            return self.search(
-                " ".join(entities), category=category, min_trust=0.0, limit=limit
-            )
+            return self.search(" ".join(entities), category=category, min_trust=0.0, limit=limit)
 
         rows = [self.store.get_fact(i) for i in sorted(candidate_ids)]
         facts = [
             f
             for f in rows
-            if f is not None and f.get("hrr_vector")
+            if f is not None
+            and f.get("hrr_vector")
             and (category is None or f.get("category") == category)
         ]
         if not facts:
-            return self.search(
-                " ".join(entities), category=category, min_trust=0.0, limit=limit
-            )
+            return self.search(" ".join(entities), category=category, min_trust=0.0, limit=limit)
 
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.store.hrr_dim)
         role_content = hrr.encode_atom("__hrr_role_content__", self.store.hrr_dim)
         probe_keys = [
-            hrr.bind(hrr.encode_atom(e.lower(), self.store.hrr_dim), role_entity)
-            for e in entities
+            hrr.bind(hrr.encode_atom(e.lower(), self.store.hrr_dim), role_entity) for e in entities
         ]
 
         scored: list[dict[str, Any]] = []
@@ -282,8 +387,7 @@ class FactRetriever:
             for fact in facts:
                 fact_vec = hrr.bytes_to_phases(fact["hrr_vector"], dim=self.store.hrr_dim)
                 entity_scores = [
-                    hrr.similarity(hrr.unbind(fact_vec, key), role_content)
-                    for key in probe_keys
+                    hrr.similarity(hrr.unbind(fact_vec, key), role_content) for key in probe_keys
                 ]
                 # AND semantics: all entities must be structurally present.
                 min_sim = min(entity_scores)
@@ -330,15 +434,14 @@ class FactRetriever:
         # Guard against O(n²) blow-up on large stores.
         max_contradict_facts = 150
         if len(rows) > max_contradict_facts:
-            rows = sorted(
-                rows, key=lambda r: r["updated_at"] or r["created_at"], reverse=True
-            )[:max_contradict_facts]
+            rows = sorted(rows, key=lambda r: r["updated_at"] or r["created_at"], reverse=True)[
+                :max_contradict_facts
+            ]
 
         fact_entities: dict[int, set[str]] = {}
         for row in rows:
             fact_entities[int(row["fact_id"])] = {
-                name.lower()
-                for name in self._entity_names_for(int(row["fact_id"]))
+                name.lower() for name in self._entity_names_for(int(row["fact_id"]))
             }
 
         contradictions: list[dict[str, Any]] = []
@@ -356,9 +459,7 @@ class FactRetriever:
                     if not ents1 or not ents2:
                         continue
 
-                    overlap = (
-                        len(ents1 & ents2) / len(ents1 | ents2) if (ents1 | ents2) else 0.0
-                    )
+                    overlap = len(ents1 & ents2) / len(ents1 | ents2) if (ents1 | ents2) else 0.0
                     if overlap < 0.3:
                         continue
 
@@ -370,14 +471,16 @@ class FactRetriever:
                     if contradiction_score >= threshold:
                         for f in (f1, f2):
                             f.pop("hrr_vector", None)
-                        contradictions.append({
-                            "fact_a": f1,
-                            "fact_b": f2,
-                            "entity_overlap": round(overlap, 3),
-                            "content_similarity": round(content_sim, 3),
-                            "contradiction_score": round(contradiction_score, 3),
-                            "shared_entities": sorted(ents1 & ents2),
-                        })
+                        contradictions.append(
+                            {
+                                "fact_a": f1,
+                                "fact_b": f2,
+                                "entity_overlap": round(overlap, 3),
+                                "content_similarity": round(content_sim, 3),
+                                "contradiction_score": round(contradiction_score, 3),
+                                "shared_entities": sorted(ents1 & ents2),
+                            }
+                        )
                         if len(contradictions) >= limit * 2:
                             break
 

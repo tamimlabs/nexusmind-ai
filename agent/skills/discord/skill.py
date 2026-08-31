@@ -89,11 +89,17 @@ async def discord_send_message(channel_id: str, content: str, **_: Any) -> ToolR
             except Exception:
                 data = {}
             msg_id = data.get("id", "") if isinstance(data, dict) else ""
-            return ToolResult(success=True, output=f"Message sent to {channel_id} (id {msg_id})", metadata={"id": msg_id})
+            return ToolResult(
+                success=True,
+                output=f"Message sent to {channel_id} (id {msg_id})",
+                metadata={"id": msg_id},
+            )
         try:
             body = resp.json()
         except Exception:
             body = resp.text
-        return ToolResult(success=False, output="", error=f"Discord API error [{resp.status_code}]: {body}")
+        return ToolResult(
+            success=False, output="", error=f"Discord API error [{resp.status_code}]: {body}"
+        )
     except Exception as exc:
         return ToolResult(success=False, output="", error=f"Discord request failed: {exc}")

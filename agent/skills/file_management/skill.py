@@ -29,7 +29,9 @@ def _sandbox_path(path: str) -> Path:
             return resolved
     except AttributeError:
         # Python <3.9 fallback: ensure separator boundary
-        if str(resolved) == str(project_resolved) or str(resolved).startswith(str(project_resolved) + os.sep):
+        if str(resolved) == str(project_resolved) or str(resolved).startswith(
+            str(project_resolved) + os.sep
+        ):
             return resolved
     raise PermissionError(f"Access denied: {path} is outside project directory")
 
@@ -75,24 +77,37 @@ async def write_file(path: str, content: str, encoding: str = "utf-8", **_) -> T
             return ToolResult(success=False, output="", error="Path must not be empty")
         # Reject absolute paths, traversal, and shell metachars before any join
         if _SHELL_META_RE.search(raw):
-            return ToolResult(success=False, output="", error=f"Access denied: {path} contains shell metacharacters")
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Access denied: {path} contains shell metacharacters",
+            )
         p_in = Path(raw)
         if p_in.is_absolute():
-            return ToolResult(success=False, output="", error=f"Access denied: {path} is outside project directory")
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Access denied: {path} is outside project directory",
+            )
         if ".." in p_in.parts:
-            return ToolResult(success=False, output="", error=f"Access denied: {path} contains traversal")
+            return ToolResult(
+                success=False, output="", error=f"Access denied: {path} contains traversal"
+            )
 
         # Normalize: bare paths default to output/
         if not (p_in.parts and p_in.parts[0] in _ALLOWED_ROOTS):
             p_in = Path("output") / p_in
         # Re-check traversal after join (e.g. "output/../etc")
         if ".." in Path(p_in).parts:
-            return ToolResult(success=False, output="", error=f"Access denied: {path} contains traversal")
+            return ToolResult(
+                success=False, output="", error=f"Access denied: {path} contains traversal"
+            )
 
         # Resolve against CWD (so pytest tmp_path isolation works) but enforce sandbox
         # Production CWD is project root; tests chdir to tmp_path (under system temp).
         # Harden: CWD trust only if CWD is project_root or inside system temp/pytest
         import tempfile as _tf
+
         base = Path.cwd().resolve()
         project_resolved = _PROJECT_ROOT.resolve()
         # Determine if CWD is a trusted temp location (for tests)
@@ -117,10 +132,18 @@ async def write_file(path: str, content: str, encoding: str = "utf-8", **_) -> T
         except AttributeError:
             in_project = str(target).startswith(str(project_resolved))
         if not (in_cwd or in_project):
-            return ToolResult(success=False, output="", error=f"Access denied: {path} is outside project directory")
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Access denied: {path} is outside project directory",
+            )
         # Additionally enforce that writes land inside output/ or projects/ (relative part)
         if not (p_in.parts and p_in.parts[0] in _ALLOWED_ROOTS):
-            return ToolResult(success=False, output="", error=f"Access denied: {path} is outside project directory")
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Access denied: {path} is outside project directory",
+            )
 
         p = target
         p.parent.mkdir(parents=True, exist_ok=True)

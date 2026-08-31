@@ -2,6 +2,7 @@
 
 Token-efficient: only calls Gemini when new emails are detected.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,6 +38,7 @@ class EmailWatcher(BaseWatcher):
             # Also check .env file directly
             try:
                 from pathlib import Path as _P
+
                 envf = _P(__file__).resolve().parents[2] / ".env"
                 if envf.exists():
                     data = envf.read_text(encoding="utf-8")
@@ -48,9 +50,16 @@ class EmailWatcher(BaseWatcher):
                 pass
             return ""
 
-        self.imap_server = config.get("imap_server") or config.get("imapServer") or _resolve_env("EMAIL_IMAP_SERVER") or "imap.gmail.com"
+        self.imap_server = (
+            config.get("imap_server")
+            or config.get("imapServer")
+            or _resolve_env("EMAIL_IMAP_SERVER")
+            or "imap.gmail.com"
+        )
         self.email_address = config.get("email", "") or _resolve_env("EMAIL_ADDRESS", "EMAIL")
-        self.password = config.get("password", "") or _resolve_env("EMAIL_IMAP_PASSWORD", "EMAIL_PASSWORD", "IMAP_PASSWORD")  # App password (not account password)
+        self.password = config.get("password", "") or _resolve_env(
+            "EMAIL_IMAP_PASSWORD", "EMAIL_PASSWORD", "IMAP_PASSWORD"
+        )  # App password (not account password)
         self.folder = config.get("folder", "INBOX")
         self.watch_unread = config.get("watch_unread", True)
         self._seen_message_ids: set[str] = set(self._state.get("email_seen_ids", []))
@@ -101,7 +110,7 @@ class EmailWatcher(BaseWatcher):
             if status != "OK" or not data or not data[0]:
                 return fetched
 
-            sequence_nums = data[0].split()[-self.MAX_FETCH_PER_CHECK:]
+            sequence_nums = data[0].split()[-self.MAX_FETCH_PER_CHECK :]
             for seq_num in sequence_nums:
                 status, msg_data = mail.fetch(seq_num, "(RFC822)")
                 if status != "OK" or not msg_data or msg_data[0] is None:
@@ -111,14 +120,18 @@ class EmailWatcher(BaseWatcher):
                     continue
                 msg = email.message_from_bytes(raw_bytes)
                 sender_name, sender_addr = parseaddr(str(msg.get("From") or ""))
-                fetched.append({
-                    "message_id": str(msg.get("Message-ID") or seq_num.decode(errors="replace")),
-                    "sender_name": sender_name,
-                    "sender_addr": sender_addr,
-                    "subject": self._decode_subject(msg.get("Subject")),
-                    "date": str(msg.get("Date") or ""),
-                    "body_preview": self._get_body_preview(msg),
-                })
+                fetched.append(
+                    {
+                        "message_id": str(
+                            msg.get("Message-ID") or seq_num.decode(errors="replace")
+                        ),
+                        "sender_name": sender_name,
+                        "sender_addr": sender_addr,
+                        "subject": self._decode_subject(msg.get("Subject")),
+                        "date": str(msg.get("Date") or ""),
+                        "body_preview": self._get_body_preview(msg),
+                    }
+                )
         finally:
             with contextlib.suppress(Exception):
                 mail.logout()
@@ -128,7 +141,9 @@ class EmailWatcher(BaseWatcher):
         """Check the IMAP inbox for new emails."""
         # Early validation — don't try IMAP login unauthenticated
         if not self.email_address or not self.password:
-            logger.debug("Email watcher %s skipped: not configured (missing email/password)", self.watcher_id)
+            logger.debug(
+                "Email watcher %s skipped: not configured (missing email/password)", self.watcher_id
+            )
             return []
         # Sync dedup set from persisted state (handles restore after __init__)
         if self._state.get("email_seen_ids"):
@@ -148,17 +163,19 @@ class EmailWatcher(BaseWatcher):
             if first_run:
                 continue
             sender = info["sender_name"] or info["sender_addr"]
-            events.append({
-                "event_type": "email.received",
-                "external_id": message_id,
-                "payload": {
-                    "sender": sender,
-                    "sender_addr": info["sender_addr"],
-                    "subject": info["subject"],
-                    "date": info["date"],
-                    "body_preview": info["body_preview"],
-                },
-            })
+            events.append(
+                {
+                    "event_type": "email.received",
+                    "external_id": message_id,
+                    "payload": {
+                        "sender": sender,
+                        "sender_addr": info["sender_addr"],
+                        "subject": info["subject"],
+                        "date": info["date"],
+                        "body_preview": info["body_preview"],
+                    },
+                }
+            )
 
         if len(self._seen_message_ids) > 1000:
             self._seen_message_ids = set(sorted(self._seen_message_ids)[-500:])

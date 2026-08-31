@@ -1,4 +1,5 @@
 """GitLab watcher - monitors repos for new merge requests and issues."""
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,9 @@ class GitLabWatcher(BaseWatcher):
     async def check_for_events(self) -> list[dict[str, Any]]:
         # Early validation — don't poll unauthenticated
         if not self.token:
-            logger.debug("GitLab watcher %s skipped: not configured (missing token)", self.watcher_id)
+            logger.debug(
+                "GitLab watcher %s skipped: not configured (missing token)", self.watcher_id
+            )
             return []
         if not self.project_id:
             logger.debug("GitLab watcher %s skipped: missing project_id", self.watcher_id)
@@ -44,23 +47,30 @@ class GitLabWatcher(BaseWatcher):
                 try:
                     resp = await client.get(
                         f"{self.base_url}/api/v4/projects/{self.project_id}/merge_requests",
-                        params={"state": "opened", "order_by": "created_at", "sort": "desc", "per_page": 5},
+                        params={
+                            "state": "opened",
+                            "order_by": "created_at",
+                            "sort": "desc",
+                            "per_page": 5,
+                        },
                         headers=self._get_headers(),
                     )
                     if resp.status_code == 200:
                         for mr in resp.json():
-                            events.append({
-                                "event_type": "gitlab.mr.opened",
-                                "external_id": f"gitlab_mr_{self.project_id}_{mr['iid']}",
-                                "payload": {
-                                    "number": mr["iid"],
-                                    "title": mr["title"],
-                                    "body": (mr.get("description") or "")[:500],
-                                    "author": mr["author"]["username"],
-                                    "url": mr["web_url"],
-                                    "action": "opened",
-                                },
-                            })
+                            events.append(
+                                {
+                                    "event_type": "gitlab.mr.opened",
+                                    "external_id": f"gitlab_mr_{self.project_id}_{mr['iid']}",
+                                    "payload": {
+                                        "number": mr["iid"],
+                                        "title": mr["title"],
+                                        "body": (mr.get("description") or "")[:500],
+                                        "author": mr["author"]["username"],
+                                        "url": mr["web_url"],
+                                        "action": "opened",
+                                    },
+                                }
+                            )
                 except Exception as e:
                     logger.warning("GitLab MR check failed: %s", e)
 
@@ -68,23 +78,30 @@ class GitLabWatcher(BaseWatcher):
                 try:
                     resp = await client.get(
                         f"{self.base_url}/api/v4/projects/{self.project_id}/issues",
-                        params={"state": "opened", "order_by": "created_at", "sort": "desc", "per_page": 5},
+                        params={
+                            "state": "opened",
+                            "order_by": "created_at",
+                            "sort": "desc",
+                            "per_page": 5,
+                        },
                         headers=self._get_headers(),
                     )
                     if resp.status_code == 200:
                         for issue in resp.json():
-                            events.append({
-                                "event_type": "gitlab.issue.opened",
-                                "external_id": f"gitlab_issue_{self.project_id}_{issue['iid']}",
-                                "payload": {
-                                    "number": issue["iid"],
-                                    "title": issue["title"],
-                                    "body": (issue.get("description") or "")[:500],
-                                    "author": issue["author"]["username"],
-                                    "url": issue["web_url"],
-                                    "action": "opened",
-                                },
-                            })
+                            events.append(
+                                {
+                                    "event_type": "gitlab.issue.opened",
+                                    "external_id": f"gitlab_issue_{self.project_id}_{issue['iid']}",
+                                    "payload": {
+                                        "number": issue["iid"],
+                                        "title": issue["title"],
+                                        "body": (issue.get("description") or "")[:500],
+                                        "author": issue["author"]["username"],
+                                        "url": issue["web_url"],
+                                        "action": "opened",
+                                    },
+                                }
+                            )
                 except Exception as e:
                     logger.warning("GitLab issue check failed: %s", e)
 

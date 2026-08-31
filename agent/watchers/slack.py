@@ -2,6 +2,7 @@
 
 Token-efficient: only calls Gemini when new events are detected.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +27,9 @@ class SlackWatcher(BaseWatcher):
         self.token = config.get("token", "")  # Bot token (xoxb-...)
         self.channels = config.get("channels", [])  # List of channel IDs
         self.watch_mentions = config.get("watch_mentions", True)
-        self._last_ts: dict[str, str] = dict(self._state.get("slack_last_ts", {}))  # channel -> last seen message ts
+        self._last_ts: dict[str, str] = dict(
+            self._state.get("slack_last_ts", {})
+        )  # channel -> last seen message ts
         self._channel_names: dict[str, str] = {}  # channel -> name cache
 
     def _get_headers(self) -> dict[str, str]:
@@ -42,9 +45,7 @@ class SlackWatcher(BaseWatcher):
                     headers=self._get_headers(),
                 )
                 data = resp.json() if resp.status_code == 200 else {}
-                self._channel_names[channel_id] = (
-                    data.get("channel", {}).get("name") or channel_id
-                )
+                self._channel_names[channel_id] = data.get("channel", {}).get("name") or channel_id
             except Exception as e:
                 logger.warning("Slack channel name lookup failed: %s", e)
                 self._channel_names[channel_id] = channel_id
@@ -54,7 +55,9 @@ class SlackWatcher(BaseWatcher):
         """Check Slack API for new messages in watched channels."""
         # Early validation — don't poll unauthenticated (no bypass, no noisy exceptions)
         if not self.token:
-            logger.debug("Slack watcher %s skipped: not configured (missing token)", self.watcher_id)
+            logger.debug(
+                "Slack watcher %s skipped: not configured (missing token)", self.watcher_id
+            )
             return []
         if not self.channels:
             logger.debug("Slack watcher %s skipped: no channels configured", self.watcher_id)
@@ -100,7 +103,7 @@ class SlackWatcher(BaseWatcher):
                         is_mention = "<@" in text
                         event: dict[str, Any] = {
                             "event_type": "slack.message.new",
-                            "external_id": f"{channel_id}_{msg.get('ts','')}",
+                            "external_id": f"{channel_id}_{msg.get('ts', '')}",
                             "payload": {
                                 "channel": channel_id,
                                 "channel_name": channel_name,

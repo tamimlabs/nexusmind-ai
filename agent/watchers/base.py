@@ -1,4 +1,5 @@
 """Base watcher class for event-driven task execution."""
+
 from __future__ import annotations
 
 import abc
@@ -80,7 +81,9 @@ class BaseWatcher(abc.ABC):
         _last_no_instruction_notify[self.watcher_id] = now
         return True
 
-    async def notify_unhandled_event(self, summary: str, event: dict[str, Any] | None = None) -> None:
+    async def notify_unhandled_event(
+        self, summary: str, event: dict[str, Any] | None = None
+    ) -> None:
         """Inform owner an event arrived but no standing orders exist.
 
         Always creates a visible Task Panel entry (even when Telegram is muted
@@ -111,11 +114,14 @@ class BaseWatcher(abc.ABC):
         except Exception:
             logger.debug("No-instruction notification skipped")
 
-    async def _register_unhandled_task(self, summary: str, event: dict[str, Any] | None = None) -> None:
+    async def _register_unhandled_task(
+        self, summary: str, event: dict[str, Any] | None = None
+    ) -> None:
         """Create a visible Task Panel entry for an unhandled watcher event."""
         # Try API live store first (dashboard polling), fallback to doing nothing
         try:
             from api.main import _register_watcher_unhandled as _reg
+
             await _reg(
                 watcher_id=self.watcher_id,
                 watcher_type=self.config.get("type", "unknown"),
@@ -210,6 +216,7 @@ class BaseWatcher(abc.ABC):
                 # circular module dependency.
                 with contextlib.suppress(Exception):
                     from agent.watchers import manager as _wm
+
                     _wm._save_state()
 
             except asyncio.CancelledError:
@@ -226,7 +233,9 @@ class BaseWatcher(abc.ABC):
 
         # Priority mapping: github PR merge/reject must be HIGH/CRITICAL and sequential
         raw_priority = event.get("priority", "")
-        if event.get("event_type", "").startswith("github.pr.") or event.get("event_type", "").startswith("gitlab.mr."):
+        if event.get("event_type", "").startswith("github.pr.") or event.get(
+            "event_type", ""
+        ).startswith("gitlab.mr."):
             # PR/MR events are always HIGH — they need local verification one-by-one
             priority = TaskPriority.CRITICAL if raw_priority == "high" else TaskPriority.HIGH
         elif raw_priority == "high":

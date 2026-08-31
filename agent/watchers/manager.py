@@ -6,6 +6,7 @@ Supported platforms:
     github, gitlab, slack, discord, jira, reddit,
     hackernews, email, rss, cron, webhook (custom)
 """
+
 from __future__ import annotations
 
 import json
@@ -91,7 +92,16 @@ def _load_state() -> dict[str, Any]:
     return {}
 
 
-_SENSITIVE_KEYS = {"token", "password", "secret", "api_key", "telegram_bot_token", "telegram_token", "email", "imap_password"}
+_SENSITIVE_KEYS = {
+    "token",
+    "password",
+    "secret",
+    "api_key",
+    "telegram_bot_token",
+    "telegram_token",
+    "email",
+    "imap_password",
+}
 
 
 def _sanitize_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -134,7 +144,12 @@ def _rehydrate_config(watcher_type: str, config: dict[str, Any]) -> dict[str, An
         "slack": {"token": "SLACK_BOT_TOKEN"},
         "discord": {"token": "DISCORD_BOT_TOKEN"},
         "jira": {"token": "JIRA_TOKEN", "api_key": "JIRA_TOKEN", "secret": "JIRA_TOKEN"},
-        "email": {"password": "EMAIL_IMAP_PASSWORD", "imap_password": "EMAIL_IMAP_PASSWORD", "email": "EMAIL_ADDRESS", "token": "EMAIL_IMAP_PASSWORD"},
+        "email": {
+            "password": "EMAIL_IMAP_PASSWORD",
+            "imap_password": "EMAIL_IMAP_PASSWORD",
+            "email": "EMAIL_ADDRESS",
+            "token": "EMAIL_IMAP_PASSWORD",
+        },
         "reddit": {"secret": "REDDIT_CLIENT_SECRET", "api_key": "REDDIT_CLIENT_ID"},
         "rss": {},
         "cron": {},
@@ -190,7 +205,9 @@ def create_watcher(watcher_type: str, config: dict[str, Any], persist: bool = Tr
     """Create a new watcher instance."""
     watcher_class = _WATCHER_TYPES.get(watcher_type)
     if not watcher_class:
-        raise ValueError(f"Unknown watcher type: {watcher_type}. Available: {list(_WATCHER_TYPES.keys())}")
+        raise ValueError(
+            f"Unknown watcher type: {watcher_type}. Available: {list(_WATCHER_TYPES.keys())}"
+        )
 
     watcher_id = config.get("id")
     if not watcher_id:

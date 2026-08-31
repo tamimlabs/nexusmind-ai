@@ -129,13 +129,15 @@ def _cmd_skills(args: str) -> str:
     query = args.strip().lower()
     if query:
         skills = [
-            s for s in skills
+            s
+            for s in skills
             if query in s["name"].lower() or query in (s.get("description") or "").lower()
         ]
     if not skills:
-        return "No skills match." if query else (
-            "No skills yet. The agent auto-synthesizes them after solving "
-            "multi-step tasks."
+        return (
+            "No skills match."
+            if query
+            else ("No skills yet. The agent auto-synthesizes them after solving multi-step tasks.")
         )
     lines = ["Skills:"]
     for s in skills:

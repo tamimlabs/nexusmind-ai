@@ -30,6 +30,7 @@ def _esc(text: str) -> str:
     """
     return html.escape(text or "", quote=False)
 
+
 # Telegram Bot API base URL
 TELEGRAM_API = "https://api.telegram.org/bot{token}"
 
@@ -161,11 +162,13 @@ async def request_approval_via_telegram(
     ]
     if extra_info:
         msg_lines.append(f"\n<b>Details:</b> {_esc(extra_info[:200])}")
-    msg_lines.extend([
-        "",
-        "⏱ Timeout: 5 minutes",
-        f"🆔 <code>{step_id[:12]}</code>",
-    ])
+    msg_lines.extend(
+        [
+            "",
+            "⏱ Timeout: 5 minutes",
+            f"🆔 <code>{step_id[:12]}</code>",
+        ]
+    )
     msg_text = "\n".join(line for line in msg_lines if line is not None)
 
     # Inline keyboard with approve/deny buttons
@@ -228,7 +231,11 @@ async def handle_callback_query(callback_query: dict[str, Any]) -> None:
 
     if not step_id:
         await answer_callback(callback_id, "Approval not found (may have expired)")
-        logger.debug("Telegram callback id_part %s not found in pending %s", id_part[:12], list(_pending_approvals.keys())[:2])
+        logger.debug(
+            "Telegram callback id_part %s not found in pending %s",
+            id_part[:12],
+            list(_pending_approvals.keys())[:2],
+        )
         return
 
     # Resolve the approval

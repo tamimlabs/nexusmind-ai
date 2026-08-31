@@ -71,7 +71,7 @@ class TestCleanLessons:
         assert _clean_lessons("For abstract or creative goals use imagery first") == []
 
     def test_valid_lesson_kept_and_bullets_stripped(self):
-        raw = '- When generating HTML files, write them via execute_code to avoid arg limits.'
+        raw = "- When generating HTML files, write them via execute_code to avoid arg limits."
         out = _clean_lessons(raw)
         assert len(out) == 1
         assert out[0].startswith("When generating")
@@ -81,10 +81,7 @@ class TestCleanLessons:
 
     def test_capped_at_two_lines(self):
         raw = "\n".join(
-            [
-                f"Lesson number {i} teaches something reusable for later tasks."
-                for i in range(5)
-            ]
+            [f"Lesson number {i} teaches something reusable for later tasks." for i in range(5)]
         )
         assert len(_clean_lessons(raw)) == 2
 
@@ -113,8 +110,7 @@ class TestPlannerLessonsFraming:
             import json as _json
 
             return _json.dumps(
-                [{"description": "search", "tool_name": "web_search",
-                  "tool_args": {"query": "x"}}]
+                [{"description": "search", "tool_name": "web_search", "tool_args": {"query": "x"}}]
             )
 
         monkeypatch.setattr("agent.core.gemini_client.generate_content", fake_generate)

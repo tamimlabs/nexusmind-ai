@@ -2,6 +2,7 @@
 
 Token-efficient: only calls Gemini when new events are detected.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +27,9 @@ class DiscordWatcher(BaseWatcher):
         self.token = config.get("token", "")  # Bot token
         self.guild_id = config.get("guild_id", "")
         self.channel_ids = config.get("channel_ids", [])  # List of channel IDs
-        self._last_message_id: dict[str, str] = dict(self._state.get("discord_last_id", {}))  # channel -> last seen message snowflake
+        self._last_message_id: dict[str, str] = dict(
+            self._state.get("discord_last_id", {})
+        )  # channel -> last seen message snowflake
         self._channel_names: dict[str, str] = {}  # channel -> name cache
 
     def _get_headers(self) -> dict[str, str]:
@@ -50,7 +53,9 @@ class DiscordWatcher(BaseWatcher):
         """Check Discord API for new messages in watched channels."""
         # Early validation — don't poll unauthenticated (no bypass, no Illegal header exceptions)
         if not self.token:
-            logger.debug("Discord watcher %s skipped: not configured (missing token)", self.watcher_id)
+            logger.debug(
+                "Discord watcher %s skipped: not configured (missing token)", self.watcher_id
+            )
             return []
         if not self.channel_ids:
             logger.debug("Discord watcher %s skipped: no channels configured", self.watcher_id)
@@ -93,7 +98,8 @@ class DiscordWatcher(BaseWatcher):
                         msg
                         for msg in reversed(resp.json())
                         if not msg.get("author", {}).get("bot")  # Skip bots to avoid loops
-                        and _safe_int(msg.get("id", "0")) > last_id  # Snowflake IDs sort chronologically
+                        and _safe_int(msg.get("id", "0"))
+                        > last_id  # Snowflake IDs sort chronologically
                     ]
                     if new_messages:
                         last_msg_id = new_messages[-1].get("id")
@@ -106,18 +112,20 @@ class DiscordWatcher(BaseWatcher):
                         msg_id = str(msg.get("id", ""))
                         if not msg_id:
                             continue
-                        events.append({
-                            "event_type": "discord.message.new",
-                            "external_id": f"{channel_id}_{msg_id}",
-                            "payload": {
-                                "channel_id": channel_id,
-                                "channel_name": channel_name,
-                                "message_id": msg_id,
-                                "author": msg.get("author", {}).get("username", "unknown"),
-                                "content": (msg.get("content") or "")[:500],
-                                "url": f"https://discord.com/channels/{self.guild_id}/{channel_id}/{msg_id}",
-                            },
-                        })
+                        events.append(
+                            {
+                                "event_type": "discord.message.new",
+                                "external_id": f"{channel_id}_{msg_id}",
+                                "payload": {
+                                    "channel_id": channel_id,
+                                    "channel_name": channel_name,
+                                    "message_id": msg_id,
+                                    "author": msg.get("author", {}).get("username", "unknown"),
+                                    "content": (msg.get("content") or "")[:500],
+                                    "url": f"https://discord.com/channels/{self.guild_id}/{channel_id}/{msg_id}",
+                                },
+                            }
+                        )
                 except Exception as e:
                     logger.warning("Discord check failed for %s: %s", channel_id, e)
 

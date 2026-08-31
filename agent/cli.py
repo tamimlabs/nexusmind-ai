@@ -11,28 +11,30 @@ import logging.config
 def setup_logging(debug: bool = False) -> None:
     """Configure structured logging."""
     level = "DEBUG" if debug else "INFO"
-    logging.config.dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "standard": {
-                "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-                "datefmt": "%Y-%m-%d %H:%M:%S",
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "standard": {
+                    "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                    "datefmt": "%Y-%m-%d %H:%M:%S",
+                },
             },
-        },
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "formatter": "standard",
+            "handlers": {
+                "console": {
+                    "class": "logging.StreamHandler",
+                    "formatter": "standard",
+                    "level": level,
+                    "stream": "ext://sys.stdout",
+                },
+            },
+            "root": {
+                "handlers": ["console"],
                 "level": level,
-                "stream": "ext://sys.stdout",
             },
-        },
-        "root": {
-            "handlers": ["console"],
-            "level": level,
-        },
-    })
+        }
+    )
 
 
 async def run_agent(goal: str, debug: bool = False) -> None:
@@ -40,14 +42,14 @@ async def run_agent(goal: str, debug: bool = False) -> None:
     from agent.orchestrator import orchestrator
 
     task = await orchestrator.handle_goal(goal)
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Task Status: {task.status.value}")
     if task.result:
         print(f"Result: {task.result[:500]}")
     if task.error:
         print(f"Error: {task.error}")
     print(f"Steps executed: {len(task.steps)}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 async def interactive_mode(debug: bool = False) -> None:
@@ -88,6 +90,7 @@ def main() -> None:
 
     if args.status:
         from agent.orchestrator import orchestrator
+
         status = orchestrator.get_status()
         for k, v in status.items():
             print(f"{k}: {v}")

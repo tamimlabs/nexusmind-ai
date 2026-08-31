@@ -158,19 +158,40 @@ _TOOL_ALIASES = {
 }
 
 # A PR reference: "#123", "pr 123", "PR #123", "pull request 123", "prs 4 and 7".
-_PR_NUMBER_PATTERN = re.compile(r"#(\d{1,6})\b|\b(?:pr|pull\s+requests?)\s*#?(\d{1,6})\b", re.IGNORECASE)
+_PR_NUMBER_PATTERN = re.compile(
+    r"#(\d{1,6})\b|\b(?:pr|pull\s+requests?)\s*#?(\d{1,6})\b", re.IGNORECASE
+)
 
 # Research-flavored goals where web_search is an acceptable last resort.
 _RESEARCH_HINTS = (
-    "what ", "who ", "when ", "where ", "why ", "how ", "news", "latest",
-    "search", "find information", "tell me about", "research", "explain",
+    "what ",
+    "who ",
+    "when ",
+    "where ",
+    "why ",
+    "how ",
+    "news",
+    "latest",
+    "search",
+    "find information",
+    "tell me about",
+    "research",
+    "explain",
 )
 
 # Goals starting with these ask a question — they must stay read-only even
 # if action verbs appear later ("how do I merge a pr?").
 _QUESTION_PREFIXES = (
-    "what ", "who ", "when ", "where ", "why ", "how ",
-    "explain", "tell me", "describe", "compare",
+    "what ",
+    "who ",
+    "when ",
+    "where ",
+    "why ",
+    "how ",
+    "explain",
+    "tell me",
+    "describe",
+    "compare",
 )
 
 
@@ -184,7 +205,9 @@ def _is_github_goal(goal: str) -> bool:
         has_repo_signal = bool(
             re.search(r"\b\w+/\w+\b", goal)  # owner/name like tamimlabs/repo
             or _PR_NUMBER_PATTERN.search(goal)  # #123
-            or re.search(r"\b(repo(sitorie)?s?|pull\s*request|prs?\b|branch|commit|merge|close|issue)\b", g)
+            or re.search(
+                r"\b(repo(sitorie)?s?|pull\s*request|prs?\b|branch|commit|merge|close|issue)\b", g
+            )
         )
         if not has_repo_signal:
             return False
@@ -209,8 +232,6 @@ def _is_github_goal(goal: str) -> bool:
 # an honest diagnostic step that never fabricates content.
 
 
-
-
 def _extract_pr_numbers(goal: str) -> list[int]:
     """Extract explicitly referenced PR numbers, deduplicated in order."""
     numbers: list[int] = []
@@ -228,8 +249,16 @@ def _extract_pr_numbers(goal: str) -> list[int]:
 _PLANNER_MAX_TOKENS = 16384
 
 
-def _make_step(task_id: str, order: int, description: str, tool_name: str, tool_args: dict[str, Any]) -> TaskStep:
-    return TaskStep(task_id=task_id, description=description, tool_name=tool_name, tool_args=tool_args, order=order)
+def _make_step(
+    task_id: str, order: int, description: str, tool_name: str, tool_args: dict[str, Any]
+) -> TaskStep:
+    return TaskStep(
+        task_id=task_id,
+        description=description,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        order=order,
+    )
 
 
 def repair_tool_name(name: str, valid: list[str] | None = None) -> str | None:
@@ -341,7 +370,13 @@ def _github_pipeline(task: Task) -> list[TaskStep]:
     pr_numbers = _extract_pr_numbers(goal)
 
     steps: list[TaskStep] = [
-        _make_step(tid, 0, "Resolve which repository this goal refers to", "github_resolve_repo", {"goal_text": goal}),
+        _make_step(
+            tid,
+            0,
+            "Resolve which repository this goal refers to",
+            "github_resolve_repo",
+            {"goal_text": goal},
+        ),
     ]
     repo_ref = "{{step_0_result}}"
     order = 1
@@ -349,43 +384,74 @@ def _github_pipeline(task: Task) -> list[TaskStep]:
     if pr_numbers:
         label = ", ".join(f"#{n}" for n in pr_numbers)
         if len(pr_numbers) == 1:
-            steps.append(_make_step(
-                tid, order, f"Fetch and review PR {label}: analyze diff and decide",
-                "github_review_pr", {"repo": repo_ref, "pr_number": pr_numbers[0]},
-            ))
+            steps.append(
+                _make_step(
+                    tid,
+                    order,
+                    f"Fetch and review PR {label}: analyze diff and decide",
+                    "github_review_pr",
+                    {"repo": repo_ref, "pr_number": pr_numbers[0]},
+                )
+            )
         else:
-            steps.append(_make_step(
-                tid, order, f"Review PRs {label}: analyze diffs and decide",
-                "github_review_pr",
-                {"repo": repo_ref, "pr_list": json.dumps([{"number": n} for n in pr_numbers])},
-            ))
+            steps.append(
+                _make_step(
+                    tid,
+                    order,
+                    f"Review PRs {label}: analyze diffs and decide",
+                    "github_review_pr",
+                    {"repo": repo_ref, "pr_list": json.dumps([{"number": n} for n in pr_numbers])},
+                )
+            )
     else:
-        steps.append(_make_step(
-            tid, order, "List open pull requests in {{step_0_result}}",
-            "github_list_prs", {"repo": repo_ref},
-        ))
+        steps.append(
+            _make_step(
+                tid,
+                order,
+                "List open pull requests in {{step_0_result}}",
+                "github_list_prs",
+                {"repo": repo_ref},
+            )
+        )
         order += 1
-        steps.append(_make_step(
-            tid, order, "Review every listed PR and recommend merge/reject/skip",
-            "github_review_pr", {"repo": repo_ref, "pr_list": "{{step_1_result}}"},
-        ))
+        steps.append(
+            _make_step(
+                tid,
+                order,
+                "Review every listed PR and recommend merge/reject/skip",
+                "github_review_pr",
+                {"repo": repo_ref, "pr_list": "{{step_1_result}}"},
+            )
+        )
     review_order = order
     order += 1
 
     if wants_action:
-        steps.append(_make_step(
-            tid, order, "Apply review verdicts: merge clean PRs, reject risky ones, skip uncertain",
-            "github_apply_decisions",
-            {"repo": repo_ref, "decisions": f"{{{{step_{review_order}_result}}}}"},
-        ))
+        steps.append(
+            _make_step(
+                tid,
+                order,
+                "Apply review verdicts: merge clean PRs, reject risky ones, skip uncertain",
+                "github_apply_decisions",
+                {"repo": repo_ref, "decisions": f"{{{{step_{review_order}_result}}}}"},
+            )
+        )
     else:
-        steps.append(_make_step(
-            tid, order, "Summarize the repository/PR findings for the user",
-            "summarize_text", {"text": f"{{{{step_{review_order}_result}}}}", "max_length": 250},
-        ))
+        steps.append(
+            _make_step(
+                tid,
+                order,
+                "Summarize the repository/PR findings for the user",
+                "summarize_text",
+                {"text": f"{{{{step_{review_order}_result}}}}", "max_length": 250},
+            )
+        )
 
     logger.info(
-        "Deterministic GitHub plan (%d steps, action=%s) for task %s", len(steps), wants_action, tid,
+        "Deterministic GitHub plan (%d steps, action=%s) for task %s",
+        len(steps),
+        wants_action,
+        tid,
     )
     return steps
 
@@ -434,16 +500,15 @@ async def plan_task(
         lessons_context = (
             "\n\nLESSONS FROM PAST TASKS (guidance only — the CURRENT GOAL "
             "above decides what to build; never reuse a past goal's subject, "
-            "branding, or output files):\n"
-            + "\n".join(f"- {lesson}" for lesson in lessons[:5])
+            "branding, or output files):\n" + "\n".join(f"- {lesson}" for lesson in lessons[:5])
         )
 
     user_prompt = f"""Goal: {task.goal}
-Context: {json.dumps(task.context) if task.context else 'None'}{lessons_context}
+Context: {json.dumps(task.context) if task.context else "None"}{lessons_context}
 
-{skill_context or ''}
+{skill_context or ""}
 
-{memory_context or ''}
+{memory_context or ""}
 
 Create a RESILIENT plan that will produce useful output even if some steps fail.
 Return ONLY the JSON array."""
@@ -479,10 +544,19 @@ Return ONLY the JSON array."""
         # executes its concrete steps with ZERO per-step model calls.
         if on_event is not None:
             try:
-                on_event(task.id, "thinking", "Compiling full step plan (buffered, faster than streaming)…", "")
+                on_event(
+                    task.id,
+                    "thinking",
+                    "Compiling full step plan (buffered, faster than streaming)…",
+                    "",
+                )
             except TypeError:
                 try:
-                    on_event("thinking", "Compiling full step plan (buffered, faster than streaming)…", "")
+                    on_event(
+                        "thinking",
+                        "Compiling full step plan (buffered, faster than streaming)…",
+                        "",
+                    )
                 except Exception:
                     pass
             except Exception:
@@ -546,7 +620,9 @@ Return ONLY the JSON array."""
             if not has_github or has_websearch_only:
                 logger.warning(
                     "Gemini plan for GitHub goal %s avoided github tools (%s); "
-                    "falling back to deterministic GitHub pipeline", task.id, tool_names
+                    "falling back to deterministic GitHub pipeline",
+                    task.id,
+                    tool_names,
                 )
                 return _github_pipeline(task)
 

@@ -23,8 +23,6 @@ model from the exact goal text + memory + live results.
 
 from __future__ import annotations
 
-import asyncio
-
 import json
 import logging
 import re
@@ -653,7 +651,9 @@ async def decide_next_step(
         except (OutputTruncatedError, QuotaExhaustedError):
             raise
         except Exception:
-            logger.debug("Streaming decide failed, falling back to buffered generate_content", exc_info=True)
+            logger.debug(
+                "Streaming decide failed, falling back to buffered generate_content", exc_info=True
+            )
 
     try:
         raw = await generate_content(
@@ -779,7 +779,11 @@ async def run_adaptive_loop(
             }
             _fdec, _ferr = _validate_step_decision(_fspec)
             if _fdec is None or not _fdec.get("tool_args"):
-                _emit("error", "Roadmap step incomplete — adaptive loop takes over", (_ferr or "")[:200])
+                _emit(
+                    "error",
+                    "Roadmap step incomplete — adaptive loop takes over",
+                    (_ferr or "")[:200],
+                )
                 break
             _fstep = TaskStep(
                 task_id=task.id,
@@ -799,7 +803,8 @@ async def run_adaptive_loop(
             _ftargets = _step_target_roots(_fstep)
             _fblocked = (
                 next((r for r in _ftargets if r in preexisting and r not in read_roots), None)
-                if _fstep.tool_name in ("write_file", "write_directory", "execute_code", "run_command")
+                if _fstep.tool_name
+                in ("write_file", "write_directory", "execute_code", "run_command")
                 else None
             )
             if _fblocked is not None:
@@ -807,15 +812,21 @@ async def run_adaptive_loop(
                 _fstep.status = StepStatus.SKIPPED
                 _fstep.error = _fblock_msg
                 context[f"step_{_fstep.order}_result"] = _fblock_msg
-                details.append(f"step {_fstep.order} [{_fstep.tool_name}]: BLOCKED (existing {_fblocked})")
-                _emit("error", f"Step {_fstep.order} blocked", f"{_fblocked} already exists — read its files first or pick a new name.")
+                details.append(
+                    f"step {_fstep.order} [{_fstep.tool_name}]: BLOCKED (existing {_fblocked})"
+                )
+                _emit(
+                    "error",
+                    f"Step {_fstep.order} blocked",
+                    f"{_fblocked} already exists — read its files first or pick a new name.",
+                )
                 if _fs_todo is not None:
                     _set_todo_status(_fs_todo, TodoStatus.SKIPPED)
                 continue
             _emit(
                 "step_running",
                 f"Step {_fstep.order}: {_trim(_fstep.description, 90)}",
-                f"[{_fstep.tool_name}] roadmap fast-path | elapsed {int((datetime.now(UTC)-loop_start).total_seconds())}s",
+                f"[{_fstep.tool_name}] roadmap fast-path | elapsed {int((datetime.now(UTC) - loop_start).total_seconds())}s",
             )
             task.steps.append(_fstep)
             task.updated_at = datetime.now(UTC)
@@ -838,21 +849,32 @@ async def run_adaptive_loop(
                     context.pop("on_output", None)
             _fs_ms = int((datetime.now(UTC) - _fs_tool_start).total_seconds() * 1000)
             context[f"step_{_fstep.order}_result"] = _fs_result.output
-            details.append(f"step {_fstep.order} [{_fstep.tool_name}]: {'ok' if _fs_result.success else 'FAILED'} {_fs_ms}ms")
+            details.append(
+                f"step {_fstep.order} [{_fstep.tool_name}]: {'ok' if _fs_result.success else 'FAILED'} {_fs_ms}ms"
+            )
             _emit(
                 "tool_output" if _fs_result.success else "error",
                 f"Step {_fstep.order} {'output' if _fs_result.success else 'failed'} ({_fs_ms}ms)",
-                _trim((_fs_result.output or _fs_result.error or "")[:1500], 1500) + f"\n— tool: {_fstep.tool_name} | decide: 0ms (roadmap) | tool: {_fs_ms}ms",
+                _trim((_fs_result.output or _fs_result.error or "")[:1500], 1500)
+                + f"\n— tool: {_fstep.tool_name} | decide: 0ms (roadmap) | tool: {_fs_ms}ms",
             )
             if _fs_result.success:
                 if _fs_todo is not None:
                     _set_todo_status(_fs_todo, TodoStatus.COMPLETED)
                 if _fstep.tool_name in ("read_file", "list_directory"):
                     read_roots.update(_step_target_roots(_fstep))
-                _emit("done", f"Step {_fstep.order} complete", _trim(_fs_result.output or _fs_result.error or "", 300))
+                _emit(
+                    "done",
+                    f"Step {_fstep.order} complete",
+                    _trim(_fs_result.output or _fs_result.error or "", 300),
+                )
             else:
                 fastpath_failed = True
-                _emit("error", f"Step {_fstep.order} failed — adaptive loop takes over", _trim(_fs_result.error or "unknown error", 250))
+                _emit(
+                    "error",
+                    f"Step {_fstep.order} failed — adaptive loop takes over",
+                    _trim(_fs_result.error or "unknown error", 250),
+                )
                 break
     if fastpath_failed:
         _emit("thinking", "Roadmap step failed — switching to adaptive self-correction", "")
@@ -874,7 +896,7 @@ async def run_adaptive_loop(
                 _emit(
                     "thinking",
                     f"Extending budget to {effective_max} steps — {pending} todo(s) left, recent progress {recent_ok}/3",
-                    f"elapsed {(datetime.now(UTC)-loop_start).total_seconds():.0f}s",
+                    f"elapsed {(datetime.now(UTC) - loop_start).total_seconds():.0f}s",
                 )
             else:
                 return _abort(
@@ -882,14 +904,33 @@ async def run_adaptive_loop(
                     "partial work and any errors are reported below."
                 )
         # Periodic compaction for very long runs (opencode session/compaction parity)
-        if _round > 0 and _round % compaction_threshold == 0 and len(task.steps) >= compaction_threshold:
+        if (
+            _round > 0
+            and _round % compaction_threshold == 0
+            and len(task.steps) >= compaction_threshold
+        ):
             try:
-                from agent.core.gemini_client import generate_content as _gc
                 import asyncio as _aio_comp
 
+                from agent.core.gemini_client import generate_content as _gc
+
                 older = task.steps[: len(task.steps) - _TRANSCRIPT_MAX_ENTRIES]
-                summary_prompt = "Summarize these completed steps in 8 bullet lines, keep file paths and errors:\n" + "\n".join(f"{s.order} [{s.tool_name}] {s.description[:80]}: {(s.result or s.error or '')[:120]}" for s in older[-30:])
-                comp = await _aio_comp.wait_for(_gc(system="Summarize agent progress concisely.", user=summary_prompt, temperature=0.2, max_tokens=600), timeout=30)
+                summary_prompt = (
+                    "Summarize these completed steps in 8 bullet lines, keep file paths and errors:\n"
+                    + "\n".join(
+                        f"{s.order} [{s.tool_name}] {s.description[:80]}: {(s.result or s.error or '')[:120]}"
+                        for s in older[-30:]
+                    )
+                )
+                comp = await _aio_comp.wait_for(
+                    _gc(
+                        system="Summarize agent progress concisely.",
+                        user=summary_prompt,
+                        temperature=0.2,
+                        max_tokens=600,
+                    ),
+                    timeout=30,
+                )
                 if comp and len(comp) > 40:
                     # Merge the summary into what the model reads next instead
                     # of only streaming a cosmetic "thinking" event.
@@ -902,7 +943,9 @@ async def run_adaptive_loop(
                 logger.debug("compaction failed", exc_info=True)
         task.updated_at = datetime.now(UTC)
         snapshot_text = _snapshot_workspace()
-        transcript_text = (compaction_note + "\n\n" if compaction_note else "") + _build_transcript(task)
+        transcript_text = (compaction_note + "\n\n" if compaction_note else "") + _build_transcript(
+            task
+        )
         todo_text = _todo_state(task)
         roadmap_text = (
             "\n".join(f"- [{s.tool_name}] {s.description}" for s in (roadmap or [])) or "_None._"
@@ -922,7 +965,7 @@ async def run_adaptive_loop(
         # Opencode-like visibility: stream what the brain is about to see
         _emit(
             "thinking",
-            f"Planning step {_round+1}/{effective_max}…",
+            f"Planning step {_round + 1}/{effective_max}…",
             f"todos: {_trim(todo_text.replace(chr(10), ' | '), 180)}\ntranscript tail: {_trim(transcript_text.split(chr(10))[-1] if transcript_text else '', 180)}",
         )
 
@@ -930,7 +973,11 @@ async def run_adaptive_loop(
         decision: dict[str, Any] | None = None
         for _attempt in range(1, _MAX_DECISION_PARSE_RETRIES + 1):
             try:
-                _emit("thinking", f"Gemini deciding… attempt {_attempt}/{_MAX_DECISION_PARSE_RETRIES}", f"model brain thinking (round {_round+1})")
+                _emit(
+                    "thinking",
+                    f"Gemini deciding… attempt {_attempt}/{_MAX_DECISION_PARSE_RETRIES}",
+                    f"model brain thinking (round {_round + 1})",
+                )
                 # No timeout — agent runs until done (user removed timeout limit)
                 decision = await _call_decide(decide_fn, state, on_event=on_event)
                 raw_preview = _trim(str(decision.get("_raw") or decision)[:800], 500)
@@ -980,7 +1027,7 @@ async def run_adaptive_loop(
             if had_done_updates and task.todos:
                 _emit(
                     "todo_update",
-                    f"Checklist {sum(1 for t in task.todos if t.status==TodoStatus.COMPLETED)}/{len(task.todos)}",
+                    f"Checklist {sum(1 for t in task.todos if t.status == TodoStatus.COMPLETED)}/{len(task.todos)}",
                     _todo_state(task)[:1200],
                 )
             _emit(
@@ -994,11 +1041,14 @@ async def run_adaptive_loop(
 
         _apply_todo_updates(task, decision)
         had_todo_updates = bool(
-            isinstance(decision.get("todo_updates"), list)
-            and decision.get("todo_updates")
+            isinstance(decision.get("todo_updates"), list) and decision.get("todo_updates")
         )
         if had_todo_updates:
-            _emit("todo_update", f"Checklist {sum(1 for t in task.todos if t.status==TodoStatus.COMPLETED)}/{len(task.todos)}", _todo_state(task)[:1200])
+            _emit(
+                "todo_update",
+                f"Checklist {sum(1 for t in task.todos if t.status == TodoStatus.COMPLETED)}/{len(task.todos)}",
+                _todo_state(task)[:1200],
+            )
 
         step = TaskStep(
             task_id=task.id,
@@ -1049,9 +1099,10 @@ async def run_adaptive_loop(
         _emit(
             "step_running",
             f"Step {step.order}: {_trim(step.description, 90)}",
-            f"[{step.tool_name}] decide {decide_ms}ms | budget {effective_max} | elapsed {int((datetime.now(UTC)-loop_start).total_seconds())}s",
+            f"[{step.tool_name}] decide {decide_ms}ms | budget {effective_max} | elapsed {int((datetime.now(UTC) - loop_start).total_seconds())}s",
         )
         tool_started = datetime.now(UTC)
+
         # B2: incremental tool I/O streaming — wire stdout chunks to live
         # ``tool_delta`` events via context["on_output"] (executor.py drains
         # stdout per 4 KiB and invokes this sink). The final ToolResult is
@@ -1096,7 +1147,8 @@ async def run_adaptive_loop(
         _emit(
             "tool_output" if result.success else "error",
             f"Step {step.order} {'output' if result.success else 'failed'} ({tool_ms}ms)",
-            _trim((result.output or result.error or "")[:2000], 1500) + f"\n— tool: {step.tool_name} | decide: {decide_ms}ms | tool: {tool_ms}ms",
+            _trim((result.output or result.error or "")[:2000], 1500)
+            + f"\n— tool: {step.tool_name} | decide: {decide_ms}ms | tool: {tool_ms}ms",
         )
 
         if result.success:
@@ -1116,11 +1168,13 @@ async def run_adaptive_loop(
                         "todo_update",
                         f"Checklist {completed}/{len(task.todos)}",
                         "\n".join(
-                            f"[{'x' if t.status==TodoStatus.COMPLETED else ' '}] {t.title}"
+                            f"[{'x' if t.status == TodoStatus.COMPLETED else ' '}] {t.title}"
                             for t in task.todos[:8]
                         ),
                     )
-                _emit("done", f"Step {step.order} checklist updated", _trim(result.output or "", 300))
+                _emit(
+                    "done", f"Step {step.order} checklist updated", _trim(result.output or "", 300)
+                )
                 continue
             if step.tool_name in ("read_file", "list_directory"):
                 read_roots.update(_step_target_roots(step))

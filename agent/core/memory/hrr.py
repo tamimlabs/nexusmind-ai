@@ -140,9 +140,7 @@ def bytes_to_phases(data: bytes, dim: int | None = None) -> np.ndarray:
     payload = data[len(_FLOAT32_BLOB_PREFIX) :]
     expected = dim * np.dtype(np.float32).itemsize if dim is not None else None
     if expected is not None and len(payload) != expected:
-        raise ValueError(
-            f"HRR vector blob has {len(payload)} payload bytes; expected {expected}"
-        )
+        raise ValueError(f"HRR vector blob has {len(payload)} payload bytes; expected {expected}")
     if len(payload) % np.dtype(np.float32).itemsize != 0:
         raise ValueError(f"HRR float32 vector blob has invalid byte length: {len(payload)}")
     return np.frombuffer(payload, dtype=np.float32).astype(np.float64)

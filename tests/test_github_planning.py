@@ -162,9 +162,7 @@ class TestMemoryGatedWatcher:
     async def test_no_instruction_means_no_action(self, monkeypatch):
         from agent.core import memory as memory_mod
 
-        monkeypatch.setattr(
-            memory_mod.memory_store, "get_by_category", lambda cat: []
-        )
+        monkeypatch.setattr(memory_mod.memory_store, "get_by_category", lambda cat: [])
         goal = await self._watcher().process_event(self._event())
         assert goal is None  # nothing triggered at all
 
@@ -268,9 +266,7 @@ class TestNotificationRateLimit:
         async def fake_send(msg):
             sent.append(msg)
 
-        monkeypatch.setattr(
-            memory_mod.memory_store, "get_by_category", lambda cat: []
-        )
+        monkeypatch.setattr(memory_mod.memory_store, "get_by_category", lambda cat: [])
         monkeypatch.setattr("agent.telegram.is_configured", lambda: True)
         monkeypatch.setattr("agent.telegram.send_message", fake_send)
         monkeypatch.setattr(base_mod, "_last_no_instruction_notify", {})
@@ -291,9 +287,7 @@ class TestNotificationRateLimit:
         async def fake_send(msg):
             sent.append(msg)
 
-        monkeypatch.setattr(
-            memory_mod.memory_store, "get_by_category", lambda cat: []
-        )
+        monkeypatch.setattr(memory_mod.memory_store, "get_by_category", lambda cat: [])
         monkeypatch.setattr("agent.telegram.is_configured", lambda: True)
         monkeypatch.setattr("agent.telegram.send_message", fake_send)
         monkeypatch.setattr(base_mod, "_last_no_instruction_notify", {})
@@ -318,9 +312,7 @@ class TestNotificationRateLimit:
         async def fake_send(msg):
             sent.append(msg)
 
-        monkeypatch.setattr(
-            memory_mod.memory_store, "get_by_category", lambda cat: []
-        )
+        monkeypatch.setattr(memory_mod.memory_store, "get_by_category", lambda cat: [])
         monkeypatch.setattr("agent.telegram.is_configured", lambda: True)
         monkeypatch.setattr("agent.telegram.send_message", fake_send)
         monkeypatch.setattr(base_mod, "_last_no_instruction_notify", {})
@@ -339,7 +331,9 @@ class TestAllWatchersMemoryGated:
     def _instruction(self):
         from agent.models import MemoryEntry
 
-        return MemoryEntry(content="whenever something new shows up, summarize it for me", category="instruction")
+        return MemoryEntry(
+            content="whenever something new shows up, summarize it for me", category="instruction"
+        )
 
     async def test_rss_watcher_gate(self, monkeypatch):
         from agent.core import memory as memory_mod
@@ -368,7 +362,12 @@ class TestAllWatchersMemoryGated:
 
         event = {
             "event_type": "jira.issue.new",
-            "payload": {"key": "PROJ-9", "title": "Login broken", "status": "new", "comment_count": 0},
+            "payload": {
+                "key": "PROJ-9",
+                "title": "Login broken",
+                "status": "new",
+                "comment_count": 0,
+            },
         }
         monkeypatch.setattr(memory_mod.memory_store, "get_by_category", lambda cat: [])
         assert await JiraWatcher("jira1", {}).process_event(event) is None
@@ -403,7 +402,14 @@ class TestAllWatchersMemoryGated:
         from agent.watchers.reddit import RedditWatcher
         from agent.watchers.slack import SlackWatcher
 
-        for cls in (DiscordWatcher, EmailWatcher, GitLabWatcher, HackerNewsWatcher, RedditWatcher, SlackWatcher):
+        for cls in (
+            DiscordWatcher,
+            EmailWatcher,
+            GitLabWatcher,
+            HackerNewsWatcher,
+            RedditWatcher,
+            SlackWatcher,
+        ):
             assert cls.INSTRUCTION_KEYWORDS, f"{cls.__name__} missing INSTRUCTION_KEYWORDS"
 
 
@@ -438,7 +444,11 @@ class TestLogicAuditRegressions:
 
         store.save_instruction("when a pr arrives, review and merge if clean")
         for i in range(120):  # flood well past the capped limit
-            store.add(MemoryEntry(content=f"unique outcome number {i} for eviction test", category="task_outcome"))
+            store.add(
+                MemoryEntry(
+                    content=f"unique outcome number {i} for eviction test", category="task_outcome"
+                )
+            )
 
         surviving = [e.content for e in store.get_by_category("instruction")]
         assert any("merge if clean" in c for c in surviving)
@@ -450,13 +460,21 @@ class TestGithubSkillUnits:
     def test_parse_repo_url_https(self):
         from agent.skills.github.skill import _parse_repo_url
 
-        assert _parse_repo_url("https://github.com/tamimlabs/nexusmind-ai.git") == "tamimlabs/nexusmind-ai"
-        assert _parse_repo_url("https://github.com/tamimlabs/nexusmind-ai/") == "tamimlabs/nexusmind-ai"
+        assert (
+            _parse_repo_url("https://github.com/tamimlabs/nexusmind-ai.git")
+            == "tamimlabs/nexusmind-ai"
+        )
+        assert (
+            _parse_repo_url("https://github.com/tamimlabs/nexusmind-ai/")
+            == "tamimlabs/nexusmind-ai"
+        )
 
     def test_parse_repo_url_ssh(self):
         from agent.skills.github.skill import _parse_repo_url
 
-        assert _parse_repo_url("git@github.com:tamimlabs/nexusmind-ai.git") == "tamimlabs/nexusmind-ai"
+        assert (
+            _parse_repo_url("git@github.com:tamimlabs/nexusmind-ai.git") == "tamimlabs/nexusmind-ai"
+        )
 
     async def test_resolve_repo_from_explicit_text(self):
         from agent.skills.github.skill import github_resolve_repo

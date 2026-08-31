@@ -194,7 +194,9 @@ class KeyRotator:
             want = 1
         self._active_index = max(0, min(want - 1, max(0, len(self._keys) - 1)))
         self._current_index = self._active_index
-        logger.info("Gemini key manager: %d key(s), active=Key %d", len(self._keys), self._active_index + 1)
+        logger.info(
+            "Gemini key manager: %d key(s), active=Key %d", len(self._keys), self._active_index + 1
+        )
 
     def refresh(self) -> None:
         """Re-parse GEMINI_API_KEY + GEMINI_ACTIVE_KEY_INDEX after a settings reload."""
@@ -221,17 +223,24 @@ class KeyRotator:
             settings.gemini_active_key_index = self._active_index + 1 if self._keys else 1
         except Exception:
             pass
-        logger.info("Gemini key manager refreshed: %d key(s), active=Key %d", len(self._keys), self._active_index + 1)
+        logger.info(
+            "Gemini key manager refreshed: %d key(s), active=Key %d",
+            len(self._keys),
+            self._active_index + 1,
+        )
 
     # ── Manual key management ──────────────────────────────────────
     def _persist_keys(self) -> None:
         """Persist current _keys list to .env + settings + os.environ."""
         value = ",".join(self._keys)
         try:
-            from agent.config import _ENV_FILE
             import os
 
-            raw_env = _ENV_FILE.read_text(encoding="utf-8").splitlines() if _ENV_FILE.exists() else []
+            from agent.config import _ENV_FILE
+
+            raw_env = (
+                _ENV_FILE.read_text(encoding="utf-8").splitlines() if _ENV_FILE.exists() else []
+            )
             found = False
             out: list[str] = []
             for line in raw_env:
@@ -256,10 +265,13 @@ class KeyRotator:
     def _persist_active_index(self) -> None:
         idx = self._active_index + 1
         try:
-            from agent.config import _ENV_FILE
             import os
 
-            raw_env = _ENV_FILE.read_text(encoding="utf-8").splitlines() if _ENV_FILE.exists() else []
+            from agent.config import _ENV_FILE
+
+            raw_env = (
+                _ENV_FILE.read_text(encoding="utf-8").splitlines() if _ENV_FILE.exists() else []
+            )
             found = False
             out: list[str] = []
             for line in raw_env:
@@ -392,7 +404,9 @@ class KeyRotator:
         if not self._keys:
             return 0
         now = time.monotonic()
-        active_key = self._keys[self._active_index] if 0 <= self._active_index < len(self._keys) else None
+        active_key = (
+            self._keys[self._active_index] if 0 <= self._active_index < len(self._keys) else None
+        )
         if active_key is None:
             return 0
         return 0 if now < self._cooldowns.get(active_key, 0) else 1
@@ -498,7 +512,14 @@ async def generate_content(
         if _quota_idx + 1 >= len(_quota_chain):
             return False
         nxt = _quota_chain[_quota_idx + 1]
-        logger.warning("Quota exhausted on %s (%s) — falling back to %s (%d/%d)", model_name, reason, nxt, _quota_idx + 1, len(_quota_chain) - 1)
+        logger.warning(
+            "Quota exhausted on %s (%s) — falling back to %s (%d/%d)",
+            model_name,
+            reason,
+            nxt,
+            _quota_idx + 1,
+            len(_quota_chain) - 1,
+        )
         _quota_idx += 1
         model_name = nxt
         # Fresh quota bucket per model — clear per-key daily parks for next model
@@ -506,7 +527,9 @@ async def generate_content(
             rotator._cooldowns.clear()
         except Exception:
             pass
-        retry_note = _retry_context_note(f"the previous model {reason} hit its quota and the request was moved to {nxt}; continue exactly as asked.")
+        retry_note = _retry_context_note(
+            f"the previous model {reason} hit its quota and the request was moved to {nxt}; continue exactly as asked."
+        )
         rate_retry_start = None
         return True
 
@@ -582,11 +605,27 @@ async def generate_content(
             error_str = str(exc).lower()
             if "invalid" in error_str and "key" in error_str:
                 rotator.mark_rate_limited(key_used, retry_after=86400)
-                _ai = getattr(rotator, "active_index", getattr(rotator, "_active_index", 0) + 1 if hasattr(rotator, "_active_index") else "?")
-                logger.error("Invalid API key ...%s (Key %s) — switch to another key in dashboard", key_used[-6:], _ai)
+                _ai = getattr(
+                    rotator,
+                    "active_index",
+                    getattr(rotator, "_active_index", 0) + 1
+                    if hasattr(rotator, "_active_index")
+                    else "?",
+                )
+                logger.error(
+                    "Invalid API key ...%s (Key %s) — switch to another key in dashboard",
+                    key_used[-6:],
+                    _ai,
+                )
                 raise QuotaExhaustedError(retry_after=0) from exc
-            if "404" in error_str and ("not_found" in error_str or "not found" in error_str or "model" in error_str):
-                logger.warning("Model %s not found (404) on key ...%s — falling back", model_name, key_used[-6:])
+            if "404" in error_str and (
+                "not_found" in error_str or "not found" in error_str or "model" in error_str
+            ):
+                logger.warning(
+                    "Model %s not found (404) on key ...%s — falling back",
+                    model_name,
+                    key_used[-6:],
+                )
                 if _try_next_quota_model(f"model {model_name} 404"):
                     _reuse_client = _reuse_key = None
                     rate_retry_start = None
@@ -600,7 +639,13 @@ async def generate_content(
 
             if _is_daily_quota(error_str):
                 rotator.mark_rate_limited(key_used, retry_after=_DAILY_KEY_PARK_SECONDS)
-                _ai2 = getattr(rotator, "active_index", getattr(rotator, "_active_index", 0) + 1 if hasattr(rotator, "_active_index") else "?")
+                _ai2 = getattr(
+                    rotator,
+                    "active_index",
+                    getattr(rotator, "_active_index", 0) + 1
+                    if hasattr(rotator, "_active_index")
+                    else "?",
+                )
                 logger.warning(
                     "Daily quota hit on Key %s (...%s) — switch keys in dashboard or wait 24h. Model=%s",
                     _ai2,
@@ -619,7 +664,13 @@ async def generate_content(
                 rate_retry_start = time.monotonic()
             elapsed = time.monotonic() - rate_retry_start
             if elapsed >= _MAX_RATE_RETRY_SECONDS:
-                _ai3 = getattr(rotator, "active_index", getattr(rotator, "_active_index", 0) + 1 if hasattr(rotator, "_active_index") else "?")
+                _ai3 = getattr(
+                    rotator,
+                    "active_index",
+                    getattr(rotator, "_active_index", 0) + 1
+                    if hasattr(rotator, "_active_index")
+                    else "?",
+                )
                 logger.warning(
                     "Rate-limit on Key %s (...%s) persisted %.0fs — switch keys in dashboard or wait. Model=%s",
                     _ai3,
@@ -702,7 +753,9 @@ async def generate_content_stream(
         if _quota_idx_s + 1 >= len(_quota_chain_s):
             return False
         nxt = _quota_chain_s[_quota_idx_s + 1]
-        logger.warning("Quota exhausted (stream) on %s (%s) — falling back to %s", model_name, reason, nxt)
+        logger.warning(
+            "Quota exhausted (stream) on %s (%s) — falling back to %s", model_name, reason, nxt
+        )
         _quota_idx_s += 1
         model_name = nxt
         try:
@@ -732,7 +785,11 @@ async def generate_content_stream(
                 contents.append(
                     _types.Content(
                         role="model",
-                        parts=[_types.Part.from_text(text="Understood. I will follow these instructions.")],
+                        parts=[
+                            _types.Part.from_text(
+                                text="Understood. I will follow these instructions."
+                            )
+                        ],
                     )
                 )
             contents.append(_types.Content(role="user", parts=[_types.Part.from_text(text=prompt)]))
@@ -760,7 +817,9 @@ async def generate_content_stream(
                 # Fallback shim: synthesize a single-chunk stream from the
                 # non-streaming call (keeps tests that mock generate_content
                 # working while still yielding via the streaming path).
-                resp = client.models.generate_content(model=model_name, contents=contents, config=config)
+                resp = client.models.generate_content(
+                    model=model_name, contents=contents, config=config
+                )
                 txt = getattr(resp, "text", None) or ""
                 if _was_truncated(resp):
                     raise OutputTruncatedError(txt)
@@ -815,10 +874,20 @@ async def generate_content_stream(
             error_str = str(exc).lower()
             if "invalid" in error_str and "key" in error_str:
                 rotator.mark_rate_limited(key_used, retry_after=86400)
-                logger.error("Invalid API key ...%s (Key %d stream) — switch keys in dashboard", key_used[-6:], rotator.active_index)
+                logger.error(
+                    "Invalid API key ...%s (Key %d stream) — switch keys in dashboard",
+                    key_used[-6:],
+                    rotator.active_index,
+                )
                 raise QuotaExhaustedError(retry_after=0) from exc
-            if "404" in error_str and ("not_found" in error_str or "not found" in error_str or "model" in error_str):
-                logger.warning("Model %s not found (404 stream) on key ...%s — falling back", model_name, key_used[-6:])
+            if "404" in error_str and (
+                "not_found" in error_str or "not found" in error_str or "model" in error_str
+            ):
+                logger.warning(
+                    "Model %s not found (404 stream) on key ...%s — falling back",
+                    model_name,
+                    key_used[-6:],
+                )
                 if _try_next_quota_model_s(f"model {model_name} 404"):
                     _reuse_client = _reuse_key = None
                     rate_retry_start = None
@@ -832,7 +901,11 @@ async def generate_content_stream(
             if _is_daily_quota(error_str):
                 rotator.mark_rate_limited(key_used, retry_after=_DAILY_KEY_PARK_SECONDS)
                 _sai = getattr(rotator, "active_index", "?")
-                logger.warning("Daily quota hit (stream) on Key %s (...%s) — switch keys in dashboard", _sai, key_used[-6:])
+                logger.warning(
+                    "Daily quota hit (stream) on Key %s (...%s) — switch keys in dashboard",
+                    _sai,
+                    key_used[-6:],
+                )
                 _reuse_client = _reuse_key = None
                 rate_retry_start = None
                 if yielded_any:

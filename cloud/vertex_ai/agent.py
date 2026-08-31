@@ -65,7 +65,9 @@ def _create_function_tools() -> list[FunctionTool]:
                 return result.output if result.success else f"Error: {result.error}"
 
             wrapper.__name__ = name
-            wrapper.__doc__ = getattr(fn, "__doc__", f"Execute the {name} tool") or f"Execute the {name} tool"
+            wrapper.__doc__ = (
+                getattr(fn, "__doc__", f"Execute the {name} tool") or f"Execute the {name} tool"
+            )
             # Preserve original signature so ADK can build correct JSON schema
             try:
                 wrapper.__signature__ = inspect.signature(fn)  # type: ignore[attr-defined]
@@ -161,7 +163,11 @@ async def _after_agent(ctx: Context) -> types.Content | None:
         from agent.core.memory import MemoryEntry, memory_store
 
         memory_store.add(
-            MemoryEntry(content=f"Task completed: {output[:200]}", category="reflection", metadata={"source": "adk_agent"})
+            MemoryEntry(
+                content=f"Task completed: {output[:200]}",
+                category="reflection",
+                metadata={"source": "adk_agent"},
+            )
         )
         logger.info("ADK callback: saved post-task reflection")
     except Exception:

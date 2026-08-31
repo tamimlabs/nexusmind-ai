@@ -28,6 +28,7 @@ def _get_publisher():
     global _publisher
     if _publisher is None:
         from google.cloud import pubsub_v1
+
         _publisher = pubsub_v1.PublisherClient()
     return _publisher
 
@@ -36,11 +37,13 @@ def _get_subscriber():
     global _subscriber
     if _subscriber is None:
         from google.cloud import pubsub_v1
+
         _subscriber = pubsub_v1.SubscriberClient()
     return _subscriber
 
 
 # ── Publishing ────────────────────────────────────────────────────
+
 
 def publish_task_event(
     task_id: str,
@@ -112,6 +115,7 @@ def publish_event(event_type: str, payload: dict[str, Any]) -> str:
 
 
 # ── Subscribing ───────────────────────────────────────────────────
+
 
 def subscribe_to_tasks(callback: Callable[[dict[str, Any]], Awaitable[None]]) -> Any:
     """Subscribe to task events and process them.

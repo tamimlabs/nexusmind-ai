@@ -21,8 +21,6 @@ from pydantic import BaseModel
 
 import agent.config as _cfg
 from agent.core import command_gate
-from agent.core.steering import list_for as _steer_list
-from agent.core.steering import push as _steer_push
 from agent.core.executor import (
     get_pending_approvals,
     get_trusted_tasks,
@@ -35,6 +33,8 @@ from agent.core.executor import (
 from agent.core.memory import memory_store
 from agent.core.skill_library import SkillError
 from agent.core.skill_library import skill_library as _skill_library
+from agent.core.steering import list_for as _steer_list
+from agent.core.steering import push as _steer_push
 from agent.models import MemoryEntry, Task, TaskPriority, TaskStatus
 from agent.observability import create_trace, get_trace, list_traces
 from api.credentials_routes import router as credentials_router
@@ -89,7 +89,8 @@ async def _telegram_poll_loop():
                         backoff = 5 if consecutive_409 < 3 else 30
                         if consecutive_409 <= 3:
                             logger.warning(
-                                "Telegram polling 409 Conflict (another instance), backing off %ss — kill the other python -m api.main process or set Telegram webhook instead of polling", backoff
+                                "Telegram polling 409 Conflict (another instance), backing off %ss — kill the other python -m api.main process or set Telegram webhook instead of polling",
+                                backoff,
                             )
                         else:
                             logger.debug("Telegram 409 still, backing off %ss", backoff)
@@ -210,7 +211,16 @@ _global_events: list[dict[str, Any]] = []
 _GLOBAL_MAX = 600
 _ws_clients: set[Any] = set()
 
-def _emit(task_id: str, event_type: str, message: str, detail: str = "", *, source: str = "task", extra: dict[str, Any] | None = None) -> None:
+
+def _emit(
+    task_id: str,
+    event_type: str,
+    message: str,
+    detail: str = "",
+    *,
+    source: str = "task",
+    extra: dict[str, Any] | None = None,
+) -> None:
     """Emit a live event for the dashboard thinking panel (per-task + global bus)."""
     entry = {
         "type": event_type,
@@ -357,12 +367,17 @@ async def root():
     """Serve the traceability dashboard."""
     html_path = pathlib.Path(__file__).parent / "dashboard.html"
     if not html_path.exists():
-        return HTMLResponse("<html><body><h1>NexusMind AI</h1><p>Dashboard not found — API is running. See /docs</p></body></html>", status_code=200)
+        return HTMLResponse(
+            "<html><body><h1>NexusMind AI</h1><p>Dashboard not found — API is running. See /docs</p></body></html>",
+            status_code=200,
+        )
     try:
         return HTMLResponse(html_path.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.exception("Failed to read dashboard.html")
-        return HTMLResponse(f"<html><body><h1>Dashboard error</h1><p>{exc}</p></body></html>", status_code=500)
+        return HTMLResponse(
+            f"<html><body><h1>Dashboard error</h1><p>{exc}</p></body></html>", status_code=500
+        )
 
 
 # ── Health ────────────────────────────────────────────────────────
@@ -390,7 +405,11 @@ async def agent_status():
     try:
         from agent.core.gemini_client import rotator as _rot
 
-        gemini_keys = {"count": _rot.key_count, "active_index": _rot.active_index, "active_masked": _rot.active_key_masked}
+        gemini_keys = {
+            "count": _rot.key_count,
+            "active_index": _rot.active_index,
+            "active_masked": _rot.active_key_masked,
+        }
     except Exception:
         gemini_keys = {"count": 0, "active_index": 0, "active_masked": ""}
     return {
@@ -477,7 +496,12 @@ async def _run_task_background(task_id: str, task: Task) -> None:
         _emit(task_id, "thinking", "Gemini connected — routing your goal...", task.goal[:160])
         _update_task_status(task_id, "planning", goal=task.goal)
 
-        _emit(task_id, "thinking", "Breaking down into steps using Gemini Flash… (streaming live)", task.goal[:160])
+        _emit(
+            task_id,
+            "thinking",
+            "Breaking down into steps using Gemini Flash… (streaming live)",
+            task.goal[:160],
+        )
 
         if use_adk:
             # ADK Runner is the primary execution path on Cloud Run
@@ -682,7 +706,11 @@ async def get_task_live_stream(task_id: str):
             await asyncio.sleep(0.5)
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(_event_gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/events/live")
@@ -1457,20 +1485,36 @@ async def steer_task(task_id: str, req: SteerRequest):
             # as a standalone follow-up using just the message — don't 404 the user.
             # Create a new task whose goal is the steer itself.
             _steer_push(task_id, msg)
-            follow = Task(goal=f"FOLLOW-UP DIRECTION (parent {task_id[:8]} evicted): {msg}", context={"parent_id": task_id, "parent_evicted": True})
+            follow = Task(
+                goal=f"FOLLOW-UP DIRECTION (parent {task_id[:8]} evicted): {msg}",
+                context={"parent_id": task_id, "parent_evicted": True},
+            )
             trace = create_trace(follow.id)
             trace.start_span("task_received", kind="reasoning")
             trace.end_span("success")
             _update_task_status(follow.id, "pending", goal=follow.goal)
-            _emit(follow.id, "received", f"Steer follow-up for evicted {task_id[:8]}: {msg[:120]}", follow.goal[:500])
+            _emit(
+                follow.id,
+                "received",
+                f"Steer follow-up for evicted {task_id[:8]}: {msg[:120]}",
+                follow.goal[:500],
+            )
             with contextlib.suppress(Exception):
-                publish_task_event(follow.id, follow.goal, "pending", context={"parent_id": task_id})
+                publish_task_event(
+                    follow.id, follow.goal, "pending", context={"parent_id": task_id}
+                )
             bg2 = asyncio.create_task(_run_task_background(follow.id, follow))
             _bg_tasks.add(bg2)
             _bg_task_by_id[follow.id] = bg2
             bg2.add_done_callback(_bg_tasks.discard)
             bg2.add_done_callback(lambda t: _bg_task_by_id.pop(follow.id, None))
-            return {"task_id": task_id, "steered": True, "mode": "follow_up", "follow_up_id": follow.id, "note": "parent was evicted from memory, started standalone follow-up"}
+            return {
+                "task_id": task_id,
+                "steered": True,
+                "mode": "follow_up",
+                "follow_up_id": follow.id,
+                "note": "parent was evicted from memory, started standalone follow-up",
+            }
     # queue + live event (always)
     _steer_push(task_id, msg)
     _emit(task_id, "user_steer", f"Steer: {msg[:160]}", msg[:1500])
@@ -1488,7 +1532,9 @@ async def steer_task(task_id: str, req: SteerRequest):
 
     # Terminal or idle -> spawn linked follow-up task (same thread, new card)
     original_goal = live.get("goal", "")
-    follow_goal = original_goal + "\n\nFOLLOW-UP DIRECTION (user correction for same thread): " + msg
+    follow_goal = (
+        original_goal + "\n\nFOLLOW-UP DIRECTION (user correction for same thread): " + msg
+    )
     # Keep parent linkage for dashboard grouping
     parent_ctx: dict[str, Any] = {"parent_id": task_id, "parent_goal": original_goal[:300]}
     # Preserve max_steps if parent had one

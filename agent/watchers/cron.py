@@ -6,6 +6,7 @@ Supports simple cron expressions for the minute field:
   "* * * * *"     -> every minute
   "M * * * *"     -> hourly at minute M
 """
+
 from __future__ import annotations
 
 import logging

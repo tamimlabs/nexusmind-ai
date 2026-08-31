@@ -3,6 +3,7 @@
 Token-efficient: only calls Gemini when new events are detected.
 No auth required.
 """
+
 from __future__ import annotations
 
 import logging
@@ -52,19 +53,21 @@ class HackerNewsWatcher(BaseWatcher):
                             story = await self._fetch_item(client, story_id)
                             if not story:
                                 continue
-                            events.append({
-                                "event_type": "hn.story.new",
-                                "external_id": f"hn_story_{story['id']}",
-                                "payload": {
-                                    "id": story["id"],
-                                    "title": story.get("title") or "",
-                                    "url": story.get("url")
-                                    or f"https://news.ycombinator.com/item?id={story['id']}",
-                                    "score": story.get("score", 0),
-                                    "author": story.get("by") or "",
-                                    "comment_count": len(story.get("kids") or []),
-                                },
-                            })
+                            events.append(
+                                {
+                                    "event_type": "hn.story.new",
+                                    "external_id": f"hn_story_{story['id']}",
+                                    "payload": {
+                                        "id": story["id"],
+                                        "title": story.get("title") or "",
+                                        "url": story.get("url")
+                                        or f"https://news.ycombinator.com/item?id={story['id']}",
+                                        "score": story.get("score", 0),
+                                        "author": story.get("by") or "",
+                                        "comment_count": len(story.get("kids") or []),
+                                    },
+                                }
+                            )
                 except Exception as e:
                     logger.warning("HN story check failed: %s", e)
 
@@ -83,18 +86,20 @@ class HackerNewsWatcher(BaseWatcher):
                             if parent_id:
                                 parent = await self._fetch_item(client, parent_id)
                                 parent_title = (parent or {}).get("title") or ""
-                            events.append({
-                                "event_type": "hn.comment.new",
-                                "external_id": f"hn_comment_{comment['id']}",
-                                "payload": {
-                                    "id": comment["id"],
-                                    "author": comment.get("by") or "",
-                                    "text": (comment.get("text") or "")[:500],
-                                    "parent_id": parent_id or 0,
-                                    "story_title": parent_title,
-                                    "url": f"https://news.ycombinator.com/item?id={comment['id']}",
-                                },
-                            })
+                            events.append(
+                                {
+                                    "event_type": "hn.comment.new",
+                                    "external_id": f"hn_comment_{comment['id']}",
+                                    "payload": {
+                                        "id": comment["id"],
+                                        "author": comment.get("by") or "",
+                                        "text": (comment.get("text") or "")[:500],
+                                        "parent_id": parent_id or 0,
+                                        "story_title": parent_title,
+                                        "url": f"https://news.ycombinator.com/item?id={comment['id']}",
+                                    },
+                                }
+                            )
                 except Exception as e:
                     logger.warning("HN comment check failed: %s", e)
 

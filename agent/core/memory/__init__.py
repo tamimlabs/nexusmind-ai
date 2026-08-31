@@ -161,7 +161,9 @@ class MemoryStore:
                 _LEGACY_JSON_PATH.rename(imported_path)
                 logger.info("Retired legacy memory file -> %s", imported_path.name)
             else:
-                logger.debug("Legacy migration skipped: DB already populated (%d facts)", self._store.count())
+                logger.debug(
+                    "Legacy migration skipped: DB already populated (%d facts)", self._store.count()
+                )
         except Exception:
             logger.exception("Legacy memory migration failed (%s)", _LEGACY_JSON_PATH)
 
@@ -178,9 +180,7 @@ class MemoryStore:
                 created_at = datetime_from_sqlite(str(created))
             except ValueError:
                 created_at = None
-        extra_metadata: dict[str, Any] = (
-            {"score": row["score"]} if "score" in row else {}
-        )
+        extra_metadata: dict[str, Any] = {"score": row["score"]} if "score" in row else {}
         return MemoryEntry(
             id=str(row["entry_uid"]),
             content=str(row["content"]),
@@ -245,16 +245,12 @@ class MemoryStore:
     # Read API
     # ------------------------------------------------------------------
 
-    def search(
-        self, query: str, top_k: int = 5, category: str | None = None
-    ) -> list[MemoryEntry]:
+    def search(self, query: str, top_k: int = 5, category: str | None = None) -> list[MemoryEntry]:
         """Hybrid search (BM25 + Jaccard + HRR), trust-weighted."""
         query = query.strip()
         if not query:
             return []
-        results = self._retriever.search(
-            query, category=category, min_trust=0.0, limit=top_k
-        )
+        results = self._retriever.search(query, category=category, min_trust=0.0, limit=top_k)
         return [self._row_to_entry(r) for r in results]
 
     def get_recent(self, n: int = 10) -> list[MemoryEntry]:
@@ -282,28 +278,34 @@ class MemoryStore:
     def save_task_outcome(self, task_goal: str, result: str, success: bool) -> bool:
         result_short = result[:200] if result else ""
         content = f"Task: {task_goal}\nResult: {result_short}\nSuccess: {success}"
-        return self.add(MemoryEntry(
-            content=content,
-            category="task_outcome",
-            metadata={"success": success},
-        ))
+        return self.add(
+            MemoryEntry(
+                content=content,
+                category="task_outcome",
+                metadata={"success": success},
+            )
+        )
 
     def save_skill(self, skill_name: str, instructions: str) -> bool:
-        return self.add(MemoryEntry(
-            content=f"Skill: {skill_name}\n{instructions[:300]}",
-            category="skill",
-            metadata={"skill_name": skill_name},
-        ))
+        return self.add(
+            MemoryEntry(
+                content=f"Skill: {skill_name}\n{instructions[:300]}",
+                category="skill",
+                metadata={"skill_name": skill_name},
+            )
+        )
 
     def save_reflection(self, reflection: str) -> bool:
         return self.add(MemoryEntry(content=reflection[:500], category="reflection"))
 
     def save_instruction(self, instruction: str) -> bool:
-        return self.add(MemoryEntry(
-            content=f"User instruction: {instruction[:500]}",
-            category="instruction",
-            metadata={"type": "user_instruction"},
-        ))
+        return self.add(
+            MemoryEntry(
+                content=f"User instruction: {instruction[:500]}",
+                category="instruction",
+                metadata={"type": "user_instruction"},
+            )
+        )
 
     def extract_and_store(self, text: str) -> int:
         """Auto-extract preferences/decisions from text (Hermes session-harvest).
@@ -345,8 +347,8 @@ class MemoryStore:
                 "- 'user_pref' : a lasting preference (I prefer/like/use ...)\n"
                 "- 'project' : a project decision (we decided / project uses ...)\n"
                 "- 'none' : nothing durable\n"
-                "Reply as JSON: {\"category\": \"user_pref\"|\"project\"|\"none\", \"fact\": \"<short fact>\"} "
-                "or {\"category\":\"none\"} if nothing."
+                'Reply as JSON: {"category": "user_pref"|"project"|"none", "fact": "<short fact>"} '
+                'or {"category":"none"} if nothing.'
             )
             raw = await generate_content(
                 system="You are a memory extractor. Return only JSON.",
@@ -362,7 +364,11 @@ class MemoryStore:
                 data = _json.loads(raw[start : end + 1])
                 cat = str(data.get("category", "none")).strip().lower()
                 fact = str(data.get("fact", "")).strip()
-                if cat in {"user_pref", "project"} and fact and self.add(MemoryEntry(content=fact[:400], category=cat)):
+                if (
+                    cat in {"user_pref", "project"}
+                    and fact
+                    and self.add(MemoryEntry(content=fact[:400], category=cat))
+                ):
                     return 1
                 if cat == "none":
                     return 0
@@ -401,9 +407,7 @@ class MemoryStore:
 
     def reason(self, entities: list[str], limit: int = 10) -> list[MemoryEntry]:
         """Compositional multi-entity intersection (vector-space JOIN)."""
-        return [
-            self._row_to_entry(r) for r in self._retriever.reason(entities, limit=limit)
-        ]
+        return [self._row_to_entry(r) for r in self._retriever.reason(entities, limit=limit)]
 
     def find_contradictions(self, limit: int = 10) -> list[dict[str, Any]]:
         """Facts sharing entities but making conflicting claims."""
@@ -411,12 +415,14 @@ class MemoryStore:
         cleaned: list[dict[str, Any]] = []
         for c in contradictions:
             fa, fb = c["fact_a"], c["fact_b"]
-            cleaned.append({
-                "fact_a": {"id": fa["entry_uid"], "content": fa["content"]},
-                "fact_b": {"id": fb["entry_uid"], "content": fb["content"]},
-                "contradiction_score": c["contradiction_score"],
-                "shared_entities": c["shared_entities"],
-            })
+            cleaned.append(
+                {
+                    "fact_a": {"id": fa["entry_uid"], "content": fa["content"]},
+                    "fact_b": {"id": fb["entry_uid"], "content": fb["content"]},
+                    "contradiction_score": c["contradiction_score"],
+                    "shared_entities": c["shared_entities"],
+                }
+            )
         return cleaned
 
     # ------------------------------------------------------------------
@@ -437,12 +443,8 @@ class MemoryStore:
         if is_trivial_prompt(query):
             return ""
         # Over-fetch so category filtering below still fills top_k slots.
-        results = self._retriever.search(
-            query, min_trust=_PREFETCH_MIN_TRUST, limit=top_k * 3
-        )
-        results = [
-            r for r in results if r.get("category") not in _PREFETCH_EXCLUDE
-        ][:top_k]
+        results = self._retriever.search(query, min_trust=_PREFETCH_MIN_TRUST, limit=top_k * 3)
+        results = [r for r in results if r.get("category") not in _PREFETCH_EXCLUDE][:top_k]
         if not results:
             return ""
         lines = []
@@ -465,9 +467,7 @@ class MemoryStore:
                 "Active and empty. Store durable facts (preferences, decisions, "
                 "outcomes) so future tasks benefit."
             )
-        breakdown = ", ".join(
-            f"{cat}: {count}" for cat, count in self.categories().items()
-        )
+        breakdown = ", ".join(f"{cat}: {count}" for cat, count in self.categories().items())
         return (
             f"# Persistent Memory\n"
             f"Active. {total} facts stored ({breakdown}) with trust scoring.\n"
@@ -532,6 +532,7 @@ def _create_memory_store():
     if backend == "firestore":
         try:
             from cloud.firestore.client import FirestoreMemoryStore, _is_available
+
             if _is_available():
                 logger.info("Using Firestore memory backend")
                 return FirestoreMemoryStore()

@@ -24,10 +24,13 @@ def check_env():
 def check_gcloud():
     """Check if gcloud CLI is available and authenticated."""
     import subprocess
+
     try:
         result = subprocess.run(
             ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         account = result.stdout.strip()
         if account:
@@ -46,6 +49,7 @@ def check_firestore():
         from google.cloud import firestore
 
         from agent.config import settings
+
         firestore.Client(project=settings.google_cloud_project)
         print(f"Firestore connected: {settings.google_cloud_project}")
         return True

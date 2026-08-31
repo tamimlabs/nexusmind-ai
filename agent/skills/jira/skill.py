@@ -28,9 +28,13 @@ def _parse_env_file_values(keys: tuple[str, ...]) -> dict[str, str]:
     """Parse requested keys from the project .env file without mutating os.environ."""
     values: dict[str, str] = {}
     try:
-        from agent.config import _PROJECT_ROOT, _ENV_FILE  # type: ignore
+        from agent.config import _ENV_FILE, _PROJECT_ROOT  # type: ignore
 
-        candidates = [_ENV_FILE, _PROJECT_ROOT / ".env", Path(__file__).resolve().parents[3] / ".env"]
+        candidates = [
+            _ENV_FILE,
+            _PROJECT_ROOT / ".env",
+            Path(__file__).resolve().parents[3] / ".env",
+        ]
     except Exception:
         candidates = [Path(__file__).resolve().parents[3] / ".env", Path(".env")]
     for env_file in candidates:
@@ -211,7 +215,9 @@ async def jira_transition_issue(issue_key: str, transition_id: str, **_: Any) ->
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
             )
             if resp.status_code in (200, 201, 204):
-                return ToolResult(success=True, output=f"Transitioned {issue_key} with transition {tid}")
+                return ToolResult(
+                    success=True, output=f"Transitioned {issue_key} with transition {tid}"
+                )
             try:
                 detail = resp.json()
             except Exception:

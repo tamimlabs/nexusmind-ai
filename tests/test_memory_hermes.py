@@ -70,7 +70,9 @@ class TestTrustScoring:
 class TestTrustWeightedRanking:
     def test_higher_trust_ranks_first(self, store):
         good = MemoryEntry(content="Deploy config lives in cloud/cloud_run", category="project")
-        bad = MemoryEntry(content="Deploy config was once in the old repo folder", category="project")
+        bad = MemoryEntry(
+            content="Deploy config was once in the old repo folder", category="project"
+        )
         store.add(good)
         store.add(bad)
         store.record_feedback(good.id, helpful=True)
@@ -125,18 +127,22 @@ class TestHRRAndCompositionalQueries:
         assert hrr.similarity(vec, restored) > 0.99
 
     def test_probe_recalls_entity_facts(self, store):
-        store.add(MemoryEntry(
-            content='The user said "Kubernetes" deployment uses blue-green strategy',
-            category="project",
-        ))
+        store.add(
+            MemoryEntry(
+                content='The user said "Kubernetes" deployment uses blue-green strategy',
+                category="project",
+            )
+        )
         results = store.probe("Kubernetes")
         assert results
         assert any("blue-green" in r.content for r in results)
 
     def test_reason_intersects_multiple_entities(self, store):
-        store.add(MemoryEntry(
-            content='"PostgreSQL" powers the "billing" service database', category="project"
-        ))
+        store.add(
+            MemoryEntry(
+                content='"PostgreSQL" powers the "billing" service database', category="project"
+            )
+        )
         both = store.reason(["PostgreSQL", "billing"])
         assert both
         assert any("billing" in r.content.lower() for r in both)
@@ -228,9 +234,11 @@ class TestDeduplicationAndLimits:
         monkeypatch.setattr(mem_mod, "_MAX_ENTRIES", 10)
         store.save_instruction("always lint before committing code")
         for i in range(40):
-            store.add(MemoryEntry(
-                content=f"episodic churn entry {i} with unique words", category="task_outcome"
-            ))
+            store.add(
+                MemoryEntry(
+                    content=f"episodic churn entry {i} with unique words", category="task_outcome"
+                )
+            )
         instructions = store.get_by_category("instruction")
         assert len(instructions) == 1
         assert store.size <= 11

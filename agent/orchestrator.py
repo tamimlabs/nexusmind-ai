@@ -94,17 +94,39 @@ def _is_trivial(task: Task) -> bool:
 # Order matters — more specific first; github single before generic web.
 _TIER2_TOOL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # read_file — explicit "read file <path>" / open / cat
-    (re.compile(r"\bread(_file)?\b|\bopen\s+file\b|\bcat\s+[^\s]+\b|\bshow\s+file\b", re.I), "read_file"),
+    (
+        re.compile(r"\bread(_file)?\b|\bopen\s+file\b|\bcat\s+[^\s]+\b|\bshow\s+file\b", re.I),
+        "read_file",
+    ),
     # write_file — "write file" / "create file" / "save to"
-    (re.compile(r"\bwrite(_file)?\b|\bcreate\s+(?:a\s+)?file\b|\bsave\s+(?:to|as)\b", re.I), "write_file"),
+    (
+        re.compile(r"\bwrite(_file)?\b|\bcreate\s+(?:a\s+)?file\b|\bsave\s+(?:to|as)\b", re.I),
+        "write_file",
+    ),
     # list_directory — "list files/directory/folder" / ls / dir
-    (re.compile(r"\blist(_directory)?\b|\blist\s+(?:files?|directory|folder)|\b\bls\b|\bdir\b", re.I), "list_directory"),
+    (
+        re.compile(
+            r"\blist(_directory)?\b|\blist\s+(?:files?|directory|folder)|\b\bls\b|\bdir\b", re.I
+        ),
+        "list_directory",
+    ),
     # fetch_url — explicit fetch/get url or bare https://
     (re.compile(r"\bfetch(_url)?\b|https?://\S+", re.I), "fetch_url"),
     # github single-action — one github tool only (not multi-step pipeline)
-    (re.compile(r"\bgithub_(?:get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b|\b(?:list|get|show|merge|close)\s+(?:pr|pull\s*request|repo)\b", re.I), "github"),
+    (
+        re.compile(
+            r"\bgithub_(?:get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b|\b(?:list|get|show|merge|close)\s+(?:pr|pull\s*request|repo)\b",
+            re.I,
+        ),
+        "github",
+    ),
     # web_search — last, broadest
-    (re.compile(r"\bweb_search\b|\bsearch\s+(?:the\s+)?web\b|\bweb\s+search\b|\bgoogle\s+search\b", re.I), "web_search"),
+    (
+        re.compile(
+            r"\bweb_search\b|\bsearch\s+(?:the\s+)?web\b|\bweb\s+search\b|\bgoogle\s+search\b", re.I
+        ),
+        "web_search",
+    ),
 ]
 
 # Fallback broad search hint for very short "search for X" queries.
@@ -204,15 +226,28 @@ def _detect_simple_step(task: Task) -> TaskStep | None:
         return TaskStep(task_id=task.id, description=desc, tool_name=tool, tool_args=args, order=0)
 
     # github single-tool (one call only — not the deterministic multi-step pipeline)
-    if re.search(r"\bgithub_(?:get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b", goal, re.I):
+    if re.search(
+        r"\bgithub_(?:get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b",
+        goal,
+        re.I,
+    ):
         # explicit tool name mentioned — extract it
-        m = re.search(r"\bgithub_(get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b", goal, re.I)
+        m = re.search(
+            r"\bgithub_(get_repo|list_prs|get_pr|resolve_repo|review_pr|merge_pr|close_pr)\b",
+            goal,
+            re.I,
+        )
         tool = f"github_{m.group(1).lower()}" if m else "github_get_repo"
         repo = _extract_repo(goal)
         args: dict[str, Any] = {"repo": repo} if repo else {"goal_text": goal}
         # pr number variants
         pm = re.search(r"#(\d{1,6})\b|\bpr\s*#?(\d{1,6})\b", goal, re.I)
-        if pm and tool in ("github_get_pr", "github_review_pr", "github_merge_pr", "github_close_pr"):
+        if pm and tool in (
+            "github_get_pr",
+            "github_review_pr",
+            "github_merge_pr",
+            "github_close_pr",
+        ):
             num = int(pm.group(1) or pm.group(2))
             args["pr_number"] = num
             if repo:
@@ -222,13 +257,18 @@ def _detect_simple_step(task: Task) -> TaskStep | None:
                 args["goal_text"] = goal
         return _step(tool, args, goal[:120])
 
-    if re.search(r"\b(?:list|get|show|merge|close)\s+(?:pr|pull\s*request|repo)\b", gl) and "github" in gl:
+    if (
+        re.search(r"\b(?:list|get|show|merge|close)\s+(?:pr|pull\s*request|repo)\b", gl)
+        and "github" in gl
+    ):
         # short github natural-language single action — infer tool
         repo = _extract_repo(goal)
         prm = re.search(r"#(\d{1,6})\b|\bpr\s*#?(\d{1,6})\b", goal, re.I)
         if prm:
             num = int(prm.group(1) or prm.group(2))
-            return _step("github_get_pr", {"repo": repo or "owner/repo", "pr_number": num}, goal[:120])
+            return _step(
+                "github_get_pr", {"repo": repo or "owner/repo", "pr_number": num}, goal[:120]
+            )
         if "list" in gl and "pr" in gl:
             return _step("github_list_prs", {"repo": repo or "owner/repo"}, goal[:120])
         if "repo" in gl:
@@ -258,7 +298,11 @@ def _detect_simple_step(task: Task) -> TaskStep | None:
         return _step("write_file", {"path": path, "content": content}, f"Write file {path}")
 
     # list_directory
-    if re.search(r"\blist(_directory)?\b|\blist\s+(?:files?|directory|folder)", goal, re.I) or re.match(r"^\s*ls\b", gl) or re.match(r"^\s*dir\b", gl):
+    if (
+        re.search(r"\blist(_directory)?\b|\blist\s+(?:files?|directory|folder)", goal, re.I)
+        or re.match(r"^\s*ls\b", gl)
+        or re.match(r"^\s*dir\b", gl)
+    ):
         path = _extract_first_path(goal)
         # directory not file — strip filename if extracted path looks like a file
         if path and re.search(r"\.\w{1,5}$", path) and "/" in path:
@@ -274,16 +318,27 @@ def _detect_simple_step(task: Task) -> TaskStep | None:
             return _step("fetch_url", {"url": url}, f"Fetch URL {url[:80]}")
 
     # web_search — explicit tool or "search for ..." / "google"
-    if re.search(r"\bweb_search\b|\bsearch\s+(?:the\s+)?web\b|\bweb\s+search\b|\bgoogle\b", goal, re.I) or _WEB_SEARCH_FALLBACK_RE.match(goal):
+    if re.search(
+        r"\bweb_search\b|\bsearch\s+(?:the\s+)?web\b|\bweb\s+search\b|\bgoogle\b", goal, re.I
+    ) or _WEB_SEARCH_FALLBACK_RE.match(goal):
         # strip leading search phrasing for query
-        query = re.sub(r"^\s*(?:web_search|web search|search\s+for|search|google)\s*[:\-]?\s*", "", goal, flags=re.I).strip()
+        query = re.sub(
+            r"^\s*(?:web_search|web search|search\s+for|search|google)\s*[:\-]?\s*",
+            "",
+            goal,
+            flags=re.I,
+        ).strip()
         query = query or goal
-        return _step("web_search", {"query": query[:300], "num_results": 5}, f"Web search: {query[:80]}")
+        return _step(
+            "web_search", {"query": query[:300], "num_results": 5}, f"Web search: {query[:80]}"
+        )
 
     return None
 
 
-def _safe_emit(emit: Any | None, task_id: str, event_type: str, message: str, detail: str = "") -> None:
+def _safe_emit(
+    emit: Any | None, task_id: str, event_type: str, message: str, detail: str = ""
+) -> None:
     if emit is None:
         return
     try:
@@ -299,7 +354,9 @@ async def _handle_tier1(task: Task, emit: Any | None = None) -> Task:
     Router must still emit live events (thinking/tool_output/done) so the
     dashboard shows realtime progress for every tier.
     """
-    _safe_emit(emit, task.id, "thinking", "Tier1 trivial — direct answer (no tools)", task.goal[:160])
+    _safe_emit(
+        emit, task.id, "thinking", "Tier1 trivial — direct answer (no tools)", task.goal[:160]
+    )
     task.status = TaskStatus.EXECUTING
     task.updated_at = datetime.now(UTC)
     try:
@@ -320,7 +377,8 @@ async def _handle_tier1(task: Task, emit: Any | None = None) -> Task:
         task.updated_at = datetime.now(UTC)
         _safe_emit(emit, task.id, "tool_output", "LLM answer", text[:1500])
         _safe_emit(emit, task.id, "done", "Task complete", text[:400])
-        from agent.telegram import is_configured as _is_cfg, notify_task_completed as _notify_done
+        from agent.telegram import is_configured as _is_cfg
+        from agent.telegram import notify_task_completed as _notify_done
 
         if _is_cfg():
             await _notify_done(task.id, task.goal, text[:300])
@@ -338,11 +396,23 @@ async def _handle_tier1(task: Task, emit: Any | None = None) -> Task:
 
 async def _handle_tier2(task: Task, step: TaskStep, emit: Any | None = None) -> Task:
     """Tier2: one TaskStep executed via execute_step directly, no adaptive loop."""
-    _safe_emit(emit, task.id, "thinking", "Tier2 single-tool — direct execution", f"[{step.tool_name}] {step.description[:140]}")
+    _safe_emit(
+        emit,
+        task.id,
+        "thinking",
+        "Tier2 single-tool — direct execution",
+        f"[{step.tool_name}] {step.description[:140]}",
+    )
     task.steps.append(step)
     task.status = TaskStatus.EXECUTING
     task.updated_at = datetime.now(UTC)
-    _safe_emit(emit, task.id, "step_running", f"Step 0: {step.description[:90]}", f"[{step.tool_name}] direct")
+    _safe_emit(
+        emit,
+        task.id,
+        "step_running",
+        f"Step 0: {step.description[:90]}",
+        f"[{step.tool_name}] direct",
+    )
     context: dict[str, Any] = {"task_id": task.id, "task_goal": task.goal}
     result = await execute_step(step, context)
     # Mirror executor's in-place step mutation for dashboard
@@ -360,7 +430,8 @@ async def _handle_tier2(task: Task, step: TaskStep, emit: Any | None = None) -> 
         if step.tool_name == "write_file" and step.tool_args.get("path"):
             task.result = task.result.rstrip() + f"\n\n📁 Saved to:\n- {step.tool_args['path']}"
         _safe_emit(emit, task.id, "done", "Task complete", task.result[:400])
-        from agent.telegram import is_configured as _is_cfg2, notify_task_completed as _notify2
+        from agent.telegram import is_configured as _is_cfg2
+        from agent.telegram import notify_task_completed as _notify2
 
         if _is_cfg2():
             await _notify2(task.id, task.goal, task.result[:300])
@@ -371,7 +442,8 @@ async def _handle_tier2(task: Task, step: TaskStep, emit: Any | None = None) -> 
         hint = _credential_hint(task.error)
         detail = task.error + ("\n\n" + hint if hint else "")
         _safe_emit(emit, task.id, "error", "Task failed", detail[:600])
-        from agent.telegram import is_configured as _is_cfg3, notify_task_failed as _notify_fail
+        from agent.telegram import is_configured as _is_cfg3
+        from agent.telegram import notify_task_failed as _notify_fail
 
         if _is_cfg3():
             await _notify_fail(task.id, task.goal, task.error[:300])
@@ -619,7 +691,13 @@ class Orchestrator:
                 logger.info("Tier2 detection ambiguous for %s; falling through to Tier3", task.id)
                 tier = 3
             # Tier3 — full Hermes/OpenClaw flow (heavy memory/skill/planning only here)
-            _safe_emit(emit, task.id, "thinking", "Tier3 complex — full planning & adaptive loop", f"goal: {task.goal[:120]}")
+            _safe_emit(
+                emit,
+                task.id,
+                "thinking",
+                "Tier3 complex — full planning & adaptive loop",
+                f"goal: {task.goal[:120]}",
+            )
 
             # Prefetch relevant memory for this turn (Hermes pattern): a fenced
             # <memory-context> block with trust-ranked, hybrid-retrieved facts.
@@ -658,7 +736,13 @@ class Orchestrator:
             # Tier1/2 already returned; this Gemini call is skipped entirely for them.
             # Streaming: plan_task will forward token deltas via emit so the
             # dashboard's word-to-word bubble starts within 2-3s.
-            _safe_emit(emit, task.id, "thinking", "Drafting roadmap with Gemini Flash… (streaming)", task.goal[:120])
+            _safe_emit(
+                emit,
+                task.id,
+                "thinking",
+                "Drafting roadmap with Gemini Flash… (streaming)",
+                task.goal[:120],
+            )
             roadmap: list = []
             try:
                 import asyncio as _aio
@@ -675,10 +759,17 @@ class Orchestrator:
                         ),
                         timeout=120,
                     )
-                    logger.info("Roadmap ready (%d suggested steps) for task %s", len(roadmap), task.id)
-                except _aio.TimeoutError:
-                    logger.warning("Roadmap planning timed out after 12s for %s; continuing without roadmap", task.id)
-                    _safe_emit(emit, task.id, "thinking", "Roadmap slow — continuing step-by-step", "")
+                    logger.info(
+                        "Roadmap ready (%d suggested steps) for task %s", len(roadmap), task.id
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "Roadmap planning timed out after 12s for %s; continuing without roadmap",
+                        task.id,
+                    )
+                    _safe_emit(
+                        emit, task.id, "thinking", "Roadmap slow — continuing step-by-step", ""
+                    )
                     roadmap = []
             except Exception:
                 logger.exception(
@@ -853,7 +944,13 @@ class Orchestrator:
             # keep the task spinning as EXECUTING for 10-20s).
             try:
                 bgt = asyncio.create_task(self._bg_learn(task, matched_skills))
-                bgt.add_done_callback(lambda t: logger.debug("bg_learn done for %s: %s", task.id, t.exception() if t.exception() else "ok"))
+                bgt.add_done_callback(
+                    lambda t: logger.debug(
+                        "bg_learn done for %s: %s",
+                        task.id,
+                        t.exception() if t.exception() else "ok",
+                    )
+                )
             except Exception:
                 logger.debug("bg_learn schedule failed", exc_info=True)
             return task
@@ -1088,7 +1185,9 @@ Output 0-2 lessons, or NOTHING_TO_SAVE."""
                     except Exception:
                         pass
                 try:
-                    extracted = await asyncio.wait_for(self.memory.gemini_extract_and_store(task.goal), timeout=8)
+                    extracted = await asyncio.wait_for(
+                        self.memory.gemini_extract_and_store(task.goal), timeout=8
+                    )
                 except Exception:
                     try:
                         extracted = self.memory.extract_and_store(task.goal)
@@ -1098,11 +1197,15 @@ Output 0-2 lessons, or NOTHING_TO_SAVE."""
                     logger.info("Bg: auto-extracted %d fact(s) for %s", extracted, task.id)
             else:
                 if not _is_trivial(task) and len(task.steps) > 1:
-                    successful = [s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name]
+                    successful = [
+                        s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name
+                    ]
                     distinct = {s.tool_name for s in successful}
                     if len(successful) >= 2 and len(distinct) >= 2:
                         try:
-                            self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
+                            self.memory.save_task_outcome(
+                                task.goal, task.result[:200], success=True
+                            )
                         except Exception:
                             pass
                 try:

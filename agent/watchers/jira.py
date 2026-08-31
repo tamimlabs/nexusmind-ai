@@ -2,6 +2,7 @@
 
 Token-efficient: only calls Gemini when new events are detected.
 """
+
 from __future__ import annotations
 
 import base64
@@ -46,7 +47,10 @@ class JiraWatcher(BaseWatcher):
         """Check Jira REST API v3 (migrated from deprecated v2)."""
         # Early validation — don't poll unauthenticated
         if not self.domain or not self.email or not self.token:
-            logger.debug("Jira watcher %s skipped: not configured (domain/email/token missing)", self.watcher_id)
+            logger.debug(
+                "Jira watcher %s skipped: not configured (domain/email/token missing)",
+                self.watcher_id,
+            )
             return []
         if not self.project_key:
             logger.debug("Jira watcher %s skipped: missing project_key", self.watcher_id)
@@ -77,19 +81,23 @@ class JiraWatcher(BaseWatcher):
                         for issue in resp.json().get("issues", []):
                             fields = issue.get("fields", {})
                             key = issue["key"]
-                            events.append({
-                                "event_type": "jira.issue.new",
-                                "external_id": f"jira_issue_{key}",
-                                "payload": {
-                                    "key": key,
-                                    "title": fields.get("summary", ""),
-                                    "description": (fields.get("description") or "")[:500],
-                                    "status": fields.get("status", {}).get("name", ""),
-                                    "reporter": fields.get("reporter", {}).get("displayName", ""),
-                                    "url": self._issue_url(key),
-                                    "action": "new",
-                                },
-                            })
+                            events.append(
+                                {
+                                    "event_type": "jira.issue.new",
+                                    "external_id": f"jira_issue_{key}",
+                                    "payload": {
+                                        "key": key,
+                                        "title": fields.get("summary", ""),
+                                        "description": (fields.get("description") or "")[:500],
+                                        "status": fields.get("status", {}).get("name", ""),
+                                        "reporter": fields.get("reporter", {}).get(
+                                            "displayName", ""
+                                        ),
+                                        "url": self._issue_url(key),
+                                        "action": "new",
+                                    },
+                                }
+                            )
                     else:
                         logger.warning(
                             "Jira new-issue search failed (%s): %s",
@@ -121,19 +129,21 @@ class JiraWatcher(BaseWatcher):
                                 continue  # no change since last check
                             self._updated_seen[key] = updated
                             self._state["jira_updated_seen"] = dict(self._updated_seen)
-                            events.append({
-                                "event_type": "jira.issue.updated",
-                                "external_id": f"jira_issue_{key}_{updated}",
-                                "payload": {
-                                    "key": key,
-                                    "title": fields.get("summary", ""),
-                                    "status": fields.get("status", {}).get("name", ""),
-                                    "comment_count": fields.get("comment", {}).get("total", 0),
-                                    "updated": updated,
-                                    "url": self._issue_url(key),
-                                    "action": "updated",
-                                },
-                            })
+                            events.append(
+                                {
+                                    "event_type": "jira.issue.updated",
+                                    "external_id": f"jira_issue_{key}_{updated}",
+                                    "payload": {
+                                        "key": key,
+                                        "title": fields.get("summary", ""),
+                                        "status": fields.get("status", {}).get("name", ""),
+                                        "comment_count": fields.get("comment", {}).get("total", 0),
+                                        "updated": updated,
+                                        "url": self._issue_url(key),
+                                        "action": "updated",
+                                    },
+                                }
+                            )
                     else:
                         logger.warning(
                             "Jira update search failed (%s): %s",

@@ -135,14 +135,15 @@ async def _github_request(
     """Call the GitHub API. Returns (status_code, decoded-json-or-text)."""
     url = path if path.startswith("http") else f"{GITHUB_API}{path}"
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        resp = await client.request(
-            method, url, headers=_headers(), json=json_body, params=params
-        )
+        resp = await client.request(method, url, headers=_headers(), json=json_body, params=params)
         if resp.status_code in (401, 403, 404):
             logger.warning(
                 "GitHub %s %s -> %d with token fingerprint %s "
                 "(a stale GITHUB_TOKEN in the OS environment overrides .env)",
-                method, url, resp.status_code, _token_fingerprint(),
+                method,
+                url,
+                resp.status_code,
+                _token_fingerprint(),
             )
         try:
             data: Any = resp.json()
@@ -163,7 +164,9 @@ def _error_result(status: int, data: Any, action: str) -> ToolResult:
             " (Not found — check owner/name; for PRIVATE repos a missing/invalid "
             "GITHUB_TOKEN also produces 404)"
         )
-    return ToolResult(success=False, output="", error=f"GitHub API {action} failed [{status}]: {message}{hint}")
+    return ToolResult(
+        success=False, output="", error=f"GitHub API {action} failed [{status}]: {message}{hint}"
+    )
 
 
 # ── Repo Resolution ───────────────────────────────────────────────
@@ -178,8 +181,29 @@ async def github_resolve_repo(goal_text: str = "", **_: Any) -> ToolResult:
     """
     # 1. Explicit owner/name mentioned in the goal ("review prs on octocat/hello-world")
     # Scan all candidates and pick the first that looks like a GitHub repo (not a filesystem path)
-    _DENY_REPO_PREFIXES = ("output/", "projects/", "data/", "agent/", "api/", "cloud/", "docs/", "tests/", "scripts/")
-    _DENY_REPO_SUBSTRINGS = ("http", ".env", "step_", ".html", ".css", ".js", ".json", ".md", ".txt", ".py")
+    _DENY_REPO_PREFIXES = (
+        "output/",
+        "projects/",
+        "data/",
+        "agent/",
+        "api/",
+        "cloud/",
+        "docs/",
+        "tests/",
+        "scripts/",
+    )
+    _DENY_REPO_SUBSTRINGS = (
+        "http",
+        ".env",
+        "step_",
+        ".html",
+        ".css",
+        ".js",
+        ".json",
+        ".md",
+        ".txt",
+        ".py",
+    )
     for m in re.finditer(r"\b([\w.-]+)/([\w.-]+)\b", goal_text.replace("https://", "")):
         candidate = f"{m.group(1)}/{m.group(2)}"
         lowered = candidate.lower()
@@ -197,7 +221,10 @@ async def github_resolve_repo(goal_text: str = "", **_: Any) -> ToolResult:
     # 2. The git remote of the current project directory ("my repository")
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git", "remote", "get-url", "origin",
+            "git",
+            "remote",
+            "get-url",
+            "origin",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -288,13 +315,15 @@ async def github_get_pr(repo: str, pr_number: int, **_: Any) -> ToolResult:
     file_summaries: list[dict[str, Any]] = []
     if files_status == 200 and isinstance(files, list):
         for f in files[:30]:
-            file_summaries.append({
-                "filename": f.get("filename"),
-                "status": f.get("status"),
-                "additions": f.get("additions"),
-                "deletions": f.get("deletions"),
-                "patch": (f.get("patch") or "")[:1200],
-            })
+            file_summaries.append(
+                {
+                    "filename": f.get("filename"),
+                    "status": f.get("status"),
+                    "additions": f.get("additions"),
+                    "deletions": f.get("deletions"),
+                    "patch": (f.get("patch") or "")[:1200],
+                }
+            )
 
     summary = {
         "number": detail.get("number"),
@@ -322,14 +351,23 @@ def _heuristic_verdict(pr_summary: dict[str, Any]) -> dict[str, Any]:
     """Rule-based fallback review when Gemini is unavailable."""
     mergeable_state = pr_summary.get("mergeable_state")
     if pr_summary.get("draft"):
-        return {"decision": "skip", "confidence": 0.9,
-                "reason": "PR is a draft — not ready for review"}
+        return {
+            "decision": "skip",
+            "confidence": 0.9,
+            "reason": "PR is a draft — not ready for review",
+        }
     if mergeable_state == "dirty":
-        return {"decision": "reject", "confidence": 0.8,
-                "reason": "Merge conflicts with base branch"}
+        return {
+            "decision": "reject",
+            "confidence": 0.8,
+            "reason": "Merge conflicts with base branch",
+        }
     if pr_summary.get("mergeable") is False:
-        return {"decision": "reject", "confidence": 0.8,
-                "reason": "GitHub reports PR is not mergeable"}
+        return {
+            "decision": "reject",
+            "confidence": 0.8,
+            "reason": "GitHub reports PR is not mergeable",
+        }
     additions = pr_summary.get("additions") or 0
     deletions = pr_summary.get("deletions") or 0
     changed = pr_summary.get("changed_files") or 0
@@ -338,16 +376,28 @@ def _heuristic_verdict(pr_summary: dict[str, Any]) -> dict[str, Any]:
         for f in pr_summary.get("files", [])
     )
     if suspicious:
-        return {"decision": "reject", "confidence": 0.7,
-                "reason": "Touches secret-looking files (.env/.pem/.key)"}
+        return {
+            "decision": "reject",
+            "confidence": 0.7,
+            "reason": "Touches secret-looking files (.env/.pem/.key)",
+        }
     if mergeable_state == "clean" and changed <= 20 and additions < 1000:
-        return {"decision": "merge", "confidence": 0.6,
-                "reason": f"Clean merge state, moderate diff (+{additions}/-{deletions}, {changed} files)"}
+        return {
+            "decision": "merge",
+            "confidence": 0.6,
+            "reason": f"Clean merge state, moderate diff (+{additions}/-{deletions}, {changed} files)",
+        }
     if mergeable_state == "blocked":
-        return {"decision": "skip", "confidence": 0.7,
-                "reason": "Blocked by required reviews or failing checks"}
-    return {"decision": "skip", "confidence": 0.4,
-            "reason": f"Inconclusive heuristics (mergeable_state={mergeable_state})"}
+        return {
+            "decision": "skip",
+            "confidence": 0.7,
+            "reason": "Blocked by required reviews or failing checks",
+        }
+    return {
+        "decision": "skip",
+        "confidence": 0.4,
+        "reason": f"Inconclusive heuristics (mergeable_state={mergeable_state})",
+    }
 
 
 async def _gemini_verdict(pr_summary: dict[str, Any]) -> dict[str, Any] | None:
@@ -360,11 +410,11 @@ async def _gemini_verdict(pr_summary: dict[str, Any]) -> dict[str, Any] | None:
     )
     prompt = f"""Review this pull request like a senior engineer.
 
-PR #{pr_summary.get('number')}: {pr_summary.get('title')}
-Author: @{pr_summary.get('author')}
-Mergeable state: {pr_summary.get('mergeable_state')}
-Stats: +{pr_summary.get('additions')}/-{pr_summary.get('deletions')} across {pr_summary.get('changed_files')} files
-Description: {str(pr_summary.get('body'))[:400]}
+PR #{pr_summary.get("number")}: {pr_summary.get("title")}
+Author: @{pr_summary.get("author")}
+Mergeable state: {pr_summary.get("mergeable_state")}
+Stats: +{pr_summary.get("additions")}/-{pr_summary.get("deletions")} across {pr_summary.get("changed_files")} files
+Description: {str(pr_summary.get("body"))[:400]}
 
 Changed files:
 {files_text[:4000]}
@@ -398,7 +448,9 @@ Return ONLY JSON: {{"decision": "merge|reject|skip", "confidence": 0.0-1.0, "rea
 
 
 @register_tool("github_review_pr")
-async def github_review_pr(repo: str, pr_number: int | None = None, pr_list: str = "", **_: Any) -> ToolResult:
+async def github_review_pr(
+    repo: str, pr_number: int | None = None, pr_list: str = "", **_: Any
+) -> ToolResult:
     """Review one PR or every PR in a pr_list JSON array.
 
     Returns JSON: [{"number", "title", "decision": "merge|reject|skip",
@@ -413,7 +465,9 @@ async def github_review_pr(repo: str, pr_number: int | None = None, pr_list: str
             parsed = json.loads(pr_list)
             numbers = [int(p["number"]) for p in parsed][:10]
         except Exception:
-            return ToolResult(success=False, output="", error=f"Unparseable pr_list: {pr_list[:200]}")
+            return ToolResult(
+                success=False, output="", error=f"Unparseable pr_list: {pr_list[:200]}"
+            )
     else:
         return ToolResult(success=False, output="", error="Provide pr_number or pr_list")
 
@@ -421,16 +475,24 @@ async def github_review_pr(repo: str, pr_number: int | None = None, pr_list: str
     for num in numbers:
         get_result = await github_get_pr(repo=repo, pr_number=num)
         if not get_result.success:
-            reviews.append({"number": num, "decision": "skip", "confidence": 0.0,
-                            "reason": f"Could not fetch PR: {get_result.error}"})
+            reviews.append(
+                {
+                    "number": num,
+                    "decision": "skip",
+                    "confidence": 0.0,
+                    "reason": f"Could not fetch PR: {get_result.error}",
+                }
+            )
             continue
         pr_summary = json.loads(get_result.output)
         verdict = await _gemini_verdict(pr_summary) or _heuristic_verdict(pr_summary)
-        reviews.append({
-            "number": num,
-            "title": pr_summary.get("title"),
-            **verdict,
-        })
+        reviews.append(
+            {
+                "number": num,
+                "title": pr_summary.get("title"),
+                **verdict,
+            }
+        )
 
     return ToolResult(success=True, output=json.dumps(reviews), metadata={"reviewed": len(reviews)})
 
@@ -439,7 +501,9 @@ async def github_review_pr(repo: str, pr_number: int | None = None, pr_list: str
 
 
 @register_tool("github_merge_pr", high_risk=True)
-async def github_merge_pr(repo: str, pr_number: int, commit_title: str = "", **_: Any) -> ToolResult:
+async def github_merge_pr(
+    repo: str, pr_number: int, commit_title: str = "", **_: Any
+) -> ToolResult:
     """Merge a pull request via the GitHub API."""
     body: dict[str, Any] = {"merge_method": "merge"}
     if commit_title:
@@ -449,9 +513,15 @@ async def github_merge_pr(repo: str, pr_number: int, commit_title: str = "", **_
     )
     if status == 200:
         sha = data.get("sha", "") if isinstance(data, dict) else ""
-        return ToolResult(success=True, output=f"Merged PR #{pr_number} in {repo} (commit {sha[:7]})")
+        return ToolResult(
+            success=True, output=f"Merged PR #{pr_number} in {repo} (commit {sha[:7]})"
+        )
     if status == 405:
-        return ToolResult(success=False, output="", error=f"PR #{pr_number} is not mergeable (closed, dirty, or blocked)")
+        return ToolResult(
+            success=False,
+            output="",
+            error=f"PR #{pr_number} is not mergeable (closed, dirty, or blocked)",
+        )
     return _error_result(status, data, "merge_pr")
 
 
@@ -460,7 +530,8 @@ async def github_close_pr(repo: str, pr_number: int, comment: str = "", **_: Any
     """Reject a pull request: optionally post a comment, then close it."""
     if comment:
         c_status, c_data = await _github_request(
-            "POST", f"/repos/{repo}/issues/{pr_number}/comments",
+            "POST",
+            f"/repos/{repo}/issues/{pr_number}/comments",
             json_body={"body": comment[:2000]},
         )
         if c_status != 201:
@@ -492,8 +563,11 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
         # Fetch PR head via git if repo already cloned locally, else shallow clone
         # Try to find local repo root
         proc = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "--show-toplevel",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            "git",
+            "rev-parse",
+            "--show-toplevel",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         out, _ = await proc.communicate()
         local_root = out.decode().strip() if proc.returncode == 0 else ""
@@ -502,20 +576,31 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
             # Local repo exists — fetch PR
             fetch_cmd = f"git fetch origin pull/{pr_number}/head:pr-{pr_number} 2>&1 && git checkout pr-{pr_number} 2>&1"
             proc2 = await asyncio.create_subprocess_shell(
-                fetch_cmd, cwd=local_root,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                fetch_cmd,
+                cwd=local_root,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(proc2.communicate(), timeout=60)
             fetch_out = (stdout.decode() + stderr.decode())[:800]
             if proc2.returncode != 0:
-                return ToolResult(success=False, output="", error=f"Fetch/checkout failed for PR #{pr_number}: {fetch_out}")
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Fetch/checkout failed for PR #{pr_number}: {fetch_out}",
+                )
             workdir = local_root
         else:
             # No local repo — shallow clone PR branch via GitHub API head sha
             status, pr_data = await _github_request("GET", f"/repos/{repo}/pulls/{pr_number}")
             if status != 200 or not isinstance(pr_data, dict):
-                return ToolResult(success=False, output="", error=f"Cannot fetch PR #{pr_number} metadata")
-            clone_url = pr_data.get("head", {}).get("repo", {}).get("clone_url") or f"https://github.com/{repo}.git"
+                return ToolResult(
+                    success=False, output="", error=f"Cannot fetch PR #{pr_number} metadata"
+                )
+            clone_url = (
+                pr_data.get("head", {}).get("repo", {}).get("clone_url")
+                or f"https://github.com/{repo}.git"
+            )
             clone_url_for_log = clone_url
             branch = pr_data.get("head", {}).get("ref", "")
             if tmpdir.exists():
@@ -524,14 +609,18 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
                 shutil.rmtree(tmpdir, ignore_errors=True)
             tmpdir.mkdir(parents=True, exist_ok=True)
             import shlex as _shlex
+
             # Use http.extraHeader with env var to avoid token in process list / URL
             if token and "github.com" in clone_url:
                 env_clone = os.environ.copy()
                 env_clone["NEXUSMIND_GH_TOKEN"] = token
                 # Shell expands $NEXUSMIND_GH_TOKEN inside double quotes
-                clone_cmd = f"git -c http.extraHeader=\"Authorization: Bearer $NEXUSMIND_GH_TOKEN\" clone --depth 1 --branch {_shlex.quote(branch)} {_shlex.quote(clone_url)} {_shlex.quote(str(tmpdir))} 2>&1"
+                clone_cmd = f'git -c http.extraHeader="Authorization: Bearer $NEXUSMIND_GH_TOKEN" clone --depth 1 --branch {_shlex.quote(branch)} {_shlex.quote(clone_url)} {_shlex.quote(str(tmpdir))} 2>&1'
                 proc3 = await asyncio.create_subprocess_shell(
-                    clone_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env_clone
+                    clone_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env_clone,
                 )
             else:
                 clone_cmd = f"git clone --depth 1 --branch {_shlex.quote(branch)} {_shlex.quote(clone_url)} {_shlex.quote(str(tmpdir))} 2>&1"
@@ -544,12 +633,18 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
             if token:
                 clone_out = clone_out.replace(token, "***")
             if proc3.returncode != 0:
-                return ToolResult(success=False, output="", error=f"Clone failed for PR #{pr_number}: {clone_out}")
+                return ToolResult(
+                    success=False, output="", error=f"Clone failed for PR #{pr_number}: {clone_out}"
+                )
             workdir = str(tmpdir)
 
         # Detect and run tests — sequential, one runner at a time
         test_cmd = None
-        if _Path(workdir, "pytest.ini").exists() or _Path(workdir, "pyproject.toml").exists() or list(_Path(workdir).glob("tests/**/*.py")):
+        if (
+            _Path(workdir, "pytest.ini").exists()
+            or _Path(workdir, "pyproject.toml").exists()
+            or list(_Path(workdir).glob("tests/**/*.py"))
+        ):
             test_cmd = "python -m pytest -q 2>&1 | head -n 100"
         elif _Path(workdir, "package.json").exists():
             test_cmd = "npm test 2>&1 | head -n 100"
@@ -557,16 +652,22 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
             test_cmd = "make test 2>&1 | head -n 100"
         else:
             # No test harness found — fallback to syntax check
-            test_cmd = "python -m py_compile $(find . -name '*.py' | head -20) 2>&1 || echo 'no py files'"
+            test_cmd = (
+                "python -m py_compile $(find . -name '*.py' | head -20) 2>&1 || echo 'no py files'"
+            )
 
         if test_cmd:
             proc4 = await asyncio.create_subprocess_shell(
-                test_cmd, cwd=workdir,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                test_cmd,
+                cwd=workdir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(proc4.communicate(), timeout=120)
-                test_out = (stdout.decode(errors="replace") + stderr.decode(errors="replace"))[:2000]
+                test_out = (stdout.decode(errors="replace") + stderr.decode(errors="replace"))[
+                    :2000
+                ]
                 passed = proc4.returncode == 0
                 # Cleanup temp dir if we cloned
                 if str(workdir) == str(tmpdir) and tmpdir.exists():
@@ -575,21 +676,43 @@ async def github_verify_pr_locally(repo: str, pr_number: int, **_: Any) -> ToolR
                     shutil.rmtree(tmpdir, ignore_errors=True)
                 # Try to return to original branch if we checked out PR
                 if local_root:
-                    await asyncio.create_subprocess_shell("git checkout - 2>&1 || git checkout main 2>&1 || true", cwd=local_root)
+                    await asyncio.create_subprocess_shell(
+                        "git checkout - 2>&1 || git checkout main 2>&1 || true", cwd=local_root
+                    )
                 if passed:
-                    return ToolResult(success=True, output=f"PR #{pr_number} local tests PASSED:\n{test_out[:1000]}", metadata={"pr": pr_number, "passed": True})
+                    return ToolResult(
+                        success=True,
+                        output=f"PR #{pr_number} local tests PASSED:\n{test_out[:1000]}",
+                        metadata={"pr": pr_number, "passed": True},
+                    )
                 else:
-                    return ToolResult(success=True, output=f"PR #{pr_number} local tests FAILED (will not auto-merge):\n{test_out[:1000]}", metadata={"pr": pr_number, "passed": False})
+                    return ToolResult(
+                        success=True,
+                        output=f"PR #{pr_number} local tests FAILED (will not auto-merge):\n{test_out[:1000]}",
+                        metadata={"pr": pr_number, "passed": False},
+                    )
             except TimeoutError:
-                return ToolResult(success=True, output=f"PR #{pr_number} local tests TIMEOUT after 120s — treat as failed", metadata={"pr": pr_number, "passed": False})
+                return ToolResult(
+                    success=True,
+                    output=f"PR #{pr_number} local tests TIMEOUT after 120s — treat as failed",
+                    metadata={"pr": pr_number, "passed": False},
+                )
 
-        return ToolResult(success=True, output=f"PR #{pr_number} no tests found — skipped local verification", metadata={"pr": pr_number, "passed": None})
+        return ToolResult(
+            success=True,
+            output=f"PR #{pr_number} no tests found — skipped local verification",
+            metadata={"pr": pr_number, "passed": None},
+        )
     except Exception as e:
-        return ToolResult(success=False, output="", error=f"Local verification error for PR #{pr_number}: {e}")
+        return ToolResult(
+            success=False, output="", error=f"Local verification error for PR #{pr_number}: {e}"
+        )
 
 
 @register_tool("github_apply_decisions", high_risk=True)
-async def github_apply_decisions(repo: str, decisions: str, dry_run: bool = False, verify_locally: bool = True, **_: Any) -> ToolResult:
+async def github_apply_decisions(
+    repo: str, decisions: str, dry_run: bool = False, verify_locally: bool = True, **_: Any
+) -> ToolResult:
     """Execute review verdicts: merges 'merge' PRs, closes 'reject' PRs, skips others.
 
     Args:
@@ -631,10 +754,14 @@ async def github_apply_decisions(repo: str, decisions: str, dry_run: bool = Fals
             # verify.success True means we got test output; check metadata passed flag
             passed = verify.metadata.get("passed") if isinstance(verify.metadata, dict) else None
             if passed is False:
-                actions.append(f"#{number}: SKIPPED merge — local tests FAILED — {reason} | {verify.output[:200]}")
+                actions.append(
+                    f"#{number}: SKIPPED merge — local tests FAILED — {reason} | {verify.output[:200]}"
+                )
                 continue
             elif verify.success is False:
-                actions.append(f"#{number}: SKIPPED merge — local checkout failed: {verify.error[:200]}")
+                actions.append(
+                    f"#{number}: SKIPPED merge — local checkout failed: {verify.error[:200]}"
+                )
                 continue
             # passed is True or None (no tests) -> proceed
 
@@ -643,7 +770,13 @@ async def github_apply_decisions(repo: str, decisions: str, dry_run: bool = Fals
         else:
             comment = f"Automated review rejected this PR: {reason}"
             result = await github_close_pr(repo=repo, pr_number=int(number), comment=comment)
-        actions.append(f"#{number}: {'OK' if result.success else 'FAILED'} — {result.output or result.error}")
+        actions.append(
+            f"#{number}: {'OK' if result.success else 'FAILED'} — {result.output or result.error}"
+        )
 
-    header = "Planned actions (dry run):" if dry_run else "Actions taken (sequential, high priority, locally verified):"
+    header = (
+        "Planned actions (dry run):"
+        if dry_run
+        else "Actions taken (sequential, high priority, locally verified):"
+    )
     return ToolResult(success=True, output=header + "\n" + "\n".join(actions))

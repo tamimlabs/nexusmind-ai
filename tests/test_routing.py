@@ -91,27 +91,37 @@ class TestPlanValidation:
             calls.append(kwargs)
             return responses.pop(0)
 
-        monkeypatch.setattr(
-            "agent.core.gemini_client.generate_content", fake_generate
-        )
+        monkeypatch.setattr("agent.core.gemini_client.generate_content", fake_generate)
         return calls, responses
 
     @pytest.mark.asyncio
     async def test_invalid_tools_trigger_corrective_replan(self, gemini):
         calls, responses = gemini
         responses[:] = [
-            json.dumps([
-                {"description": "Search", "tool_name": "WebSearch",
-                 "tool_args": {"query": "x"}},
-                {"description": "Deploy", "tool_name": "deploy_to_kubernetes",
-                 "tool_args": {}},
-            ]),
-            json.dumps([
-                {"description": "Search", "tool_name": "web_search",
-                 "tool_args": {"query": "x"}},
-                {"description": "Summarize", "tool_name": "summarize_text",
-                 "tool_args": {"text": "{{step_0_result}}"}},
-            ]),
+            json.dumps(
+                [
+                    {
+                        "description": "Search",
+                        "tool_name": "WebSearch",
+                        "tool_args": {"query": "x"},
+                    },
+                    {"description": "Deploy", "tool_name": "deploy_to_kubernetes", "tool_args": {}},
+                ]
+            ),
+            json.dumps(
+                [
+                    {
+                        "description": "Search",
+                        "tool_name": "web_search",
+                        "tool_args": {"query": "x"},
+                    },
+                    {
+                        "description": "Summarize",
+                        "tool_name": "summarize_text",
+                        "tool_args": {"text": "{{step_0_result}}"},
+                    },
+                ]
+            ),
         ]
         steps = await planner_mod.plan_task(Task(goal="research something"))
         assert len(calls) == 2  # original + exactly one corrective round
@@ -124,11 +134,16 @@ class TestPlanValidation:
         _, responses = gemini
         responses[:] = [
             json.dumps([{"description": "a", "tool_name": "zzzqqq"}]),
-            json.dumps([
-                {"description": "ok", "tool_name": "read_file",
-                 "tool_args": {"path": "output/x.md"}},
-                {"description": "bad", "tool_name": "warp_drive_engage"},
-            ]),
+            json.dumps(
+                [
+                    {
+                        "description": "ok",
+                        "tool_name": "read_file",
+                        "tool_args": {"path": "output/x.md"},
+                    },
+                    {"description": "bad", "tool_name": "warp_drive_engage"},
+                ]
+            ),
         ]
         steps = await planner_mod.plan_task(Task(goal="read the config file"))
         assert [s.tool_name for s in steps] == ["read_file"]
@@ -137,10 +152,12 @@ class TestPlanValidation:
     async def test_all_invalid_falls_back(self, gemini):
         _, responses = gemini
         responses[:] = [
-            json.dumps([
-                {"description": "a", "tool_name": "zzzqqq"},
-                {"description": "b", "tool_name": "qqqzzz"},
-            ]),
+            json.dumps(
+                [
+                    {"description": "a", "tool_name": "zzzqqq"},
+                    {"description": "b", "tool_name": "qqqzzz"},
+                ]
+            ),
             json.dumps([{"description": "c", "tool_name": "xxxwww"}]),
         ]
         steps = await planner_mod.plan_task(Task(goal="explain how git works"))
@@ -151,10 +168,11 @@ class TestPlanValidation:
     async def test_valid_plan_needs_single_call(self, gemini):
         calls, responses = gemini
         responses[:] = [
-            json.dumps([
-                {"description": "s", "tool_name": "Web Search",
-                 "tool_args": {"query": "x"}},
-            ]),
+            json.dumps(
+                [
+                    {"description": "s", "tool_name": "Web Search", "tool_args": {"query": "x"}},
+                ]
+            ),
         ]
         steps = await planner_mod.plan_task(Task(goal="find news about x"))
         assert len(calls) == 1  # repaired locally, no corrective round needed
@@ -195,10 +213,13 @@ class TestCommandGate:
 
     @pytest.mark.asyncio
     async def test_tasks_uses_registered_provider(self):
-        gate.register_provider("recent_tasks", lambda: [
-            {"status": "completed", "goal": "long goal here"},
-            {"status": "failed", "goal": "short one"},
-        ])
+        gate.register_provider(
+            "recent_tasks",
+            lambda: [
+                {"status": "completed", "goal": "long goal here"},
+                {"status": "failed", "goal": "short one"},
+            ],
+        )
         try:
             out = await gate.handle_command("/tasks 2")
         finally:
@@ -222,8 +243,7 @@ class TestCommandGate:
                 pass
 
             def list_skills(self):
-                return [{"name": "demo-flow", "description": "Use when demoing.",
-                         "use_count": 3}]
+                return [{"name": "demo-flow", "description": "Use when demoing.", "use_count": 3}]
 
         monkeypatch.setattr(sl_mod, "skill_library", FakeLib())
         out = await gate.handle_command("/skills demo")
