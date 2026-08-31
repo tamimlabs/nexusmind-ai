@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     # tokens mid-reply, generation is transparently retried here so the agent
     # CONTINUES instead of stopping on an unfinished step.
     gemini_model_pro: str = "gemini-3.5-pro"
+    # Quota fallback chain: when the primary model hits its daily quota (429
+    # per-project-per-model, free tier 20 req/day), the client automatically
+    # retries the SAME prompt on the next model in this comma-separated list
+    # — each model has its own quota bucket, so a build keeps going instead
+    # of dying with "retry in 86400s".  Change without restart via .env.
+    # Example: "gemini-2.0-flash-lite,gemini-2.0-flash,gemini-2.5-flash"
+    gemini_fallback_models: str = "gemini-2.0-flash-lite,gemini-2.0-flash,gemini-2.5-flash"
     gemini_api_key: str = ""
     # When True, Gemini controls tool selection, file naming and memory policy.
     # Deterministic heuristics remain only as fallback/validator.

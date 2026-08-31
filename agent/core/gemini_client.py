@@ -64,6 +64,29 @@ def _retry_context_note(reason: str) -> str:
     return f"{RETRY_CONTEXT_MARKER}: {reason}"
 
 
+def _fallback_model_chain(primary: str) -> list[str]:
+    """Ordered list of quota fallbacks for per-project-per-model 429s.
+
+    Free tier is 20 req/day *per model per project* — rotating API keys in the
+    same project does NOT help once the model bucket is spent. Switching to a
+    different model (e.g. flash-lite, 2.0-flash) gives a fresh bucket. The
+    chain is read from ``GEMINI_FALLBACK_MODELS`` so the operator can tune it
+    without a restart; gemini_model_pro is appended as last resort.
+    """
+    raw = (getattr(settings, "gemini_fallback_models", "") or "").strip()
+    chain: list[str] = []
+    seen: set[str] = {primary}
+    for part in raw.split(","):
+        m = part.strip()
+        if m and m not in seen:
+            chain.append(m)
+            seen.add(m)
+    pro = getattr(settings, "gemini_model_pro", "") or ""
+    if pro and pro not in seen:
+        chain.append(pro)
+    return chain
+
+
 class OutputTruncatedError(RuntimeError):
     """The model hit its ``max_output_tokens`` limit mid-reply.
 
@@ -328,6 +351,29 @@ async def generate_content(
     retry_note = ""  # appended to the prompt once a retry is needed (see below)
     rate_retry_start: float | None = None  # wall-time start for current key's RPS/RPM polls
 
+    # Quota fallback chain (per-project-per-model free tier): when all keys are
+    # parked for the current model, automatically retry the SAME prompt on the
+    # next model in GEMINI_FALLBACK_MODELS — each model has its own 20/day bucket.
+    _quota_chain = [primary_model] + _fallback_model_chain(primary_model)
+    _quota_idx = 0
+
+    def _try_next_quota_model(reason: str) -> bool:
+        nonlocal _quota_idx, model_name, retry_note, rate_retry_start
+        if _quota_idx + 1 >= len(_quota_chain):
+            return False
+        nxt = _quota_chain[_quota_idx + 1]
+        logger.warning("Quota exhausted on %s (%s) — falling back to %s (%d/%d)", model_name, reason, nxt, _quota_idx + 1, len(_quota_chain) - 1)
+        _quota_idx += 1
+        model_name = nxt
+        # Fresh quota bucket per model — clear per-key daily parks for next model
+        try:
+            rotator._cooldowns.clear()
+        except Exception:
+            pass
+        retry_note = _retry_context_note(f"the previous model {reason} hit its quota and the request was moved to {nxt}; continue exactly as asked.")
+        rate_retry_start = None
+        return True
+
     attempts = 0
     # For RPS/RPM 429s we stay on the SAME key for up to 45s before rotating
     _reuse_client: Any | None = None
@@ -435,6 +481,9 @@ async def generate_content(
                 _reuse_client = _reuse_key = None
                 rate_retry_start = None  # new key -> reset RPS/RPM window
                 if rotator.key_count <= 1 or rotator.active_keys == 0:
+                    if _try_next_quota_model(f"key ...{key_used[-6:]} daily"):
+                        _reuse_client = _reuse_key = None
+                        continue
                     raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
                 if delay > 0:
                     await asyncio.sleep(min(delay, 2.0))
@@ -463,6 +512,9 @@ async def generate_content(
                 _reuse_client = _reuse_key = None
                 rate_retry_start = None  # new key gets a fresh 45s budget
                 if rotator.key_count <= 1 or rotator.active_keys == 0:
+                    if _try_next_quota_model(f"key ...{key_used[-6:]} rate"):
+                        _reuse_client = _reuse_key = None
+                        continue
                     # Single key or all keys exhausted — surface as quota error
                     # so the orchestrator can abort cleanly with retry guidance.
                     raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
@@ -531,6 +583,22 @@ async def generate_content_stream(
     rate_retry_start: float | None = None
     _reuse_client: Any | None = None
     _reuse_key: str | None = None
+    _quota_chain_s = [primary_model] + _fallback_model_chain(primary_model)
+    _quota_idx_s = 0
+
+    def _try_next_quota_model_s(reason: str) -> bool:
+        nonlocal _quota_idx_s, model_name
+        if _quota_idx_s + 1 >= len(_quota_chain_s):
+            return False
+        nxt = _quota_chain_s[_quota_idx_s + 1]
+        logger.warning("Quota exhausted (stream) on %s (%s) — falling back to %s", model_name, reason, nxt)
+        _quota_idx_s += 1
+        model_name = nxt
+        try:
+            rotator._cooldowns.clear()
+        except Exception:
+            pass
+        return True
 
     while True:
         if _reuse_client is not None and _reuse_key is not None and rate_retry_start is not None:
@@ -662,8 +730,14 @@ async def generate_content_stream(
                 _reuse_client = _reuse_key = None
                 rate_retry_start = None
                 if yielded_any:
+                    if _try_next_quota_model_s(f"key ...{key_used[-6:]} daily (yielded)"):
+                        _reuse_client = _reuse_key = None
+                        continue
                     raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
                 if rotator.key_count <= 1 or rotator.active_keys == 0:
+                    if _try_next_quota_model_s(f"key ...{key_used[-6:]} daily"):
+                        _reuse_client = _reuse_key = None
+                        continue
                     raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
                 if delay > 0:
                     await asyncio.sleep(min(delay, 2.0))
@@ -685,8 +759,14 @@ async def generate_content_stream(
                 _reuse_client = _reuse_key = None
                 rate_retry_start = None
                 if yielded_any:
+                    if _try_next_quota_model_s(f"key ...{key_used[-6:]} rate (yielded)"):
+                        _reuse_client = _reuse_key = None
+                        continue
                     raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
                 if rotator.key_count <= 1 or rotator.active_keys == 0:
+                    if _try_next_quota_model_s(f"key ...{key_used[-6:]} rate"):
+                        _reuse_client = _reuse_key = None
+                        continue
                     raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
                 continue
             retry_note = _retry_context_note(

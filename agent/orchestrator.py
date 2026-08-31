@@ -835,58 +835,27 @@ class Orchestrator:
                 task.result = task.result.rstrip() + partial
             task.updated_at = datetime.now(UTC)
 
-            # Memory policy: when gemini_full_control is True, Gemini decides
-            # what to store, what filename to use, and what lessons to keep.
-            # Deterministic gates remain as fallback when Gemini unavailable.
-            from agent.config import settings as _settings
-
-            if _settings.gemini_full_control and _settings.gemini_api_key:
-                should_store = await _gemini_should_store(task)
-                if should_store:
-                    self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
-                    logger.info("Gemini decided to store task outcome for %s", task.id)
-                # Gemini-driven extraction (preferences/decisions/memory hints)
-                try:
-                    extracted = await self.memory.gemini_extract_and_store(task.goal)
-                except Exception:
-                    logger.debug(
-                        "Gemini memory extraction failed, falling back to regex", exc_info=True
-                    )
-                    extracted = self.memory.extract_and_store(task.goal)
-                if extracted:
-                    logger.info(
-                        "Gemini auto-extracted %d durable fact(s) from task goal", extracted
-                    )
-            else:
-                # Legacy deterministic policy
-                if not _is_trivial(task) and len(task.steps) > 1:
-                    successful = [
-                        s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name
-                    ]
-                    distinct = {s.tool_name for s in successful}
-                    if len(successful) >= 2 and len(distinct) >= 2:
-                        self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
-                extracted = self.memory.extract_and_store(task.goal)
-                if extracted:
-                    logger.info("Auto-extracted %d durable fact(s) from task goal", extracted)
-
-            # Credit any injected procedural skills that were actually followed,
-            # then try to grow the library from this task (self-evolution).
-            for name in matched_skills:
-                self.skills.record_use(name)
-                logger.info("Skill '%s' used by task %s", name, task.id)
-            await self._maybe_create_skill(task)
-
-            await self._self_reflect(task)
-
-            # Notify via Telegram
+            # Notify via Telegram immediately — don't wait for learning
             from agent.telegram import is_configured, notify_task_completed
 
             if is_configured():
-                await notify_task_completed(task.id, task.goal, task.result[:300])
+                try:
+                    await notify_task_completed(task.id, task.goal, task.result[:300])
+                except Exception:
+                    logger.debug("Telegram notify failed", exc_info=True)
 
             logger.info("Task [%s] completed successfully", task.id)
+            # Untrust + return immediately so dashboard shows COMPLETED right away;
+            # learning (memory/skill/reflection) runs in background and never
+            # blocks the response the user sees.
             untrust_task(task.id)
+            # Fire-and-forget post-task learning (4 Gemini calls that used to
+            # keep the task spinning as EXECUTING for 10-20s).
+            try:
+                bgt = asyncio.create_task(self._bg_learn(task, matched_skills))
+                bgt.add_done_callback(lambda t: logger.debug("bg_learn done for %s: %s", task.id, t.exception() if t.exception() else "ok"))
+            except Exception:
+                logger.debug("bg_learn schedule failed", exc_info=True)
             return task
 
         except asyncio.CancelledError:
@@ -1096,6 +1065,65 @@ Output 0-2 lessons, or NOTHING_TO_SAVE."""
 
         except Exception:
             logger.debug("Self-reflection failed (non-critical)")
+
+    async def _bg_learn(self, task: Task, matched_skills: list[str] | None = None) -> None:
+        """Background learning: memory, skill credit, skill creation, reflection.
+
+        Runs AFTER task completion is already reported, so it never blocks the
+        dashboard's COMPLETED state. All Gemini calls are best-effort with
+        short timeouts — quota failures are swallowed.
+        """
+        matched_skills = matched_skills or []
+        try:
+            from agent.config import settings as _settings
+
+            if _settings.gemini_full_control and _settings.gemini_api_key:
+                try:
+                    should_store = await asyncio.wait_for(_gemini_should_store(task), timeout=8)
+                except Exception:
+                    should_store = False
+                if should_store:
+                    try:
+                        self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
+                    except Exception:
+                        pass
+                try:
+                    extracted = await asyncio.wait_for(self.memory.gemini_extract_and_store(task.goal), timeout=8)
+                except Exception:
+                    try:
+                        extracted = self.memory.extract_and_store(task.goal)
+                    except Exception:
+                        extracted = 0
+                if extracted:
+                    logger.info("Bg: auto-extracted %d fact(s) for %s", extracted, task.id)
+            else:
+                if not _is_trivial(task) and len(task.steps) > 1:
+                    successful = [s for s in task.steps if s.status == StepStatus.SUCCESS and s.tool_name]
+                    distinct = {s.tool_name for s in successful}
+                    if len(successful) >= 2 and len(distinct) >= 2:
+                        try:
+                            self.memory.save_task_outcome(task.goal, task.result[:200], success=True)
+                        except Exception:
+                            pass
+                try:
+                    self.memory.extract_and_store(task.goal)
+                except Exception:
+                    pass
+            for name in matched_skills:
+                try:
+                    self.skills.record_use(name)
+                except Exception:
+                    pass
+            try:
+                await asyncio.wait_for(self._maybe_create_skill(task), timeout=10)
+            except Exception:
+                logger.debug("bg skill creation skipped for %s", task.id, exc_info=True)
+            try:
+                await asyncio.wait_for(self._self_reflect(task), timeout=10)
+            except Exception:
+                logger.debug("bg reflection skipped for %s", task.id, exc_info=True)
+        except Exception:
+            logger.debug("bg_learn failed for %s", task.id, exc_info=True)
 
     def get_status(self) -> dict[str, Any]:
         """Return current orchestrator status."""
