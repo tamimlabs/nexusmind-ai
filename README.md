@@ -1,9 +1,8 @@
 <div align="center">
 
-<div style="display: inline-block; background: rgba(0,0,0,0.7); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-radius: 20px; padding: 24px 48px; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.4);">
-<img src="docs/nexusmind-dark-full.png" alt="NexusMind AI" width="400" style="border-radius: 12px; filter: drop-shadow(0 0 20px rgba(66,133,244,0.3));" />
-</div>
+<img src="docs/assets/icons/app-icon-192.png" alt="NexusMind AI" width="140" style="border-radius: 28px; box-shadow: 0 8px 32px rgba(0,0,0,0.3);" />
 
+# NexusMind AI
 ### Autonomous Task-Execution Agent on Google Cloud
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg?style=flat&logo=python&logoColor=white)](https://python.org)

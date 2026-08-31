@@ -1,0 +1,40 @@
+<svg viewBox="0 0 1400 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="coreGrad" x1="70.56" y1="83" x2="129.44" y2="117" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5B8CFB"/>
+      <stop offset="1" stop-color="#7B5CFA"/>
+    </linearGradient>
+    <radialGradient id="pulseGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FF6A45" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FF6A45" stop-opacity="0"/>
+    </radialGradient>
+</defs>
+  <g transform="translate(50,50) scale(1.5)">
+    
+  <circle cx="100" cy="100" r="80" fill="none" stroke="#4A5578" stroke-opacity="0.22" stroke-width="1.4"/>
+  <line x1="100" y1="66"    x2="100"    y2="20"  stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="129.44" y1="117" x2="169.28" y2="140" stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="100" y1="134"   x2="100"    y2="180" stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="70.56" y1="117" x2="30.72" y2="140" stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="70.56" y1="83"  x2="30.72" y2="60"  stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="129.44" y1="83" x2="169.28" y2="60" stroke="#FF6A45" stroke-opacity="0.9" stroke-width="2.4"/>
+  <circle cx="100"    cy="20"  r="6" fill="#4A5578"/>
+  <circle cx="169.28" cy="140" r="6" fill="#4A5578"/>
+  <circle cx="100"    cy="180" r="6" fill="#4A5578"/>
+  <circle cx="30.72"  cy="140" r="6" fill="#4A5578"/>
+  <circle cx="30.72"  cy="60"  r="6" fill="#4A5578"/>
+  <circle cx="169.28" cy="60" r="20" fill="url(#pulseGlow)"/>
+  <circle cx="169.28" cy="60" r="7.5" fill="#FF6A45"/>
+  <polygon points="100,66 129.44,83 129.44,117 100,134 70.56,117 70.56,83" fill="url(#coreGrad)" stroke="#090C14" stroke-width="1.5" stroke-opacity="0.25"/>
+  <polygon points="100,80 116.24,89.5 116.24,108.5 100,118 83.76,108.5 83.76,89.5" fill="none" stroke="#F4F6FB" stroke-opacity="0.4" stroke-width="1.4"/>
+
+  </g>
+  <g transform="translate(430,150)">
+    <text x="0" y="0" font-family="Space Grotesk Bold" font-size="96" fill="#F4F6FB" letter-spacing="-1">NexusMind</text>
+  </g>
+  <g transform="translate(1155,120)">
+    <polygon points="0,-26 22.5,-13 22.5,13 0,26 -22.5,13 -22.5,-13" fill="none" stroke="#F4F6FB" stroke-opacity="0.55" stroke-width="2.5"/>
+    <text x="0" y="9" font-family="Manrope SemiBold" font-size="22" fill="#F4F6FB" text-anchor="middle">AI</text>
+  </g>
+  <text x="433" y="230" font-family="Manrope Reg" font-size="34" fill="#97A1BE" letter-spacing="0.2">Autonomous task-execution agent</text>
+</svg>

@@ -1,0 +1,7 @@
+<svg viewBox="0 0 900 170" xmlns="http://www.w3.org/2000/svg">
+  <text x="0" y="90" font-family="Space Grotesk Bold" font-size="90" fill="#F4F6FB" letter-spacing="-1">NexusMind</text>
+  <g transform="translate(725,58)">
+    <polygon points="0,-26 22.5,-13 22.5,13 0,26 -22.5,13 -22.5,-13" fill="none" stroke="#F4F6FB" stroke-opacity="0.55" stroke-width="2.5"/>
+    <text x="0" y="9" font-family="Manrope SemiBold" font-size="22" fill="#F4F6FB" text-anchor="middle">AI</text>
+  </g>
+</svg>

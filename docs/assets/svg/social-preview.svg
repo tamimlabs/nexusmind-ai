@@ -1,0 +1,54 @@
+<svg viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    
+    <linearGradient id="coreGrad" x1="70.56" y1="83" x2="129.44" y2="117" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5B8CFB"/>
+      <stop offset="1" stop-color="#7B5CFA"/>
+    </linearGradient>
+    <radialGradient id="pulseGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FF6A45" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FF6A45" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="bannerBg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0D1220"/>
+      <stop offset="1" stop-color="#07090F"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1280" height="640" fill="url(#bannerBg)"/>
+  <polygon points="-40.0,350.0 141.9,455.0 141.9,665.0 -40.0,770.0 -221.9,665.0 -221.9,455.0" fill="none" stroke="#F4F6FB" stroke-opacity="0.045" stroke-width="2"/><polygon points="1320.0,-220.0 1545.2,-90.0 1545.2,170.0 1320.0,300.0 1094.8,170.0 1094.8,-90.0" fill="none" stroke="#F4F6FB" stroke-opacity="0.045" stroke-width="2"/><polygon points="1180.0,430.0 1292.6,495.0 1292.6,625.0 1180.0,690.0 1067.4,625.0 1067.4,495.0" fill="none" stroke="#F4F6FB" stroke-opacity="0.045" stroke-width="2"/><polygon points="60.0,-70.0 155.3,-15.0 155.3,95.0 60.0,150.0 -35.3,95.0 -35.3,-15.0" fill="none" stroke="#F4F6FB" stroke-opacity="0.045" stroke-width="2"/>
+
+  <g transform="translate(90,170) scale(1.5)">
+    
+  <circle cx="100" cy="100" r="80" fill="none" stroke="#4A5578" stroke-opacity="0.22" stroke-width="1.4"/>
+  <line x1="100" y1="66"    x2="100"    y2="20"  stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="129.44" y1="117" x2="169.28" y2="140" stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="100" y1="134"   x2="100"    y2="180" stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="70.56" y1="117" x2="30.72" y2="140" stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="70.56" y1="83"  x2="30.72" y2="60"  stroke="#4A5578" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="129.44" y1="83" x2="169.28" y2="60" stroke="#FF6A45" stroke-opacity="0.9" stroke-width="2.4"/>
+  <circle cx="100"    cy="20"  r="6" fill="#4A5578"/>
+  <circle cx="169.28" cy="140" r="6" fill="#4A5578"/>
+  <circle cx="100"    cy="180" r="6" fill="#4A5578"/>
+  <circle cx="30.72"  cy="140" r="6" fill="#4A5578"/>
+  <circle cx="30.72"  cy="60"  r="6" fill="#4A5578"/>
+  <circle cx="169.28" cy="60" r="20" fill="url(#pulseGlow)"/>
+  <circle cx="169.28" cy="60" r="7.5" fill="#FF6A45"/>
+  <polygon points="100,66 129.44,83 129.44,117 100,134 70.56,117 70.56,83" fill="url(#coreGrad)" stroke="#090C14" stroke-width="1.5" stroke-opacity="0.25"/>
+  <polygon points="100,80 116.24,89.5 116.24,108.5 100,118 83.76,108.5 83.76,89.5" fill="none" stroke="#F4F6FB" stroke-opacity="0.4" stroke-width="1.4"/>
+
+  </g>
+
+  <g transform="translate(470,300)">
+    <text x="0" y="0" font-family="Space Grotesk Bold" font-size="88" fill="#F4F6FB" letter-spacing="-1">NexusMind</text>
+  </g>
+  <g transform="translate(1178,270)">
+    <polygon points="0,-26 22.5,-13 22.5,13 0,26 -22.5,13 -22.5,-13" fill="none" stroke="#F4F6FB" stroke-opacity="0.55" stroke-width="2.5"/>
+    <text x="0" y="9" font-family="Manrope SemiBold" font-size="22" fill="#F4F6FB" text-anchor="middle">AI</text>
+  </g>
+  <text x="474" y="360" font-family="Manrope Reg" font-size="32" fill="#97A1BE">Autonomous task-execution agent</text>
+  <text x="474" y="430" font-family="Manrope Reg" font-size="24" fill="#97A1BE" fill-opacity="0.85">Eleven platform watchers feed one decision loop —</text>
+  <text x="474" y="464" font-family="Manrope Reg" font-size="24" fill="#97A1BE" fill-opacity="0.85">built on Gemini, Cloud Run and Firestore.</text>
+
+  <text x="90" y="600" font-family="Manrope Medium" font-size="20" fill="#97A1BE" fill-opacity="0.6">Google &quot;All Things Agentic&quot; Hackathon — The Taskmaster</text>
+</svg>
