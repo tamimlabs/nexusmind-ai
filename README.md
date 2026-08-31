@@ -28,7 +28,7 @@
 
 ---
 
-## What NexusMind Is (30-Second Pitch for Judges)
+## What NexusMind Is
 
 NexusMind AI is an **autonomous, event-driven task-execution agent** — not a chatbot, not an API wrapper, not a tool collection.
 
