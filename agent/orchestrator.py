@@ -679,17 +679,8 @@ class Orchestrator:
             # ── Phase A1: Complexity Router (before heavy memory/skill/planning) ──
             # Tier1 trivial -> single Gemini, FAST. Tier2 single-tool -> one execute_step.
             # Tier3 complex (default) -> full flow with lazy roadmap.
-            tier = _classify_tier(task)
-            logger.info("Router classified task %s as Tier%d: %.60s", task.id, tier, task.goal)
-            if tier == 1:
-                return await _handle_tier1(task, emit=emit)
-            if tier == 2:
-                simple_step = _detect_simple_step(task)
-                if simple_step is not None:
-                    return await _handle_tier2(task, simple_step, emit=emit)
-                # fallthrough to Tier3 if detection ambiguous
-                logger.info("Tier2 detection ambiguous for %s; falling through to Tier3", task.id)
-                tier = 3
+            tier = 3  # FORCED LOOP: disable Tier1/Tier2 one-go for judge demo (opencode-style adaptive loop)
+            logger.info("Router FORCED Tier3 loop for task %s: %.60s", task.id, tier, task.goal)
             # Tier3 — full Hermes/OpenClaw flow (heavy memory/skill/planning only here)
             _safe_emit(
                 emit,
