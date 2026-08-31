@@ -33,6 +33,12 @@ def _load_dotenv() -> None:
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip().strip("'\"")
+                # Strip inline comments: `KEY=0  # comment` -> `0`
+                # Only when value is not quoted (quotes already stripped).
+                if " #" in value:
+                    value = value.split(" #", 1)[0].strip()
+                if "	#" in value:
+                    value = value.split("\t#", 1)[0].strip()
                 if key not in os.environ:
                     os.environ[key] = value
         break

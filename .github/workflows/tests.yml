@@ -94,6 +94,8 @@ jobs:
           set -o pipefail
           python -m pytest tests/ --splits 3 --group ${{ matrix.shard }} -q --no-header -p no:cacheprovider -n auto --dist loadscope --junitxml=pytest_report_${{ matrix.shard }}.xml 2>&1 | tee pytest_output_${{ matrix.shard }}.txt
       - name: Upload shard report
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: pytest-report-${{ matrix.shard }}
