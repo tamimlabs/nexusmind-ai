@@ -632,11 +632,15 @@ function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks();refres
 
 async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=await res.json();if(tasks.length>0){S.tasks=tasks;document.getElementById('taskCount').textContent=S.tasks.length;if(S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}}}catch(e){}}
 
-function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selected)}else if(S.tasks.length===0){html='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}el.innerHTML=html}
+let _lastTaskListHtml="";
+function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selected)}else if(S.tasks.length===0){html='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}
+if(html===_lastTaskListHtml) return;
+_lastTaskListHtml=html;
+el.innerHTML=html}
 
-/* ── Live Visibility — WS global + SSE push + poller fallback ───── */
-let S_eventSource=null;let S_ws=null;
-function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveStatus='running';S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500);startLiveStream(id);connectGlobalWS()}
+/* ── Live Visibility — WS global + SSE push + poller fallback (flicker-throttled) ───── */
+let S_eventSource=null;let S_ws=null;let _lastPollHash="";
+function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveStatus='running';S.liveTaskId=id;_lastPollHash="";_lastTaskListHtml="";pollLive();S.livePoll=setInterval(pollLive,2800);startLiveStream(id);connectGlobalWS()}
 function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}if(S_eventSource){try{S_eventSource.close()}catch(e){}S_eventSource=null}if(S_ws){try{S_ws.close()}catch(e){}S_ws=null}S.liveTaskId=null}
 function connectGlobalWS(){
   try{
@@ -662,7 +666,9 @@ function startLiveStream(id){
     es.onerror=()=>{try{es.close()}catch(e){}};
   }catch(e){}
 }
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.elapsed_seconds=d.elapsed_seconds||t.elapsed_seconds;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace}if(S.rtab==='thinking'||S.rtab==='checklist'||S.rtab==='trace')renderRPanel();if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl);const lb=document.getElementById('loadingBar');if(lb)lb.style.display=['completed','failed'].includes(d.status)?'none':'flex'}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();const hash=(d.events||[]).length+'|'+d.status+'|'+(d.elapsed_seconds||0)+'|'+(d.todos||[]).length+'|'+(d.steps||[]).length;if(hash===_lastPollHash) return;
+_lastPollHash=hash;
+S.liveEvents=d.events||[];S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.elapsed_seconds=d.elapsed_seconds||t.elapsed_seconds;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace}if(S.rtab==='thinking'||S.rtab==='checklist'||S.rtab==='trace')renderRPanel();if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl);const lb=document.getElementById('loadingBar');if(lb)lb.style.display=['completed','failed'].includes(d.status)?'none':'flex'}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
 
 /* ── Right Panel Minimize ─────────────────────────────────────── */
 function toggleRPanel(){const min=!document.body.classList.contains('rp-min');document.body.classList.toggle('rp-min',min);try{localStorage.setItem('nm_rpanel_min',min?'1':'0')}catch(e){}}
