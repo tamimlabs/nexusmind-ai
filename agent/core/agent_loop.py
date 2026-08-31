@@ -23,6 +23,8 @@ model from the exact goal text + memory + live results.
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import re
