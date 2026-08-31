@@ -135,11 +135,6 @@
         .think-detail{margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--t4);white-space:pre-wrap;word-break:break-word;line-height:1.5;max-height:120px;overflow-y:auto;display:none;background:var(--bg3);border-radius:var(--r);padding:8px 10px}
         .think-detail.show{display:block}
         .think-time{font-size:10px;font-family:var(--mono);color:var(--t5);margin-top:4px}
-        .live-stream{background:var(--pbg);border:1px solid var(--pad);border-left:3px solid var(--purple);border-radius:var(--rm);padding:10px 12px;margin-bottom:10px;animation:fadeIn .2s ease}
-        .live-stream-head{font-size:10px;font-weight:700;color:var(--purple);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px;display:flex;align-items:center;gap:6px}
-        .live-stream-body{font-family:var(--mono);font-size:11px;color:var(--t2);line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:240px;overflow-y:auto;background:var(--bg3);border-radius:var(--r);padding:8px 10px;min-height:28px}
-        .stream-cursor{display:inline-block;width:7px;height:14px;background:var(--purple);margin-left:2px;vertical-align:middle;animation:blink 1s step-end infinite}
-        @keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}
         @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1}}
 
         .mem-search{display:flex;gap:8px;margin-bottom:12px}
@@ -279,74 +274,22 @@ function switchRTab(t){S.rtab=t;document.querySelectorAll('.rpanel-tab').forEach
 function renderPage(){const c=document.getElementById('pageContent');if(S.page==='tasks')renderTasksPage(c);else if(S.page==='memory')renderMemoryPage(c);else if(S.page==='approvals')renderApprovalsPage(c);else if(S.page==='watchers')renderWatchersPage(c);else if(S.page==='settings')renderSettingsPage(c);else if(S.page==='credentials')renderCredentialsPage(c)}
 function renderRPanel(){const c=document.getElementById('rpanelBody');if(S.rtab==='trace')renderTracePanel(c);else if(S.rtab==='thinking')renderThinkingPanel(c);else if(S.rtab==='checklist')renderChecklistPanel(c);else renderApprovalPanel(c)}
 
-/* ── Task Views — flicker-free: shell is persistent, only taskListEl diffs ── */
-let _taskRenderRaf=null; let _lastTaskListHtml="";
-function getTaskListInnerHtml(){
-  if(S.selected){return renderDetail(S.selected)}
-  if(S.tasks.length===0){return '<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}
-  let out=""; S.tasks.forEach(t=>{
-    const a=S.selected&&S.selected.id===t.id;
-    const isNeeds=t.status==='needs_instruction';
-    out+='<div class="task-card'+(a?' sel':'')+(isNeeds?' style="border-left:3px solid var(--yellow)"':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+(isNeeds?'⚠️ ':'')+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span>'+(isNeeds?'<span style="color:var(--yellow)">needs instruction</span>':'')+'</div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions">'+(isNeeds?'<button class="btn btn-p btn-sm" onclick="event.stopPropagation();quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+'<button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'});
-  return out;
-}
-function patchTaskListEl(){
-  const el=document.getElementById('taskListEl');
-  if(!el) return;
-  const html=getTaskListInnerHtml();
-  if(html===_lastTaskListHtml) {
-    if(S.selected&&S.selected.elapsed_seconds!=null){
-      const eb=document.getElementById('detailElapsed');
-      if(eb) eb.textContent='⏱ '+S.selected.elapsed_seconds+'s';
-      const sb=document.getElementById('detailStatus');
-      if(sb) { sb.textContent=S.selected.status.replace('_',' '); sb.className='badge b-'+S.selected.status; }
-    }
-    return;
-  }
-  // elapsed-only change → patch badges without full reflow
-  const strip=s=>s.replace(/id="detailElapsed"[^>]*>.*?<\/span>/g,'').replace(/id="detailStatus"[^>]*>.*?<\/span>/g,'');
-  if(_lastTaskListHtml && strip(html)===strip(_lastTaskListHtml)){
-    const eb=document.getElementById('detailElapsed');
-    if(eb && S.selected) eb.textContent='⏱ '+S.selected.elapsed_seconds+'s';
-    const sb=document.getElementById('detailStatus');
-    if(sb && S.selected){ sb.textContent=S.selected.status.replace('_',' '); sb.className='badge b-'+S.selected.status; }
-    _lastTaskListHtml=html;
-    return;
-  }
-  _lastTaskListHtml=html;
-  const page=document.getElementById('pageContent');
-  const sTop=page? page.scrollTop : 0;
-  el.innerHTML=html;
-  if(page) page.scrollTop=sTop;
-  setTimeout(renderStreamBubble,0);
-}
-function queueTaskListPatch(){
-  if(_taskRenderRaf) return;
-  _taskRenderRaf=requestAnimationFrame(()=>{ _taskRenderRaf=null; patchTaskListEl(); });
-}
+/* ── Task Views ───────────────────────────────────────────────── */
 function renderTasksPage(c){
-  const hasShell=c.querySelector('#taskListEl') && c.querySelector('#goalInput');
-  if(hasShell){
-    // incremental: keep input focus/value, only update list
-    const inp=document.getElementById('goalInput');
-    const keepVal=inp? inp.value : "";
-    const keepFocus=document.activeElement===inp;
-    patchTaskListEl();
-    const inp2=document.getElementById('goalInput');
-    if(inp2 && keepFocus) { inp2.focus(); try{ inp2.setSelectionRange(keepVal.length, keepVal.length);}catch(e){} }
-    return;
-  }
-  // first build — create shell once
-  _lastTaskListHtml="";
+  const prevVal=document.getElementById('goalInput')?document.getElementById('goalInput').value:'';
+  const prevSteps=document.getElementById('maxStepsInput')?document.getElementById('maxStepsInput').value:'';
   let html='<div class="input-card"><div class="input-row"><input class="input-field" id="goalInput" placeholder="Describe what you want the agent to do..." /><button class="btn btn-p" id="submitBtn" onclick="submitTask()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run</button></div><div style="font-size:11px;color:var(--t5);margin-top:6px">AI decides steps automatically — short tasks finish in 3–5 steps, large builds stream up to 120.</div></div>';
+  // One cancel per page: loadingBar only in list view, detail header has its own Cancel (S.selected). Prevents duplicate 2× Cancel.
   if(!S.selected) html+='<div id="loadingBar" class="loading-bar" style="display:none"><div class="spinner"></div><span style="font-size:12px;color:var(--t3)">Agent is working...</span><button class="btn btn-d btn-sm" style="margin-left:auto" onclick="cancelCurrentTask()">Cancel</button></div>';
   else html+='<div id="loadingBar" style="display:none"></div>';
-  html+='<div class="task-list" id="taskListEl"></div>';
-  c.innerHTML=html;
-  const inp=document.getElementById('goalInput');
-  if(inp){ inp.addEventListener('keypress',e=>{if(e.key==='Enter')submitTask()}); inp.focus(); }
-  patchTaskListEl();
-}
+  html+='<div class="task-list" id="taskListEl">';
+  if(S.selected){html+=renderDetail(S.selected)}
+  else if(S.tasks.length===0){html+='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}
+  else{S.tasks.forEach(t=>{
+    const a=S.selected&&S.selected.id===t.id;
+    const isNeeds=t.status==='needs_instruction';
+    html+='<div class="task-card'+(a?' sel':'')+(isNeeds?' style="border-left:3px solid var(--yellow)"':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+(isNeeds?'⚠️ ':'')+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span>'+(isNeeds?'<span style="color:var(--yellow)">needs instruction</span>':'')+'</div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions">'+(isNeeds?'<button class="btn btn-p btn-sm" onclick="event.stopPropagation();quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+'<button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}
+  html+='</div>';c.innerHTML=html;const inp=document.getElementById('goalInput');if(inp){inp.value=prevVal;inp.addEventListener('keypress',e=>{if(e.key==='Enter')submitTask()});inp.focus()}}
 
 function quickFixInstruction(taskId){
   const t=S.tasks.find(x=>x.id===taskId);
@@ -363,7 +306,7 @@ function quickFixInstruction(taskId){
 function renderDetail(t){
   const isNeeds=t.status==='needs_instruction';
   const isRunning=['planning','executing','pending'].includes(t.status)||(S.liveTaskId===t.id&&!['completed','failed'].includes(S.liveStatus));
-  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span id="detailStatus" class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span>'+(t.elapsed_seconds!=null?'<span id="detailElapsed" class="badge" style="background:var(--bg3);color:var(--t4);border:1px solid var(--border)">⏱ '+t.elapsed_seconds+'s</span>':'')+(isNeeds?'<button class="btn btn-p btn-sm" onclick="quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+(isRunning?'<button class="btn btn-d btn-sm" onclick="cancelCurrentTask()">⏹ Cancel</button>':'')+'<button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
+  let h='<div class="detail-header"><button class="btn btn-g btn-sm" onclick="S.selected=null;renderPage()">&larr; Back</button><div class="detail-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status.replace('_',' ')+'</span>'+(t.elapsed_seconds?'<span class="badge" style="background:var(--bg3);color:var(--t4);border:1px solid var(--border)">⏱ '+t.elapsed_seconds+'s</span>':'')+(isNeeds?'<button class="btn btn-p btn-sm" onclick="quickFixInstruction(\''+t.id+'\')">✨ Create Instruction</button>':'')+(isRunning?'<button class="btn btn-d btn-sm" onclick="cancelCurrentTask()">⏹ Cancel</button>':'')+'<button class="btn btn-d btn-sm" onclick="deleteTask(\''+t.id+'\')">Delete</button></div>';
   if(isNeeds){h+='<div class="detail-section" style="background:var(--ybg);border:1px solid var(--yad);border-radius:8px;padding:12px"><div style="font-size:13px;font-weight:600;color:var(--yellow);margin-bottom:6px">⚠️ Needs your instruction — nothing was executed</div><div style="font-size:12px;color:var(--t3);line-height:1.6">This watcher detected an event but you have no matching standing instruction. Add one in <b>Memory → instruction</b> to auto-handle future events. Telegram was notified (once per 6h). Click <b>Create Instruction</b> for a suggestion.</div></div>';}
   // "What is doing" banner like opencode — show active todo (in_progress) or fallback to current step
   if(isRunning){
@@ -373,7 +316,6 @@ function renderDetail(t){
     const doing = activeTodo? ('Working on: '+activeTodo.title) : (activeStep? ('Doing: '+activeStep.description) : 'Thinking...');
     const tool = activeTodo? '' : (activeStep&&activeStep.tool_name? ' — '+activeStep.tool_name : '');
     h+='<div class="detail-section" style="background:var(--abg);border:1px solid var(--abad);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:8px"><div class="spinner" style="width:14px;height:14px;border-width:2px;border-top-color:var(--accent)"></div><div style="flex:1"><div style="font-size:12px;font-weight:600;color:var(--accent)">'+esc(doing)+'<span style="font-weight:400;color:var(--t3)">'+esc(tool)+'</span></div><div style="font-size:11px;color:var(--t4)">Live — what the agent is thinking / writing right now</div></div><span style="font-size:10px;color:var(--t5)">WS live</span></div>';
-    h+='<div data-stream-bubble class="live-stream" style="display:none"><div class="live-stream-head">▌ Agent is writing — word to word live</div><div data-stream-body class="live-stream-body"></div></div>';
   }
   if(S.liveEvents.length>0&&S.liveTaskId===t.id){h+='<div class="detail-section"><div class="detail-label">Live Activity <span style="font-weight:400;color:var(--t5)">('+S.liveEvents.length+' events · click detail to expand)</span></div><div class="think-list">';S.liveEvents.forEach((e,i)=>{h+='<div class="think-item '+esc(e.type)+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')" style="cursor:pointer"><div class="think-msg">'+thinkIcon(e,i===S.liveEvents.length-1,!['completed','failed'].includes(S.liveStatus))+esc(e.message)+'<span style="margin-left:auto;font-size:10px;color:var(--t5);font-family:var(--mono)">'+new Date(e.time*1000).toLocaleTimeString()+'</span></div>'+(e.detail?'<div class="think-detail'+(i>=S.liveEvents.length-3?' show':'')+'">'+esc(e.detail)+'</div>':'')+'</div>'});h+='</div></div>'}
   if(t.result){const isFileResult=t.result.includes('Saved to:');h+='<div class="detail-section"><div class="detail-label">Result</div><div class="detail-code" style="'+(isFileResult?'border-left:3px solid var(--accent);background:var(--abg)':'')+'">'+esc(t.result)+'</div>'+(isFileResult?'<div style="margin-top:8px;font-size:11px;color:var(--accent)">📁 Check <code>output/</code> or <code>projects/</code> folder for saved files</code></div>':'')+'</div>';}
@@ -404,7 +346,7 @@ function renderThinkingPanel(c){
   if(!evs.length){c.innerHTML='<div class="empty empty-big">No live events yet<div class="empty-sub">Submit a task to see live thinking — checklist & tool output stream in real time</div></div>';return}
   const running=!['completed','failed'].includes(S.liveStatus);
   const elapsed=S.tasks.find(x=>x.id===S.liveTaskId)?.elapsed_seconds||0;
-  let h='<div data-stream-bubble class="live-stream" style="display:none"><div class="live-stream-head">▌ Agent is writing — word to word live</div><div data-stream-body class="live-stream-body"></div></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--t5)">'+evs.length+' event'+(evs.length!==1?'s':'')+' · '+elapsed+'s'+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</span><span style="font-size:10px;color:var(--t5);font-family:var(--mono)">WS+SSE+poller</span></div><div class="think-list">';
+  let h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;color:var(--t5)">'+evs.length+' event'+(evs.length!==1?'s':'')+' · '+elapsed+'s'+(running?' <span class="spinner" style="display:inline-block;width:9px;height:9px;border-width:1.5px;vertical-align:middle"></span>':'')+'</span><span style="font-size:10px;color:var(--t5);font-family:var(--mono)">WS+SSE+poller</span></div><div class="think-list">';
   // Hide raw token deltas and raw JSON fragments; keep meaningful thinking/step/tool/todo
   const filtered=evs.filter(e=>{
     if(e.type==='token') return false;
@@ -421,7 +363,7 @@ function renderThinkingPanel(c){
     const isThinking=e.type==='thinking';
     const label = isThinking? '💭 Thinking: ' : (e.type==='step_running'? '⚙️ Doing: ' : (e.type==='tool_output'? '📝 Wrote: ' : (e.type==='todo_update'? '☑ Checklist: ' : '')));
     h+='<div class="think-item '+esc(e.type)+'" style="'+(isTool?'border-left-color:var(--blue)':isThinking?'border-left-color:var(--purple)':'')+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')"><div class="think-msg">'+thinkIcon(e,i===filtered.length-1,running)+esc(label+e.message)+'</div>'+(e.detail?'<div class="think-detail'+(i>=filtered.length-2||e.type==='error'||e.type==='todo_update'?' show':'')+'" style="'+(e.detail.length>400?'max-height:220px;overflow-y:auto':'')+'">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
-  h+='</div>';c.innerHTML=h;c.scrollTop=c.scrollHeight;setTimeout(renderStreamBubble,0)}
+  h+='</div>';c.innerHTML=h;c.scrollTop=c.scrollHeight}
 
 function renderApprovalPanel(c){
   if(!S.approvals.length){c.innerHTML='<div class="empty empty-big">No pending approvals</div>';return}
@@ -690,47 +632,12 @@ function refreshAll(){refreshAgentStatus();refreshApprovals();loadTasks();refres
 
 async function loadTasks(){try{const res=await fetch('/api/tasks');const tasks=await res.json();if(tasks.length>0){S.tasks=tasks;document.getElementById('taskCount').textContent=S.tasks.length;if(S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl)}}}catch(e){}}
 
-function renderTaskList(el){
-  // legacy entry — now routed through flicker-free RAF patch
-  queueTaskListPatch();
-}
-
-/* ── Live word-to-word stream — aggregates token deltas into a typing bubble ── */
-S._streamBuf="";S._streamActive=false;S._lastTokenAt=0;S._streamFlushTimer=null;
-function handleTokenDelta(delta){
-  if(!delta) return;
-  S._streamBuf+=delta;S._streamActive=true;S._lastTokenAt=Date.now();
-  renderStreamBubble();
-  if(S._streamFlushTimer) clearTimeout(S._streamFlushTimer);
-  S._streamFlushTimer=setTimeout(flushStreamBuf, 4000);
-}
-function flushStreamBuf(){
-  if(!S._streamBuf.trim()){S._streamBuf="";S._streamActive=false;renderStreamBubble();return}
-  const text=S._streamBuf;S._streamBuf="";S._streamActive=false;
-  const entry={type:"thinking",message:"Agent typed ("+text.length+" chars)",detail:text,time:Date.now()/1000};
-  S.liveEvents.push(entry);if(S.liveEvents.length>600) S.liveEvents.shift();
-  renderStreamBubble();if(S.rtab==='thinking'||S.rtab==='checklist') renderRPanel();
-}
-function renderStreamBubble(){
-  const els=document.querySelectorAll('[data-stream-bubble]');
-  if(!els.length) return;
-  const active=S._streamActive && (Date.now()-S._lastTokenAt<3500) && S._streamBuf.length>0;
-  els.forEach(el=>{
-    if(!active){el.style.display='none';return}
-    el.style.display='block';
-    const body=el.querySelector('[data-stream-body]');
-    if(body){
-      const txt=S._streamBuf.length>6000? S._streamBuf.slice(-6000)+"\n…(truncated)": S._streamBuf;
-      body.innerHTML=esc(txt)+'<span class="stream-cursor"></span>';
-      body.scrollTop=body.scrollHeight;
-    }
-  });
-}
+function renderTaskList(el){let html='';if(S.selected){html=renderDetail(S.selected)}else if(S.tasks.length===0){html='<div class="empty empty-big"><div style="font-size:24px;opacity:.3;margin-bottom:12px">&#9881;</div>No tasks yet<div class="empty-sub">Submit a goal above to get started</div></div>'}else{S.tasks.forEach(t=>{const a=S.selected&&S.selected.id===t.id;html+='<div class="task-card'+(a?' sel':'')+'" onclick="selectTask(\''+t.id+'\')"><div class="tc-row"><div class="tc-goal">'+esc(t.goal)+'</div><span class="badge b-'+t.status+'">'+t.status+'</span></div><div class="tc-meta"><span>'+(t.steps_count||0)+' steps</span><span>'+t.id.slice(0,8)+'</span></div>'+(t.result?'<div class="tc-result">'+esc(t.result.slice(0,300))+'</div>':'')+(t.error?'<div class="tc-error">'+esc(t.error)+'</div>':'')+'<div class="tc-actions"><button class="btn btn-d btn-sm" onclick="event.stopPropagation();deleteTask(\''+t.id+'\')">Delete</button></div></div>'})}el.innerHTML=html}
 
 /* ── Live Visibility — WS global + SSE push + poller fallback ───── */
 let S_eventSource=null;let S_ws=null;
-function startLivePoll(id){stopLivePoll();S.liveEvents=[];S._streamBuf="";S._streamActive=false;S._lastTokenAt=0;S._seenPollKeys=new Set();S._seenPollEventKeys=new Set();_lastTaskListHtml="";if(S._streamFlushTimer){clearTimeout(S._streamFlushTimer);S._streamFlushTimer=null}S.liveTaskId=id;S.liveStatus='running';pollLive();S.livePoll=setInterval(pollLive,2800);startLiveStream(id);connectGlobalWS()}
-function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}if(S_eventSource){try{S_eventSource.close()}catch(e){}S_eventSource=null}if(S_ws){try{S_ws.close()}catch(e){}S_ws=null}S.liveTaskId=null;if(S._streamFlushTimer){clearTimeout(S._streamFlushTimer);S._streamFlushTimer=null}S._streamActive=false;renderStreamBubble()}
+function startLivePoll(id){stopLivePoll();S.liveEvents=[];S.liveStatus='running';S.liveTaskId=id;pollLive();S.livePoll=setInterval(pollLive,1500);startLiveStream(id);connectGlobalWS()}
+function stopLivePoll(){if(S.livePoll){clearInterval(S.livePoll);S.livePoll=null}if(S_eventSource){try{S_eventSource.close()}catch(e){}S_eventSource=null}if(S_ws){try{S_ws.close()}catch(e){}S_ws=null}S.liveTaskId=null}
 function connectGlobalWS(){
   try{
     if(typeof WebSocket==='undefined')return;
@@ -738,7 +645,7 @@ function connectGlobalWS(){
     const proto=location.protocol==='https:'?'wss:':'ws:';
     const ws=new WebSocket(proto+'//'+location.host+'/api/ws');
     S_ws=ws;
-    ws.onmessage=e=>{try{const msg=JSON.parse(e.data);if(msg.type==='token'){const delta=msg.message||msg.detail||"";if(delta){if(!msg.task_id||msg.task_id===S.liveTaskId) handleTokenDelta(delta)} return}const key=(msg.time||0)+':'+(msg.type||'')+':'+(msg.message||'').slice(0,40);if(S._seenWSKeys&&S._seenWSKeys.has(key))return;if(!S._seenWSKeys)S._seenWSKeys=new Set();S._seenWSKeys.add(key);if(S._seenWSKeys.size>800)S._seenWSKeys.clear();if(S._streamBuf && msg.type!=='token'){flushStreamBuf()}if(!msg.task_id||msg.task_id===S.liveTaskId){if(msg.type&&msg.message){S.liveEvents.push(msg);if(S.liveEvents.length>600)S.liveEvents.shift();if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel()}}if(msg.task_id){const t=S.tasks.find(x=>x.id===msg.task_id);if(t&&msg.type==='todo_update'&&msg.extra&&msg.extra.todos)t.todos=msg.extra.todos;if(t&&msg.type==='step_running')t.steps_count=(t.steps_count||0)}if(msg.source==='memory'||msg.source==='skill'||msg.source==='watcher'){refreshMemoryCount();if(msg.source==='watcher')refreshWatchers()}}catch(err){}};
+    ws.onmessage=e=>{try{const msg=JSON.parse(e.data);const key=(msg.time||0)+':'+(msg.type||'')+':'+(msg.message||'').slice(0,40);if(S._seenWSKeys&&S._seenWSKeys.has(key))return;if(!S._seenWSKeys)S._seenWSKeys=new Set();S._seenWSKeys.add(key);if(S._seenWSKeys.size>800)S._seenWSKeys.clear();if(!msg.task_id||msg.task_id===S.liveTaskId){if(msg.type&&msg.message){S.liveEvents.push(msg);if(S.liveEvents.length>600)S.liveEvents.shift();if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel()}}if(msg.task_id){const t=S.tasks.find(x=>x.id===msg.task_id);if(t&&msg.type==='todo_update'&&msg.extra&&msg.extra.todos)t.todos=msg.extra.todos;if(t&&msg.type==='step_running')t.steps_count=(t.steps_count||0)}if(msg.source==='memory'||msg.source==='skill'||msg.source==='watcher'){refreshMemoryCount();if(msg.source==='watcher')refreshWatchers()}}catch(err){}};
     ws.onclose=()=>{S_ws=null;if(S.liveTaskId)setTimeout(connectGlobalWS,3000)};
     ws.onerror=()=>{try{ws.close()}catch(e){}};
   }catch(e){}
@@ -750,39 +657,12 @@ function startLiveStream(id){
     S_eventSource=es;
     es.onmessage=e=>{
       if(e.data==='[DONE]'){es.close();return}
-      try{const msg=JSON.parse(e.data);if(msg.type==='done'){flushStreamBuf();pollLive();return}if(msg.type==='token'){const delta=msg.message||msg.detail||"";if(delta) handleTokenDelta(delta);return}if(msg.type&&msg.message){
-        // share dedup with WS so same server event via WS+SSE doesn't triplicate
-        const skey=(msg.time||0)+':'+(msg.type||'')+':'+(msg.message||'').slice(0,40);
-        if(!S._seenWSKeys) S._seenWSKeys=new Set();
-        if(S._seenWSKeys.has(skey)) return; S._seenWSKeys.add(skey); if(S._seenWSKeys.size>800) S._seenWSKeys.clear();
-        if(S._streamBuf) flushStreamBuf();S.liveEvents.push(msg);if(S.liveEvents.length>600) S.liveEvents.shift(); if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel()}}catch(err){}
+      try{const msg=JSON.parse(e.data);if(msg.type==='done'){pollLive()}else if(msg.type&&msg.message){S.liveEvents.push(msg);if(S.rtab==='thinking'||S.rtab==='checklist')renderRPanel()}}catch(err){}
     };
     es.onerror=()=>{try{es.close()}catch(e){}};
   }catch(e){}
 }
-async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();const raw=(d.events||[]);const wsAlive=(S_ws && S_ws.readyState===1) || (S_eventSource && S_eventSource.readyState===1);
-if(!S._seenPollKeys) S._seenPollKeys=new Set();let hasNewToken=false;if(!wsAlive){for(const e of raw){if(e.type==='token'){const k=(e.time||0)+':'+(e.message||'').slice(0,40);if(!S._seenPollKeys.has(k)){S._seenPollKeys.add(k);if(S._seenPollKeys.size>1000) S._seenPollKeys.clear();const delta=e.message||e.detail||"";if(delta) handleTokenDelta(delta);hasNewToken=true}}}
-const filtered=raw.filter(e=>e.type!=='token');
-let eventsChanged=false;
-if(!wsAlive){
-  if(filtered.length!==S.liveEvents.length || JSON.stringify(filtered.map(e=>e.type+e.message).slice(-6))!==JSON.stringify(S.liveEvents.map(e=>e.type+e.message).slice(-6))){
-    S.liveEvents=filtered; eventsChanged=true;
-  }
-} else {
-  // WS/SSE is primary — do not merge poll events at all (prevents 3× duplicate). Only status/todos below will update.
-  eventsChanged=false;
-}
-S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){const prevStatus=t.status, prevSteps=(t.steps||[]).length, prevTodos=(t.todos||[]).length; t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.elapsed_seconds=d.elapsed_seconds||t.elapsed_seconds;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace;
-  if(t.status!==prevStatus || prevSteps!==t.steps.length || prevTodos!==t.todos.length) eventsChanged=true;
-  // keep selected reference in sync for badge patch
-  if(S.selected&&S.selected.id===t.id){ S.selected.status=t.status; S.selected.elapsed_seconds=t.elapsed_seconds; S.selected.steps=t.steps; S.selected.todos=t.todos; }
-}
-if((eventsChanged||hasNewToken) && (S.rtab==='thinking'||S.rtab==='checklist'||S.rtab==='trace'))renderRPanel();
-if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){
-  if(eventsChanged || hasNewToken || d.elapsed_seconds!==S.selected.elapsed_seconds) queueTaskListPatch();
-  const lb=document.getElementById('loadingBar');if(lb)lb.style.display=['completed','failed'].includes(d.status)?'none':'flex'
-}
-if(['completed','failed'].includes(d.status)){if(S._streamBuf) flushStreamBuf();stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}else if(hasNewToken){renderStreamBubble()}}catch(e){}}
+async function pollLive(){if(!S.liveTaskId)return;try{const res=await fetch('/api/tasks/live/'+S.liveTaskId);const d=await res.json();S.liveEvents=d.events||[];S.liveStatus=d.status||'running';const t=S.tasks.find(x=>x.id===d.task_id);if(t){t.status=d.status;t.result=d.result||t.result;t.error=d.error||t.error;t.steps_count=d.steps_count||t.steps_count;t.elapsed_seconds=d.elapsed_seconds||t.elapsed_seconds;t.steps=d.steps||t.steps;t.todos=d.todos||t.todos;t.trace=d.trace||t.trace}if(S.rtab==='thinking'||S.rtab==='checklist'||S.rtab==='trace')renderRPanel();if(S.selected&&S.selected.id===d.task_id&&S.page==='tasks'){const tl=document.getElementById('taskListEl');if(tl)renderTaskList(tl);const lb=document.getElementById('loadingBar');if(lb)lb.style.display=['completed','failed'].includes(d.status)?'none':'flex'}if(['completed','failed'].includes(d.status)){stopLivePoll();refreshAll();refreshMemoryCount();refreshCredCount()}}catch(e){}}
 
 /* ── Right Panel Minimize ─────────────────────────────────────── */
 function toggleRPanel(){const min=!document.body.classList.contains('rp-min');document.body.classList.toggle('rp-min',min);try{localStorage.setItem('nm_rpanel_min',min?'1':'0')}catch(e){}}
