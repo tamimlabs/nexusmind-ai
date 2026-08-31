@@ -47,10 +47,80 @@ _bg_tasks: set[asyncio.Task] = set()
 _bg_task_by_id: dict[str, asyncio.Task] = {}
 _last_cleanup: float = 0.0
 
+from contextlib import asynccontextmanager
+
+
+async def _telegram_poll_loop():
+    """Background Telegram long-polling with 409 suppression."""
+    import httpx
+
+    from agent.telegram import _get_api_url, process_update
+
+    if not _cfg.settings.telegram_bot_token:
+        logger.info("Telegram not configured — skipping polling")
+        return
+    offset = 0
+    consecutive_409 = 0
+    logger.info("Telegram long-polling started")
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    _get_api_url("getUpdates"),
+                    params={"offset": offset, "timeout": 10},
+                )
+                data = resp.json()
+                if data.get("ok"):
+                    consecutive_409 = 0
+                    if data.get("result"):
+                        for update in data["result"]:
+                            offset = update["update_id"] + 1
+                            try:
+                                await process_update(update)
+                            except Exception:
+                                logger.exception("Error processing Telegram update")
+                else:
+                    err = data.get("description", "")
+                    if "409" in str(data) or "Conflict" in err:
+                        consecutive_409 += 1
+                        backoff = 5 if consecutive_409 < 3 else 30
+                        if consecutive_409 <= 3:
+                            logger.warning(
+                                "Telegram polling 409 Conflict (another instance), backing off %ss — kill the other python -m api.main process or set Telegram webhook instead of polling", backoff
+                            )
+                        else:
+                            logger.debug("Telegram 409 still, backing off %ss", backoff)
+                        await asyncio.sleep(backoff)
+                    else:
+                        logger.warning("Telegram getUpdates not ok: %s", data)
+                        await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            logger.info("Telegram polling stopped")
+            break
+        except Exception:
+            logger.exception("Telegram polling error, retrying in 5s")
+            await asyncio.sleep(5)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # startup
+    await restore_watchers_on_startup()
+    await check_storage_backend()
+    task = asyncio.create_task(_telegram_poll_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 app = FastAPI(
     title="NexusMind AI",
     description="Autonomous task-execution agent on Google Cloud",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -67,7 +137,6 @@ app.include_router(watcher_router)
 app.include_router(credentials_router)
 
 
-@app.on_event("startup")
 async def restore_watchers_on_startup():
     """Restore persisted watchers on startup so the agent stays always-awake."""
     try:
@@ -81,7 +150,6 @@ async def restore_watchers_on_startup():
         logger.exception("Failed to restore watchers on startup")
 
 
-@app.on_event("startup")
 async def check_storage_backend():
     """Log which storage backend is active and verify Firestore connectivity."""
     from agent.config import settings
@@ -104,59 +172,6 @@ async def check_storage_backend():
             logger.exception("Firestore connectivity check failed")
     else:
         logger.info("Storage backend: SQLite")
-
-
-@app.on_event("startup")
-async def start_telegram_polling():
-    """Start Telegram long-polling in background for approval buttons."""
-    import httpx
-
-    from agent.telegram import _get_api_url, process_update
-
-    if not _cfg.settings.telegram_bot_token:
-        logger.info("Telegram not configured — skipping polling")
-        return
-
-    async def _poll_loop():
-        offset = 0
-        logger.info("Telegram long-polling started")
-        while True:
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.get(
-                        _get_api_url("getUpdates"),
-                        params={"offset": offset, "timeout": 10},
-                    )
-                    data = resp.json()
-                    if data.get("ok"):
-                        if data.get("result"):
-                            for update in data["result"]:
-                                offset = update["update_id"] + 1
-                                try:
-                                    await process_update(update)
-                                except Exception:
-                                    logger.exception("Error processing Telegram update")
-                    else:
-                        # 409 Conflict = another getUpdates instance; back off
-                        err = data.get("description", "")
-                        if "409" in str(data) or "Conflict" in err:
-                            logger.warning(
-                                "Telegram polling 409 Conflict (another instance), backing off 5s"
-                            )
-                            await asyncio.sleep(5)
-                        else:
-                            logger.warning("Telegram getUpdates not ok: %s", data)
-            except asyncio.CancelledError:
-                logger.info("Telegram polling stopped")
-                break
-            except Exception:
-                logger.exception("Telegram polling error, retrying in 5s")
-                await asyncio.sleep(5)
-
-    task = asyncio.create_task(_poll_loop())
-    import atexit
-
-    atexit.register(lambda: task.cancel())
 
 
 # Serve docs folder for logos
