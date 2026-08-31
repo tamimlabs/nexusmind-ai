@@ -29,7 +29,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --cpu 1 \
     --min-instances 0 \
     --max-instances 5 \
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_REGION=$REGION,DATABASE_BACKEND=firestore,GOOGLE_CLOUD_REGION=$REGION" \
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_REGION=$REGION,DATABASE_BACKEND=firestore" \
     --set-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest,GITHUB_TOKEN=GITHUB_TOKEN:latest" \
     --service-account "nexusmind-sa@$PROJECT_ID.iam.gserviceaccount.com"
 
