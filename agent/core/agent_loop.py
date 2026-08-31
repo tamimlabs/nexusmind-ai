@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from agent.core.executor import execute_step, set_todo_context
+from agent.core.executor import ToolResult, execute_step, set_todo_context
 from agent.core.gemini_client import QuotaExhaustedError
 from agent.core.planner import canonical_tool_names, repair_tool_name
 from agent.models import StepStatus, Task, TaskStep, TaskTodo, TodoPriority, TodoStatus
@@ -758,6 +758,105 @@ async def run_adaptive_loop(
     effective_max = max_steps
     loop_start = datetime.now(UTC)
 
+    # ── Roadmap fast-path ─────────────────────────────────────────────
+    # The planner already emits EXPLICIT tool calls (tool_name + tool_args).
+    # Executing them directly — WITHOUT a per-step Gemini decide call — cuts
+    # model round-trips from ~N+2 to ~2 on free tier (each decide call is
+    # 10-30s of latency). The adaptive loop still takes over for anything
+    # that fails (self-correction), is blocked, or when the roadmap runs out.
+    fastpath_failed = False
+    if roadmap:
+        _emit(
+            "thinking",
+            f"Executing {len(roadmap)} planned step(s) directly (no per-step model call)",
+            "adaptive loop takes over on any failure or when the roadmap is exhausted",
+        )
+        for _order_i, _fs in enumerate(roadmap):
+            _fspec = {
+                "description": getattr(_fs, "description", "") or "",
+                "tool_name": getattr(_fs, "tool_name", "") or "",
+                "tool_args": getattr(_fs, "tool_args", None) or {},
+            }
+            _fdec, _ferr = _validate_step_decision(_fspec)
+            if _fdec is None or not _fdec.get("tool_args"):
+                _emit("error", "Roadmap step incomplete — adaptive loop takes over", (_ferr or "")[:200])
+                break
+            _fstep = TaskStep(
+                task_id=task.id,
+                description=_fdec["description"],
+                tool_name=_fdec["tool_name"],
+                tool_args=_fdec["tool_args"],
+                order=len(task.steps),
+            )
+            # Mark the seeded todo as in_progress (single focus) before acting.
+            _fs_todo = next(
+                (t for t in task.todos if t.order == _order_i and t.status is TodoStatus.PENDING),
+                None,
+            )
+            if _fs_todo is not None:
+                _set_todo_status(_fs_todo, TodoStatus.IN_PROGRESS)
+            # Collision guard (same rule as the adaptive loop).
+            _ftargets = _step_target_roots(_fstep)
+            _fblocked = (
+                next((r for r in _ftargets if r in preexisting and r not in read_roots), None)
+                if _fstep.tool_name in ("write_file", "write_directory", "execute_code", "run_command")
+                else None
+            )
+            if _fblocked is not None:
+                _fblock_msg = _BLOCK_TEMPLATE.replace("{root}", _fblocked)
+                _fstep.status = StepStatus.SKIPPED
+                _fstep.error = _fblock_msg
+                context[f"step_{_fstep.order}_result"] = _fblock_msg
+                details.append(f"step {_fstep.order} [{_fstep.tool_name}]: BLOCKED (existing {_fblocked})")
+                _emit("error", f"Step {_fstep.order} blocked", f"{_fblocked} already exists — read its files first or pick a new name.")
+                if _fs_todo is not None:
+                    _set_todo_status(_fs_todo, TodoStatus.SKIPPED)
+                continue
+            _emit(
+                "step_running",
+                f"Step {_fstep.order}: {_trim(_fstep.description, 90)}",
+                f"[{_fstep.tool_name}] roadmap fast-path | elapsed {int((datetime.now(UTC)-loop_start).total_seconds())}s",
+            )
+            task.steps.append(_fstep)
+            task.updated_at = datetime.now(UTC)
+
+            def _fs_on_chunk(chunk: str) -> None:
+                if chunk:
+                    _emit("tool_delta", chunk[:800], chunk[:1200])
+
+            _fs_call_ctx: dict[str, Any] = dict(context or {})
+            _fs_call_ctx["on_output"] = _fs_on_chunk
+            if isinstance(context, dict):
+                context["on_output"] = _fs_on_chunk
+            _fs_tool_start = datetime.now(UTC)
+            try:
+                _fs_result = await execute_fn(_fstep, _fs_call_ctx)
+            except Exception as _fexc:
+                _fs_result = ToolResult(success=False, output="", error=str(_fexc))
+            finally:
+                if isinstance(context, dict):
+                    context.pop("on_output", None)
+            _fs_ms = int((datetime.now(UTC) - _fs_tool_start).total_seconds() * 1000)
+            context[f"step_{_fstep.order}_result"] = _fs_result.output
+            details.append(f"step {_fstep.order} [{_fstep.tool_name}]: {'ok' if _fs_result.success else 'FAILED'} {_fs_ms}ms")
+            _emit(
+                "tool_output" if _fs_result.success else "error",
+                f"Step {_fstep.order} {'output' if _fs_result.success else 'failed'} ({_fs_ms}ms)",
+                _trim((_fs_result.output or _fs_result.error or "")[:1500], 1500) + f"\n— tool: {_fstep.tool_name} | decide: 0ms (roadmap) | tool: {_fs_ms}ms",
+            )
+            if _fs_result.success:
+                if _fs_todo is not None:
+                    _set_todo_status(_fs_todo, TodoStatus.COMPLETED)
+                if _fstep.tool_name in ("read_file", "list_directory"):
+                    read_roots.update(_step_target_roots(_fstep))
+                _emit("done", f"Step {_fstep.order} complete", _trim(_fs_result.output or _fs_result.error or "", 300))
+            else:
+                fastpath_failed = True
+                _emit("error", f"Step {_fstep.order} failed — adaptive loop takes over", _trim(_fs_result.error or "unknown error", 250))
+                break
+    if fastpath_failed:
+        _emit("thinking", "Roadmap step failed — switching to adaptive self-correction", "")
+
     # Compaction — the Gemini summary of very old steps is MERGED into the
     # transcript the model reads (prepended above the raw window), so the call
     # actually compresses context instead of just emitting a useless event.
@@ -832,13 +931,8 @@ async def run_adaptive_loop(
         for _attempt in range(1, _MAX_DECISION_PARSE_RETRIES + 1):
             try:
                 _emit("thinking", f"Gemini deciding… attempt {_attempt}/{_MAX_DECISION_PARSE_RETRIES}", f"model brain thinking (round {_round+1})")
-                import asyncio as _aio_decide
-
-                try:
-                    decision = await _aio_decide.wait_for(_call_decide(decide_fn, state, on_event=on_event), timeout=180)
-                except _aio_decide.TimeoutError:
-                    _emit("error", "Gemini decide 180s timeout", "Model slow — will retry this round")
-                    decision = {"_error": "SYSTEM NOTE: Gemini decision timed out after 180s, retrying. If this repeats, the model may be overloaded.", "_raw": ""}
+                # No timeout — agent runs until done (user removed timeout limit)
+                decision = await _call_decide(decide_fn, state, on_event=on_event)
                 raw_preview = _trim(str(decision.get("_raw") or decision)[:800], 500)
                 _emit("thinking", "Decision received", raw_preview)
             except QuotaExhaustedError as exc:

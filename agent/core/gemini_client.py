@@ -155,33 +155,49 @@ def _was_truncated(response: Any) -> bool:
         return False
 
 
+def _mask_key(k: str) -> str:
+    if not k or len(k) <= 8:
+        return "****" if k else ""
+    return "*" * (len(k) - 4) + k[-4:]
+
+
 class KeyRotator:
-    """Manages multiple Gemini API keys with round-robin rotation and rate-limit backoff."""
+    """Manual Gemini API key manager — no automatic rotation.
+
+    The user can add as many keys as needed (Key 1, Key 2, ...) and picks the
+    active one from the dashboard (GEMINI_ACTIVE_KEY_INDEX, 1-based).  When the
+    active key hits a daily quota or sustained rate limit the error is surfaced
+    immediately so the user can switch keys manually — the client no longer
+    silently hops to the next key.
+    """
 
     def __init__(self) -> None:
         self._keys: list[str] = []
         self._clients: dict[str, Any] = {}
-        self._current_index = 0
-        self._cooldowns: dict[str, float] = {}  # key -> until_when (epoch)
+        self._current_index = 0  # kept for backwards-compat; mirrors active index
+        self._cooldowns: dict[str, float] = {}  # key -> until_when (epoch) for diagnostics
+        self._active_index: int = 0  # 0-based
         self._init_keys()
 
     def _init_keys(self) -> None:
-        """Parse comma-separated keys from env."""
+        """Parse comma-separated keys from env and clamp active index."""
         raw = settings.gemini_api_key
         if not raw or raw == "your-gemini-api-key":
             logger.warning("No Gemini API keys configured. Set GEMINI_API_KEY in .env")
-            return
-
-        self._keys = [k.strip() for k in raw.split(",") if k.strip()]
-        logger.info("Gemini key rotator initialized with %d keys", len(self._keys))
+            self._keys = []
+        else:
+            self._keys = [k.strip() for k in raw.split(",") if k.strip()]
+        # honour GEMINI_ACTIVE_KEY_INDEX (1-based in .env)
+        try:
+            want = int(getattr(settings, "gemini_active_key_index", 1) or 1)
+        except Exception:
+            want = 1
+        self._active_index = max(0, min(want - 1, max(0, len(self._keys) - 1)))
+        self._current_index = self._active_index
+        logger.info("Gemini key manager: %d key(s), active=Key %d", len(self._keys), self._active_index + 1)
 
     def refresh(self) -> None:
-        """Re-parse GEMINI_API_KEY after a settings reload.
-
-        Keys saved via the dashboard at runtime must be usable immediately
-        without a server restart. Removes clients/cooldowns for keys that were
-        dropped so rotation state stays consistent with the live key set.
-        """
+        """Re-parse GEMINI_API_KEY + GEMINI_ACTIVE_KEY_INDEX after a settings reload."""
         raw = (settings.gemini_api_key or "").strip()
         if not raw or raw == "your-gemini-api-key":
             self._keys = []
@@ -191,54 +207,178 @@ class KeyRotator:
             if key not in self._keys:
                 self._clients.pop(key, None)
         self._cooldowns = {k: v for k, v in self._cooldowns.items() if k in self._keys}
-        logger.info("Gemini key rotator refreshed: %d key(s) active", len(self._keys))
+        try:
+            want = int(getattr(settings, "gemini_active_key_index", 1) or 1)
+        except Exception:
+            want = 1
+        # if keys shrank, clamp active; otherwise honour requested index
+        if self._keys:
+            self._active_index = max(0, min(want - 1, len(self._keys) - 1))
+        else:
+            self._active_index = 0
+        self._current_index = self._active_index
+        try:
+            settings.gemini_active_key_index = self._active_index + 1 if self._keys else 1
+        except Exception:
+            pass
+        logger.info("Gemini key manager refreshed: %d key(s), active=Key %d", len(self._keys), self._active_index + 1)
+
+    # ── Manual key management ──────────────────────────────────────
+    def _persist_keys(self) -> None:
+        """Persist current _keys list to .env + settings + os.environ."""
+        value = ",".join(self._keys)
+        try:
+            from agent.config import _ENV_FILE
+            import os
+
+            raw_env = _ENV_FILE.read_text(encoding="utf-8").splitlines() if _ENV_FILE.exists() else []
+            found = False
+            out: list[str] = []
+            for line in raw_env:
+                if line.strip().startswith("GEMINI_API_KEY="):
+                    out.append(f"GEMINI_API_KEY={value}")
+                    found = True
+                else:
+                    out.append(line)
+            if not found:
+                out.append(f"GEMINI_API_KEY={value}")
+            _ENV_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
+        except Exception:
+            logger.debug("Failed to persist GEMINI_API_KEY to .env", exc_info=True)
+        try:
+            settings.gemini_api_key = value
+            import os
+
+            os.environ["GEMINI_API_KEY"] = value
+        except Exception:
+            pass
+
+    def _persist_active_index(self) -> None:
+        idx = self._active_index + 1
+        try:
+            from agent.config import _ENV_FILE
+            import os
+
+            raw_env = _ENV_FILE.read_text(encoding="utf-8").splitlines() if _ENV_FILE.exists() else []
+            found = False
+            out: list[str] = []
+            for line in raw_env:
+                if line.strip().startswith("GEMINI_ACTIVE_KEY_INDEX="):
+                    out.append(f"GEMINI_ACTIVE_KEY_INDEX={idx}")
+                    found = True
+                else:
+                    out.append(line)
+            if not found:
+                out.append(f"GEMINI_ACTIVE_KEY_INDEX={idx}")
+            _ENV_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
+        except Exception:
+            logger.debug("Failed to persist GEMINI_ACTIVE_KEY_INDEX", exc_info=True)
+        try:
+            settings.gemini_active_key_index = idx
+            import os
+
+            os.environ["GEMINI_ACTIVE_KEY_INDEX"] = str(idx)
+        except Exception:
+            pass
+        self._current_index = self._active_index
+
+    def list_keys(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        now = time.monotonic()
+        for i, k in enumerate(self._keys):
+            out.append(
+                {
+                    "index": i + 1,
+                    "masked": _mask_key(k),
+                    "active": i == self._active_index,
+                    "cooldown_until": self._cooldowns.get(k, 0),
+                    "in_cooldown": now < self._cooldowns.get(k, 0),
+                }
+            )
+        return out
+
+    def set_active(self, index_1based: int) -> dict[str, Any]:
+        if not self._keys:
+            raise ValueError("No keys configured")
+        if not 1 <= index_1based <= len(self._keys):
+            raise ValueError(f"Key index out of range (1..{len(self._keys)})")
+        self._active_index = index_1based - 1
+        self._persist_active_index()
+        logger.info("Switched active Gemini key to Key %d", index_1based)
+        return {"active_index": index_1based, "masked": _mask_key(self._keys[self._active_index])}
+
+    def add_key(self, key: str) -> dict[str, Any]:
+        k = (key or "").strip()
+        if not k:
+            raise ValueError("Key must not be empty")
+        if k in self._keys:
+            raise ValueError("Key already exists")
+        self._keys.append(k)
+        self._persist_keys()
+        # auto-select newly added key if it's the first one
+        if len(self._keys) == 1:
+            self._active_index = 0
+            self._persist_active_index()
+        logger.info("Added Gemini Key %d", len(self._keys))
+        return {"index": len(self._keys), "masked": _mask_key(k)}
+
+    def remove_key(self, index_1based: int) -> dict[str, Any]:
+        if not 1 <= index_1based <= len(self._keys):
+            raise ValueError(f"Key index out of range (1..{len(self._keys)})")
+        removed = self._keys.pop(index_1based - 1)
+        # drop client/cooldown for removed key
+        self._clients.pop(removed, None)
+        self._cooldowns.pop(removed, None)
+        # adjust active index
+        if self._keys:
+            if self._active_index >= len(self._keys):
+                self._active_index = len(self._keys) - 1
+            elif self._active_index >= index_1based - 1 and self._active_index > 0:
+                # if we removed before active, shift left
+                if index_1based - 1 < self._active_index:
+                    self._active_index -= 1
+        else:
+            self._active_index = 0
+        self._persist_keys()
+        self._persist_active_index()
+        logger.info("Removed Gemini Key %d", index_1based)
+        return {"removed": index_1based}
+
+    def update_key(self, index_1based: int, new_key: str) -> dict[str, Any]:
+        if not 1 <= index_1based <= len(self._keys):
+            raise ValueError(f"Key index out of range (1..{len(self._keys)})")
+        k = (new_key or "").strip()
+        if not k:
+            raise ValueError("Key must not be empty")
+        old = self._keys[index_1based - 1]
+        if k != old and k in self._keys:
+            raise ValueError("Key already exists at another index")
+        self._keys[index_1based - 1] = k
+        # drop old client
+        self._clients.pop(old, None)
+        self._cooldowns.pop(old, None)
+        self._persist_keys()
+        logger.info("Updated Gemini Key %d", index_1based)
+        return {"index": index_1based, "masked": _mask_key(k)}
 
     def _get_next_key(self) -> str:
-        """Get the next available key (skips keys in cooldown)."""
+        """Return the ACTIVE key (no rotation). Kept for backwards-compat."""
         if not self._keys:
             raise RuntimeError("No Gemini API keys configured")
-
-        now = time.monotonic()
-        attempts = 0
-        while attempts < len(self._keys):
-            key = self._keys[self._current_index % len(self._keys)]
-            self._current_index += 1
-
-            # Check if key is in cooldown (monotonic to survive NTP jumps)
-            cooldown_until = self._cooldowns.get(key, 0)
-            if now >= cooldown_until:
-                return key
-
-            attempts += 1
-
-        # All keys in cooldown — use the one with shortest cooldown
-        best_key = min(self._keys, key=lambda k: self._cooldowns.get(k, 0))
-        wait_time = self._cooldowns[best_key] - now
-        if wait_time > 0:
-            logger.warning("All keys in cooldown. Waiting %.1fs for next key", wait_time)
-            # Note: this is called from sync context in _get_next_key
-            # The caller should handle async waiting if needed
-        return best_key
+        return self._keys[self._active_index]
 
     def mark_rate_limited(self, key: str, retry_after: float = 60) -> None:
-        """Mark a key as rate-limited with backoff duration."""
+        """Record a cooldown for diagnostics (no auto-rotation)."""
         self._cooldowns[key] = time.monotonic() + retry_after
         logger.warning("Key ...%s rate-limited, backing off %.0fs", key[-6:], retry_after)
 
     def get_client(self) -> tuple[Any, str]:
-        """Get a Gemini client with the next available key.
-
-        Returns:
-            Tuple of (client, key_used).
-
-        """
+        """Get a Gemini client for the ACTIVE key only."""
         from google import genai
 
         key = self._get_next_key()
-
         if key not in self._clients:
             self._clients[key] = genai.Client(api_key=key)
-
         return self._clients[key], key
 
     @property
@@ -247,8 +387,26 @@ class KeyRotator:
 
     @property
     def active_keys(self) -> int:
+        # Manual mode: exactly one active key if any key exists and not in cooldown,
+        # otherwise 0. Kept for backwards-compat with throttle interval.
+        if not self._keys:
+            return 0
         now = time.monotonic()
-        return sum(1 for k in self._keys if now >= self._cooldowns.get(k, 0))
+        active_key = self._keys[self._active_index] if 0 <= self._active_index < len(self._keys) else None
+        if active_key is None:
+            return 0
+        return 0 if now < self._cooldowns.get(active_key, 0) else 1
+
+    @property
+    def active_index(self) -> int:
+        """1-based active key index for API/UI."""
+        return self._active_index + 1 if self._keys else 0
+
+    @property
+    def active_key_masked(self) -> str:
+        if not self._keys or not 0 <= self._active_index < len(self._keys):
+            return ""
+        return _mask_key(self._keys[self._active_index])
 
 
 rotator = KeyRotator()
@@ -272,26 +430,14 @@ class RateThrottle:
     def _interval(rps: float, rpm: int) -> float:
         """Min seconds between requests implied by the rps and rpm bounds.
 
-        Scales RPM by the number of configured API keys (free tier is per-key).
-        With 4 keys at 15 rpm each the effective budget is 60 rpm → 1s interval,
-        not 4s. The server-side 429 retry + rotation still protects the real
-        quota, so this only removes the *preemptive* sleep that made every
-        website build pay 28s of idle time.
+        Manual key mode: only the ACTIVE key's quota counts (no rotation), so
+        RPM is NOT scaled by key count — the free tier is per active key.
         """
         interval = 0.0
         if rps and rps > 0:
             interval = max(interval, 1.0 / rps)
         if rpm and rpm > 0:
-            try:
-                keys = max(1, rotator.key_count or 1)
-                # Use active keys when some are parked for the day
-                active = rotator.active_keys
-                if active and active < keys:
-                    keys = active
-            except Exception:
-                keys = 1
-            effective_rpm = rpm * keys
-            interval = max(interval, 60.0 / effective_rpm)
+            interval = max(interval, 60.0 / rpm)
         return interval
 
     async def acquire(self) -> float:
@@ -320,25 +466,15 @@ async def generate_content(
     retry: bool = True,
     fallback_max_tokens: int | None = None,
 ) -> str:
-    """Generate text content using Gemini with automatic key rotation and retry.
+    """Generate text content using Gemini with manual key selection.
 
-    If the primary model hits its output-token limit (truncated reply), the
-    call transparently retries once on the stronger configured model
-    (``settings.gemini_model_pro``) with a larger output budget — so long
-    tasks keep going instead of stopping on an unfinished answer.
-    ``OutputTruncatedError`` is raised only when no fallback model is set or
-    the fallback is truncated too (the caller can then tell the model to reply
-    shorter, which the agent loop does).
+    The active key is chosen by the user in the dashboard (Key 1, Key 2, ...).
+    No automatic rotation — quota/rate errors surface immediately with
+    guidance to switch keys manually. Per-model fallback chain
+    (GEMINI_FALLBACK_MODELS) still applies since each model has its own bucket.
 
-    Rate limiting is handled by classification of the 429 body:
-    - RPS/RPM-class (per-minute/second): the request is WAITED out — the client
-      polls again every ~5 s until the rate window resets. The task is never
-      abandoned for a transient burst.
-    - Per-day per-key cap: the spent key is parked until its daily bucket
-      resets and the request is retried on the NEXT configured API key. Each
-      retried call (rate or daily) carries a short context marker so the key
-      that handles it knows it is a continuation, not a fresh start.
-      ``QuotaExhaustedError`` is raised only when every key is spent today.
+    If the primary model hits its output-token limit the call retries once on
+    the stronger model with a larger budget.
     """
     from google.genai import types
 
@@ -375,21 +511,15 @@ async def generate_content(
         return True
 
     attempts = 0
-    # For RPS/RPM 429s we stay on the SAME key for up to 45s before rotating
+    # Manual key mode: always use the ACTIVE key; RPS/RPM polls retry same key for ~45s
     _reuse_client: Any | None = None
     _reuse_key: str | None = None
     while True:
         attempts += 1
         active_model = model_name
         if _reuse_client is not None and _reuse_key is not None and rate_retry_start is not None:
-            # Still within the 45s budget for this key — retry same key
             client, key_used = _reuse_client, _reuse_key
         else:
-            # Pick next available key (or wait if all in cooldown)
-            if rotator.active_keys == 0 and rotator._cooldowns:
-                shortest = min(rotator._cooldowns.values()) - time.monotonic()
-                if shortest > 0:
-                    await asyncio.sleep(min(shortest, 5))
             client, key_used = rotator.get_client()
             _reuse_client, _reuse_key = client, key_used
 
@@ -452,10 +582,16 @@ async def generate_content(
             error_str = str(exc).lower()
             if "invalid" in error_str and "key" in error_str:
                 rotator.mark_rate_limited(key_used, retry_after=86400)
-                logger.error("Invalid API key ...%s, removing from rotation", key_used[-6:])
-                _reuse_client = _reuse_key = None
-                rate_retry_start = None
-                continue
+                _ai = getattr(rotator, "active_index", getattr(rotator, "_active_index", 0) + 1 if hasattr(rotator, "_active_index") else "?")
+                logger.error("Invalid API key ...%s (Key %s) — switch to another key in dashboard", key_used[-6:], _ai)
+                raise QuotaExhaustedError(retry_after=0) from exc
+            if "404" in error_str and ("not_found" in error_str or "not found" in error_str or "model" in error_str):
+                logger.warning("Model %s not found (404) on key ...%s — falling back", model_name, key_used[-6:])
+                if _try_next_quota_model(f"model {model_name} 404"):
+                    _reuse_client = _reuse_key = None
+                    rate_retry_start = None
+                    continue
+                raise
 
             if not _is_quota_error(error_str):
                 raise
@@ -463,62 +599,40 @@ async def generate_content(
             delay = _extract_retry_delay(exc)
 
             if _is_daily_quota(error_str):
-                # Per-day per-key cap (free tier: 20 req/day): this key is spent
-                # until tomorrow. Park it, hand the same request (now with a
-                # context note) to the NEXT key, which has its own daily bucket.
-                retry_note = _retry_context_note(
-                    "the previous API key hit its per-day request cap and was "
-                    "replaced; nothing was executed or lost — continue this "
-                    "request exactly as asked, over the same context."
-                )
                 rotator.mark_rate_limited(key_used, retry_after=_DAILY_KEY_PARK_SECONDS)
+                _ai2 = getattr(rotator, "active_index", getattr(rotator, "_active_index", 0) + 1 if hasattr(rotator, "_active_index") else "?")
                 logger.warning(
-                    "Daily Gemini request cap on key ...%s (attempt %d); parking "
-                    "key and switching to the next API key",
+                    "Daily quota hit on Key %s (...%s) — switch keys in dashboard or wait 24h. Model=%s",
+                    _ai2,
                     key_used[-6:],
-                    attempts,
+                    model_name,
                 )
-                _reuse_client = _reuse_key = None
-                rate_retry_start = None  # new key -> reset RPS/RPM window
-                if rotator.key_count <= 1 or rotator.active_keys == 0:
-                    if _try_next_quota_model(f"key ...{key_used[-6:]} daily"):
-                        _reuse_client = _reuse_key = None
-                        continue
-                    raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
-                if delay > 0:
-                    await asyncio.sleep(min(delay, 2.0))
-                continue
+                # Try next model (same active key, different bucket) before giving up
+                if _try_next_quota_model(f"Key {_ai2} daily"):
+                    _reuse_client = _reuse_key = None
+                    rate_retry_start = None
+                    continue
+                raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
 
-            # RPS/RPM-class limit: stay on SAME key for up to 45s, then park it
-            # and rotate to the next API key. This is your requested bound.
+            # RPS/RPM-class limit: poll same active key for up to 45s
             if rate_retry_start is None:
                 rate_retry_start = time.monotonic()
             elapsed = time.monotonic() - rate_retry_start
             if elapsed >= _MAX_RATE_RETRY_SECONDS:
+                _ai3 = getattr(rotator, "active_index", getattr(rotator, "_active_index", 0) + 1 if hasattr(rotator, "_active_index") else "?")
                 logger.warning(
-                    "Rate-limit on key ...%s persisted %.0fs (>=%.0fs); parking key and switching to next API key (attempt %d)",
+                    "Rate-limit on Key %s (...%s) persisted %.0fs — switch keys in dashboard or wait. Model=%s",
+                    _ai3,
                     key_used[-6:],
                     elapsed,
-                    _MAX_RATE_RETRY_SECONDS,
-                    attempts,
+                    model_name,
                 )
-                # Park this key briefly and rotate — don't sleep full poll window
                 rotator.mark_rate_limited(key_used, retry_after=_RATE_POLL_SECONDS * 2)
-                retry_note = _retry_context_note(
-                    "the previous API key was rate-limited for ~45s and was "
-                    "replaced; nothing was executed or lost — continue this "
-                    "request exactly as asked, over the same context."
-                )
-                _reuse_client = _reuse_key = None
-                rate_retry_start = None  # new key gets a fresh 45s budget
-                if rotator.key_count <= 1 or rotator.active_keys == 0:
-                    if _try_next_quota_model(f"key ...{key_used[-6:]} rate"):
-                        _reuse_client = _reuse_key = None
-                        continue
-                    # Single key or all keys exhausted — surface as quota error
-                    # so the orchestrator can abort cleanly with retry guidance.
-                    raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
-                continue
+                if _try_next_quota_model(f"Key {_ai3} rate"):
+                    _reuse_client = _reuse_key = None
+                    rate_retry_start = None
+                    continue
+                raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
 
             retry_note = _retry_context_note(
                 "the previous attempt was paused by a per-minute/second rate "
@@ -526,14 +640,12 @@ async def generate_content(
                 "nothing was executed or lost — respond exactly as requested."
             )
             poll_seconds = max(delay, _RATE_POLL_SECONDS)
-            # Don't overshoot the 45s budget — sleep only the remaining time
             remaining = _MAX_RATE_RETRY_SECONDS - elapsed
             sleep_for = min(poll_seconds, remaining) if remaining > 0 else 0
-            # Keep retrying SAME key — still record a short backoff for
-            # observability (test expects _cooldowns set) but reuse bypasses it.
             rotator.mark_rate_limited(key_used, retry_after=poll_seconds)
             logger.warning(
-                "Rate-limit on key ...%s (attempt %d, %.0fs/%.0fs), model %s — retrying same key in ~%.0fs",
+                "Rate-limit on Key %d (...%s) (attempt %d, %.0fs/%.0fs), model %s — retrying same key in ~%.0fs",
+                rotator.active_index,
                 key_used[-6:],
                 attempts,
                 elapsed,
@@ -543,7 +655,6 @@ async def generate_content(
             )
             if sleep_for > 0:
                 await asyncio.sleep(sleep_for)
-            # _reuse_client/_reuse_key already set so next loop retries same key
 
 
 async def generate_content_stream(
@@ -604,10 +715,6 @@ async def generate_content_stream(
         if _reuse_client is not None and _reuse_key is not None and rate_retry_start is not None:
             client, key_used = _reuse_client, _reuse_key
         else:
-            if rotator.active_keys == 0 and rotator._cooldowns:
-                shortest = min(rotator._cooldowns.values()) - time.monotonic()
-                if shortest > 0:
-                    await asyncio.sleep(min(shortest, 5))
             client, key_used = rotator.get_client()
             _reuse_client, _reuse_key = client, key_used
 
@@ -708,67 +815,58 @@ async def generate_content_stream(
             error_str = str(exc).lower()
             if "invalid" in error_str and "key" in error_str:
                 rotator.mark_rate_limited(key_used, retry_after=86400)
-                logger.error("Invalid API key ...%s, removing from rotation (stream)", key_used[-6:])
-                _reuse_client = _reuse_key = None
-                rate_retry_start = None
-                # If nothing yielded yet, retry; otherwise surface.
-                if yielded_any:
-                    raise
-                continue
+                logger.error("Invalid API key ...%s (Key %d stream) — switch keys in dashboard", key_used[-6:], rotator.active_index)
+                raise QuotaExhaustedError(retry_after=0) from exc
+            if "404" in error_str and ("not_found" in error_str or "not found" in error_str or "model" in error_str):
+                logger.warning("Model %s not found (404 stream) on key ...%s — falling back", model_name, key_used[-6:])
+                if _try_next_quota_model_s(f"model {model_name} 404"):
+                    _reuse_client = _reuse_key = None
+                    rate_retry_start = None
+                    if yielded_any:
+                        raise QuotaExhaustedError(retry_after=5) from exc
+                    continue
+                raise
             if not _is_quota_error(error_str):
                 raise
             delay = _extract_retry_delay(exc)
             if _is_daily_quota(error_str):
-                retry_note = _retry_context_note(
-                    "the previous API key hit its per-day request cap and was replaced; nothing was executed or lost — continue this request exactly as asked, over the same context."
-                )
                 rotator.mark_rate_limited(key_used, retry_after=_DAILY_KEY_PARK_SECONDS)
-                logger.warning(
-                    "Daily Gemini request cap (stream) on key ...%s; parking key and switching",
-                    key_used[-6:],
-                )
+                _sai = getattr(rotator, "active_index", "?")
+                logger.warning("Daily quota hit (stream) on Key %s (...%s) — switch keys in dashboard", _sai, key_used[-6:])
                 _reuse_client = _reuse_key = None
                 rate_retry_start = None
                 if yielded_any:
-                    if _try_next_quota_model_s(f"key ...{key_used[-6:]} daily (yielded)"):
+                    _sai2 = getattr(rotator, "active_index", "?")
+                    if _try_next_quota_model_s(f"Key {_sai2} daily (yielded)"):
                         _reuse_client = _reuse_key = None
                         continue
                     raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
-                if rotator.key_count <= 1 or rotator.active_keys == 0:
-                    if _try_next_quota_model_s(f"key ...{key_used[-6:]} daily"):
-                        _reuse_client = _reuse_key = None
-                        continue
-                    raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
-                if delay > 0:
-                    await asyncio.sleep(min(delay, 2.0))
-                continue
+                _sai3 = getattr(rotator, "active_index", "?")
+                if _try_next_quota_model_s(f"Key {_sai3} daily"):
+                    _reuse_client = _reuse_key = None
+                    continue
+                raise QuotaExhaustedError(retry_after=_DAILY_KEY_PARK_SECONDS) from exc
             # RPS/RPM
             if rate_retry_start is None:
                 rate_retry_start = time.monotonic()
             elapsed = time.monotonic() - rate_retry_start
             if elapsed >= _MAX_RATE_RETRY_SECONDS:
+                _sai4 = getattr(rotator, "active_index", "?")
                 logger.warning(
-                    "Rate-limit (stream) on key ...%s persisted %.0fs; parking key and rotating",
+                    "Rate-limit (stream) on Key %s (...%s) persisted %.0fs — switch keys in dashboard",
+                    _sai4,
                     key_used[-6:],
                     elapsed,
                 )
                 rotator.mark_rate_limited(key_used, retry_after=_RATE_POLL_SECONDS * 2)
-                retry_note = _retry_context_note(
-                    "the previous API key was rate-limited for ~45s and was replaced; nothing was executed or lost — continue this request exactly as asked, over the same context."
-                )
-                _reuse_client = _reuse_key = None
-                rate_retry_start = None
+                _sai5 = getattr(rotator, "active_index", "?")
+                if _try_next_quota_model_s(f"Key {_sai5} rate"):
+                    _reuse_client = _reuse_key = None
+                    rate_retry_start = None
+                    continue
                 if yielded_any:
-                    if _try_next_quota_model_s(f"key ...{key_used[-6:]} rate (yielded)"):
-                        _reuse_client = _reuse_key = None
-                        continue
                     raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
-                if rotator.key_count <= 1 or rotator.active_keys == 0:
-                    if _try_next_quota_model_s(f"key ...{key_used[-6:]} rate"):
-                        _reuse_client = _reuse_key = None
-                        continue
-                    raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
-                continue
+                raise QuotaExhaustedError(retry_after=_RATE_POLL_SECONDS) from exc
             retry_note = _retry_context_note(
                 "the previous attempt was paused by a per-minute/second rate limit and is now being retried after the window reset; nothing was executed or lost — respond exactly as requested."
             )

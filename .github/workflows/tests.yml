@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -15,40 +15,83 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format --check
+        run: ruff format --check .
+
+  typecheck:
+    name: typecheck (mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+      - name: mypy
+        run: mypy agent api cloud --ignore-missing-imports
+
   test:
-    name: pytest shard ${{ matrix.shard }}
+    name: pytest shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [lint, typecheck]
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: pyproject.toml
-
-      - name: Install project + dev dependencies
+      - name: Install project + dev deps
         run: |
           python -m pip install --upgrade pip
           pip install .[dev]
-
       - name: Create .env for tests
         run: |
           cp .env.example .env
-          sed -i 's/^GEMINI_API_KEY=.*/GEMINI_API_KEY=ci-placeholder-key/' .env
-
-      - name: Run tests (shard ${{ matrix.shard }}/3 with xdist)
+          # CI placeholder key; manual Key 1 is active (no auto-rotation)
+          if grep -q "^GEMINI_API_KEY=" .env; then
+            sed -i 's/^GEMINI_API_KEY=.*/GEMINI_API_KEY=ci-placeholder-key/' .env
+          else
+            echo "GEMINI_API_KEY=ci-placeholder-key" >> .env
+          fi
+          if ! grep -q "^GEMINI_ACTIVE_KEY_INDEX=" .env; then
+            echo "GEMINI_ACTIVE_KEY_INDEX=1" >> .env
+          fi
+          cat .env
+      - name: Run tests (shard ${{ matrix.shard }}/3)
         id: pytest
         continue-on-error: true
         run: |
           set -o pipefail
           python -m pytest tests/ --splits 3 --group ${{ matrix.shard }} -q --no-header -p no:cacheprovider -n auto --dist loadscope --junitxml=pytest_report_${{ matrix.shard }}.xml 2>&1 | tee pytest_output_${{ matrix.shard }}.txt
-
       - name: Upload shard report
         uses: actions/upload-artifact@v4
         with:
@@ -64,19 +107,15 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           pattern: pytest-report-*
           merge-multiple: true
-
       - name: Merge JUnit reports and update badge
         run: |
           mkdir -p .github/badges
-          # Merge is not needed for badge counts; use any shard's outcome + total check
-          # If any shard failed, overall outcome is failure
           python -c "
-          import xml.etree.ElementTree as ET, glob, sys
+          import xml.etree.ElementTree as ET, glob
           total=err=fail=0
           for f in glob.glob('pytest_report_*.xml'):
               try:
@@ -89,28 +128,22 @@ jobs:
           open('merged.txt','w').write(f'{total} {fail} {err}')
           "
           cat merged.txt
-          # Determine overall outcome from needs context via file existence; assume success if no failures
           read total fail err < merged.txt
-          if [ \"$fail\" -eq 0 ] && [ \"$err\" -eq 0 ]; then outcome=success; else outcome=failure; fi
-          echo \"Overall: $outcome\"
-          # Pick first report for badge script (it reads total from XML, we now pass merged count via env)
+          if [ "$fail" -eq 0 ] && [ "$err" -eq 0 ]; then outcome=success; else outcome=failure; fi
+          echo "Overall: $outcome"
           cp pytest_report_1.xml pytest_report.xml 2>/dev/null || cp pytest_report_*.xml pytest_report.xml
-          python .github/scripts/update_badge.py pytest_report.xml .github/badges/tests.json \"$outcome\"
-          # Patch badge json with true merged total if script only counted shard 1
+          python .github/scripts/update_badge.py pytest_report.xml .github/badges/tests.json "$outcome"
           python -c "
-          import json
+          import json, glob, xml.etree.ElementTree as ET
           p='.github/badges/tests.json'
           data=json.load(open(p))
-          import glob, xml.etree.ElementTree as ET
           total=sum(int(ET.parse(f).getroot().attrib.get('tests',0)) for f in glob.glob('pytest_report_*.xml'))
-          # Recompute passed
           fail=sum(int(ET.parse(f).getroot().attrib.get('failures',0)) for f in glob.glob('pytest_report_*.xml'))
           data['total']=total
           data['passed']=total-fail
           json.dump(data, open(p,'w'), indent=2)
           print(open(p).read())
           "
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/badges/tests.json
@@ -119,7 +152,6 @@ jobs:
             git pull --rebase origin "${GITHUB_REF_NAME}"
             git push
           fi
-
       - name: Fail if any shard failed
         if: needs.test.result != 'success'
         run: |

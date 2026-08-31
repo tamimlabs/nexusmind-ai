@@ -303,6 +303,42 @@ function quickFixInstruction(taskId){
   },200);
 }
 
+async function sendSteer(taskId){
+  const el=document.getElementById('steerInput');
+  const btn=document.getElementById('steerBtn');
+  const msg=(el?el.value:'').trim();
+  if(!msg) return alert('Enter direction to send');
+  if(btn){btn.disabled=true; btn.textContent='Sending…'}
+  try{
+    const r=await fetch('/api/tasks/'+taskId+'/steer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
+    let j={}; try{j=await r.json()}catch{ j={detail:await r.text().catch(()=>r.statusText)} }
+    if(!r.ok) throw new Error(j.detail||('Steer failed: '+r.status+' '+r.statusText));
+    if(el) el.value='';
+    if(j.mode==='follow_up'&&j.follow_up_id){
+      // jump to follow-up task so user sees progress without new chat
+      await refreshTasks(); selectTask(j.follow_up_id);
+    } else {
+      // queued live — keep same task, poll will show user_steer event
+      if(el) el.placeholder='Queued — will appear in Live Activity…';
+      setTimeout(refreshTasks,600);
+    }
+  }catch(e){
+    // Network failure looks like "Failed to fetch" — surface actionable hint
+    const msg0=(e&&e.message)||'Steer failed';
+    const hint=msg0.includes('Failed to fetch') ? ' — cannot reach API. Is server running? Check terminal for "Uvicorn running on http://0.0.0.0:8080" and that you opened the dashboard from that same URL (not file://).' : '';
+    alert(msg0+hint);
+  } finally{ if(btn){btn.disabled=false; btn.textContent='Send steer →'}}
+}
+async function loadSteerHistory(taskId){
+  try{
+    const r=await fetch('/api/tasks/'+taskId+'/steer'); if(!r.ok) return;
+    const j=await r.json(); const box=document.getElementById('steerHistory');
+    if(!box) return;
+    if(!j.steers||!j.steers.length){box.innerHTML='<span style="color:var(--t5);font-size:11px">No steers yet</span>'; return;}
+    box.innerHTML=j.steers.slice(-6).map(s=>'<div style="background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:6px;padding:6px 8px;margin-top:6px"><div style="font-size:11px;color:var(--t2)">'+esc(s.message)+'</div><div style="font-size:10px;color:var(--t5);font-family:var(--mono)">'+new Date(s.time*1000).toLocaleTimeString()+'</div></div>').join('');
+  }catch{}
+}
+
 function renderDetail(t){
   const isNeeds=t.status==='needs_instruction';
   const isRunning=['planning','executing','pending'].includes(t.status)||(S.liveTaskId===t.id&&!['completed','failed'].includes(S.liveStatus));
@@ -333,6 +369,12 @@ function renderDetail(t){
   if(t.result){const isFileResult=t.result.includes('Saved to:');h+='<div class="detail-section"><div class="detail-label">Result</div><div class="detail-code" style="'+(isFileResult?'border-left:3px solid var(--accent);background:var(--abg)':'')+'">'+esc(t.result)+'</div>'+(isFileResult?'<div style="margin-top:8px;font-size:11px;color:var(--accent)">📁 Check <code>output/</code> or <code>projects/</code> folder for saved files</code></div>':'')+'</div>';}
   if(t.error)h+='<div class="detail-section"><div class="detail-label">Error</div><div class="tc-error">'+esc(t.error)+'</div></div>';
   if(t.todos&&t.todos.length>0){const done=t.todos.filter(x=>x.status==='completed').length;h+='<div class="detail-section"><div class="detail-label">TODO Checklist ('+done+'/'+t.todos.length+')</div>';t.todos.forEach(td=>{const st=td.status||'pending';let dot,chk;if(st==='completed'){dot='<span class="sdot on" style="background:var(--accent)"></span>';chk='[x]'}else if(st==='in_progress'){dot='<span class="tl-dot running" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[~]'}else if(st==='skipped'){dot='<span class="tl-dot skipped" style="position:static;display:inline-block;background:var(--red);opacity:.6;margin-left:-2px"></span>';chk='[-]'}else if(st==='cancelled'){dot='<span class="tl-dot skipped" style="position:static;display:inline-block;background:var(--red);opacity:.6;margin-left:-2px"></span>';chk='[/]'}else{dot='<span class="tl-dot pending" style="position:static;display:inline-block;margin-left:-2px"></span>';chk='[ ]'}const cls=(st==='completed'||st==='skipped'||st==='cancelled')?' done':'';h+='<div class="todo-row"><span class="todo-check">'+chk+'</span>'+dot+'<span class="todo-title'+cls+'">'+esc(td.title||td.content||'')+'</span></div>'});h+='</div>'}
+  // ── Steer panel (Option A) — same task, no new chat ──────────────
+  h+='<div class="detail-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px"><div class="detail-label" style="margin-bottom:6px">Steer this task <span style="font-weight:400;color:var(--t5)">— add direction without opening a new chat</span></div>';
+  h+='<div style="display:flex;gap:8px"><textarea id="steerInput" class="input-field" rows="2" placeholder="'+(isRunning?'e.g. use darker theme, add footer, fix the 404… (queued live)':'e.g. fix the typo, change tone, use blue instead… (spawns follow-up)')+'" style="flex:1;resize:vertical"></textarea><button id="steerBtn" class="btn btn-p" style="align-self:flex-start;white-space:nowrap" onclick="sendSteer(\''+t.id+'\')">Send steer →</button></div>';
+  h+='<div style="font-size:11px;color:var(--t5);margin-top:6px">'+(isRunning?'While running: queued & shown in Live Activity.':'After done/failed: spawns a linked follow-up (same thread, new card) — no new chat needed.')+'</div><div id="steerHistory" style="margin-top:4px"></div></div>';
+  // trigger async history load after render
+  setTimeout(()=>loadSteerHistory(t.id),50);
   if(t.steps&&t.steps.length>0){h+='<div class="detail-section"><div class="detail-label">Steps ('+t.steps.length+')</div><div class="timeline">';t.steps.forEach((s,i)=>{const tc=s.tool_name&&(s.tool_name==='execute_code'||s.tool_name==='run_command')?' high':'';h+='<div class="tl-step"><div class="tl-dot '+s.status+'"></div><div class="tl-card"><div class="tl-top"><div class="tl-desc">'+esc(s.description)+'</div><span class="tl-num" style="display:flex;align-items:center;gap:6px">'+(s.status?'<span class="tl-tool" style="margin:0;padding:1px 6px;font-size:10px">'+esc(s.status)+'</span>':'')+'#'+(i+1)+'</span></div>'+(s.tool_name?'<div class="tl-tool'+tc+'">'+esc(s.tool_name)+'</div>':'')+(s.tool_args&&Object.keys(s.tool_args).length?'<div class="tl-expand" onclick="this.nextElementSibling.classList.toggle(\'show\')">Show args</div><div class="tl-detail">'+esc(JSON.stringify(s.tool_args,null,2))+'</div>':'')+(s.result?'<div class="tc-result">'+esc(s.result.slice(0,200))+'</div>':'')+(s.error?'<div class="tc-error">'+esc(s.error)+'</div>':'')+'</div></div>'});h+='</div></div>'}
   return h}
 
@@ -348,6 +390,7 @@ function thinkIcon(e,isLast,running){
   if(e.type==='error')return'<span style="color:var(--red)">&#10007;</span>';
   if(e.type==='step_running')return(running&&isLast)?'<div class="spinner" style="width:10px;height:10px;border-width:1.5px;border-top-color:var(--blue)"></div>':'<span style="color:var(--blue)">&#9679;</span>';
   if(e.type==='received')return'<span style="color:var(--blue)">&#9679;</span>';
+  if(e.type==='user_steer')return'<span style="color:var(--accent)">➤</span>';
   if(e.type==='token')return'<span style="color:var(--purple)">▌</span>';
   if(e.type==='tool_delta')return'<span style="color:var(--blue)">▸</span>';
   if(e.type==='todo_update')return'<span style="color:var(--accent)">☑</span>';
@@ -373,8 +416,8 @@ function renderThinkingPanel(c){
   filtered.forEach((e,i)=>{
     const isTool=e.type==='tool_output'||e.type==='step_running'||e.type==='tool_delta';
     const isThinking=e.type==='thinking';
-    const label = isThinking? '💭 Thinking: ' : (e.type==='step_running'? '⚙️ Doing: ' : (e.type==='tool_output'? '📝 Wrote: ' : (e.type==='todo_update'? '☑ Checklist: ' : '')));
-    h+='<div class="think-item '+esc(e.type)+'" style="'+(isTool?'border-left-color:var(--blue)':isThinking?'border-left-color:var(--purple)':'')+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')"><div class="think-msg">'+thinkIcon(e,i===filtered.length-1,running)+esc(label+e.message)+'</div>'+(e.detail?'<div class="think-detail'+(i>=filtered.length-2||e.type==='error'||e.type==='todo_update'?' show':'')+'" style="'+(e.detail.length>400?'max-height:220px;overflow-y:auto':'')+'">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
+    const label = isThinking? '💭 Thinking: ' : (e.type==='step_running'? '⚙️ Doing: ' : (e.type==='tool_output'? '📝 Wrote: ' : (e.type==='todo_update'? '☑ Checklist: ' : (e.type==='user_steer'?'➤ Steer: ':''))));
+    h+='<div class="think-item '+esc(e.type)+'" style="'+(isTool?'border-left-color:var(--blue)':isThinking?'border-left-color:var(--purple)':e.type==='user_steer'?'border-left-color:var(--accent)':'')+'" onclick="this.querySelector(\'.think-detail\')&&this.querySelector(\'.think-detail\').classList.toggle(\'show\')"><div class="think-msg">'+thinkIcon(e,i===filtered.length-1,running)+esc(label+e.message)+'</div>'+(e.detail?'<div class="think-detail'+(i>=filtered.length-2||e.type==='error'||e.type==='todo_update'||e.type==='user_steer'?' show':'')+'" style="'+(e.detail.length>400?'max-height:220px;overflow-y:auto':'')+'">'+esc(e.detail)+'</div>':'')+'<div class="think-time">'+new Date(e.time*1000).toLocaleTimeString()+'</div></div>'});
   h+='</div>';c.innerHTML=h;c.scrollTop=c.scrollHeight}
 
 function renderApprovalPanel(c){
@@ -418,7 +461,8 @@ function renderApprovalsPage(c){
   h+='</div>';c.innerHTML=h}
 
 function renderSettingsPage(c){
-  let h='<div class="input-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><div class="detail-label" style="margin:0">Approval Mode</div><div id="approvalModeStatus" style="font-size:11px;color:var(--t4)">Loading...</div></div>';
+  let h='<div class="input-card" id="geminiKeysCard"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div class="detail-label" style="margin:0">Gemini API Keys — Manual Selection</div><span id="gkeysStatus" style="font-size:11px;color:var(--t4)">Loading...</span></div><div id="gkeysList" style="margin-bottom:12px"></div><div style="display:flex;gap:8px;align-items:center"><input id="gkeysNew" class="input-field" style="flex:1" placeholder="Paste new Gemini API key..."><button class="btn btn-p btn-sm" onclick="addGeminiKey()">+ Add Key</button></div><div style="font-size:11px;color:var(--t4);line-height:1.5;margin-top:8px">Add as many keys as you want — they appear as <b>Key 1, Key 2, Key 3...</b>. Click <b>Use</b> to switch the active key. No auto-rotation — quota errors tell you to switch manually.</div></div>';
+  h+='<div class="input-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><div class="detail-label" style="margin:0">Approval Mode</div><div id="approvalModeStatus" style="font-size:11px;color:var(--t4)">Loading...</div></div>';
   h+='<div style="display:flex;gap:8px;margin-bottom:12px">';
   h+='<button class="btn btn-g btn-sm" id="modeSmart" onclick="setApprovalMode(\'smart\')">🧠 Smart</button>';
   h+='<button class="btn btn-g btn-sm" id="modeAlways" onclick="setApprovalMode(\'always\')">🔔 Always Ask</button>';
@@ -458,6 +502,7 @@ function renderSettingsPage(c){
   loadApprovalMode();
   loadTelegramStatus();
   loadRateLimit();
+  loadGeminiKeys();
 }
 
 async function loadRateLimit(){
@@ -576,7 +621,8 @@ function renderCredContent(c){
   Object.values(S_creds).forEach(fields=>{fields.forEach(f=>{total++;if(f.configured)configured++})});
   document.getElementById('credCount').textContent=configured+'/'+total;
 
-  let h='<div class="input-card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="detail-label" style="margin:0">API Keys & Credentials</div><div style="font-size:12px;color:var(--t4);margin-top:4px">'+configured+' of '+total+' configured</div></div><button class="btn btn-p btn-sm" onclick="saveAllCredentials()">Save All</button></div></div>';
+  let h='<div class="input-card" id="credGkeysCard"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div class="detail-label" style="margin:0">Gemini API Keys — Key 1, Key 2, ...</div><span id="credGkeysStatus" style="font-size:11px;color:var(--t4)">Loading...</span></div><div id="credGkeysList" style="margin-bottom:12px"></div><div style="display:flex;gap:8px"><input id="credGkeysNew" class="input-field" style="flex:1" placeholder="Paste new Gemini API key..."><button class="btn btn-p btn-sm" onclick="credAddGeminiKey()">+ Add</button></div><div style="font-size:11px;color:var(--t4);margin-top:8px">Manual selection — pick <b>Use</b> to change the active key. No auto-rotation.</div></div>';
+  h+='<div class="input-card" style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="detail-label" style="margin:0">API Keys & Credentials</div><div style="font-size:12px;color:var(--t4);margin-top:4px">'+configured+' of '+total+' configured</div></div><button class="btn btn-p btn-sm" onclick="saveAllCredentials()">Save All</button></div></div>';
 
   Object.entries(S_creds).forEach(([category,fields])=>{
     h+='<div class="input-card" style="margin-bottom:12px"><div class="detail-label" style="margin-bottom:12px">'+esc(category)+'</div>';
@@ -596,7 +642,18 @@ function renderCredContent(c){
   Object.values(S_creds).forEach(fields=>fields.forEach(f=>{
     if(f.configured){const el=document.getElementById('cred_'+f.key);if(el)el.dataset.wasSaved='true'}
   }));
+  loadCredGeminiKeys();
 }
+async function loadCredGeminiKeys(){
+  try{const res=await fetch('/api/gemini-keys');const d=await res.json();
+  const st=document.getElementById('credGkeysStatus');if(st)st.textContent=d.count?`Active: Key ${d.active_index}/${d.count}`:'No keys';
+  const list=document.getElementById('credGkeysList');if(!list)return;
+  if(!d.keys.length){list.innerHTML='<div style="font-size:12px;color:var(--t5)">No keys yet.</div>';return}
+  list.innerHTML=d.keys.map(k=>'<div style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid '+(k.active?'var(--abad)':'var(--border)')+';border-radius:8px;margin-bottom:6px;background:'+(k.active?'var(--abg)':'var(--bg2)')+'"><input type="radio" name="credGkeyActive" '+(k.active?'checked':'')+' onclick="credSetActive('+k.index+')"><span style="font-size:12px;font-weight:600">Key '+k.index+'</span><span style="font-family:var(--mono);font-size:11px;color:var(--t4);flex:1">'+esc(k.masked)+'</span>'+(k.active?'<span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:100px;background:var(--accent);color:#000">ACTIVE</span>':'<button class="btn btn-g btn-sm" onclick="credSetActive('+k.index+')">Use</button>')+'<button class="btn btn-d btn-sm" onclick="credDelKey('+k.index+')">✕</button></div>').join('')}catch(e){}
+}
+async function credAddGeminiKey(){const el=document.getElementById('credGkeysNew');const key=el?el.value.trim():'';if(!key)return modalAlert('Empty','Paste a key.');try{const res=await fetch('/api/gemini-keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});const d=await res.json();if(!res.ok)throw new Error(d.detail||'Failed');if(el)el.value='';loadCredGeminiKeys();refreshAgentStatus()}catch(e){modalAlert('Error',e.message,'error')}}
+async function credSetActive(i){try{const res=await fetch('/api/gemini-keys/active',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:i})});if(!res.ok)throw new Error((await res.json()).detail);loadCredGeminiKeys();refreshAgentStatus()}catch(e){modalAlert('Error',e.message,'error')}}
+async function credDelKey(i){const ok=await modalConfirm('Delete','Remove Key '+i+'?');if(!ok)return;try{const res=await fetch('/api/gemini-keys/'+i,{method:'DELETE'});if(!res.ok)throw new Error((await res.json()).detail);loadCredGeminiKeys();refreshAgentStatus()}catch(e){modalAlert('Error',e.message,'error')}}
 
 async function saveAllCredentials(){
   const creds={};
@@ -619,7 +676,7 @@ async function cancelCurrentTask(){
 async function submitTask(){
   const inp=document.getElementById('goalInput');if(!inp)return;const goal=inp.value.trim();if(!goal)return;
   const btn=document.getElementById('submitBtn');const lb=document.getElementById('loadingBar');if(btn)btn.disabled=true;if(lb)lb.style.display='flex';
-  try{const res=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal})});if(!res.ok){const err=await res.json().catch(()=>({detail:res.statusText}));if(res.status===429)throw new Error('Rate limited (429) - Gemini quota hit. Wait 15s or add another GEMINI_API_KEY (comma-separated) for rotation.');throw new Error(err.detail||('Request failed: '+res.status))}const task=await res.json();S.tasks.unshift(task);S.selected=task;document.getElementById('taskCount').textContent=S.tasks.length;renderPage();renderTracePanel(document.getElementById('rpanelBody'));startLivePoll(task.id);switchRTab('thinking')}
+  try{const res=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal})});if(!res.ok){const err=await res.json().catch(()=>({detail:res.statusText}));if(res.status===429)throw new Error('Rate limited (429) - Gemini quota hit. Switch the active key in Settings → Gemini API Keys.');throw new Error(err.detail||('Request failed: '+res.status))}const task=await res.json();S.tasks.unshift(task);S.selected=task;document.getElementById('taskCount').textContent=S.tasks.length;renderPage();renderTracePanel(document.getElementById('rpanelBody'));startLivePoll(task.id);switchRTab('thinking')}
   catch(e){modalAlert('Error',e.message,'error')}
   finally{btn.disabled=false;lb.style.display='none';if(document.getElementById('goalInput'))document.getElementById('goalInput').value=''}}
 
@@ -636,7 +693,26 @@ async function searchMemory(){const q=document.getElementById('memSearch');const
 function filterMem(f){S.memFilter=f;searchMemory()}
 function toggleAutoRefresh(){S.autoRefresh=!S.autoRefresh;const t=document.getElementById('autoToggle');if(t)t.classList.toggle('on',S.autoRefresh);if(S.autoRefresh){S.pollInterval=setInterval(()=>{refreshAgentStatus();refreshApprovals()},10000);refreshAgentStatus();refreshApprovals()}else if(S.pollInterval){clearInterval(S.pollInterval);S.pollInterval=null}}
 
-async function refreshAgentStatus(){try{const res=await fetch('/api/agent/status');const s=await res.json();S.agentStatus=s;const e=id=>document.getElementById(id);if(e('toolCount'))e('toolCount').textContent=s.tools_count;if(e('memSize'))e('memSize').textContent=s.memory_size;if(e('agentModel'))e('agentModel').textContent=s.model;if(e('memCount'))e('memCount').textContent=s.memory_size;if(e('apiText'))e('apiText').textContent='Connected';if(e('apiDot'))e('apiDot').className='sdot on'}catch(e){const el=id=>document.getElementById(id);if(el('apiText'))el('apiText').textContent='Disconnected';if(el('apiDot'))el('apiDot').className='sdot off'}}
+async function refreshAgentStatus(){try{const res=await fetch('/api/agent/status');const s=await res.json();S.agentStatus=s;const e=id=>document.getElementById(id);if(e('toolCount'))e('toolCount').textContent=s.tools_count;if(e('memSize'))e('memSize').textContent=s.memory_size;if(e('agentModel')){const gk=s.gemini_keys;const extra=gk&&gk.count?` · Key ${gk.active_index}/${gk.count}`:'';e('agentModel').textContent=s.model+extra}if(e('memCount'))e('memCount').textContent=s.memory_size;if(e('apiText'))e('apiText').textContent='Connected';if(e('apiDot'))e('apiDot').className='sdot on'}catch(e){const el=id=>document.getElementById(id);if(el('apiText'))el('apiText').textContent='Disconnected';if(el('apiDot'))el('apiDot').className='sdot off'}}
+/* ── Gemini Keys (manual Key 1,2,3...) ─────────────────────────── */
+async function loadGeminiKeys(){
+  try{const res=await fetch('/api/gemini-keys');const d=await res.json();
+  const st=document.getElementById('gkeysStatus');if(st)st.textContent=d.count?`Active: Key ${d.active_index} · ${d.count} total`:'No keys yet';
+  const list=document.getElementById('gkeysList');if(!list)return;
+  if(!d.keys.length){list.innerHTML='<div style="font-size:12px;color:var(--t5);padding:8px 0">No keys — add one below.</div>';return}
+  list.innerHTML=d.keys.map(k=>'<div style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid '+(k.active?'var(--abad)':'var(--border)')+';border-radius:8px;margin-bottom:6px;background:'+(k.active?'var(--abg)':'var(--bg2)')+'"><input type="radio" name="gkeyActive" '+(k.active?'checked':'')+' onclick="setActiveGeminiKey('+k.index+')" style="accent-color:var(--accent)"><span style="font-size:12px;font-weight:600;color:var(--t2)">Key '+k.index+'</span><span style="font-family:var(--mono);font-size:11px;color:var(--t4);flex:1">'+esc(k.masked)+(k.in_cooldown?' <span style="color:var(--red)">⏳ cooldown</span>':'')+'</span>'+(k.active?'<span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:100px;background:var(--accent);color:#000">ACTIVE</span>':'<button class="btn btn-g btn-sm" onclick="setActiveGeminiKey('+k.index+')">Use</button>')+'<button class="btn btn-d btn-sm" onclick="deleteGeminiKey('+k.index+')">✕</button></div>').join('')}catch(e){const st=document.getElementById('gkeysStatus');if(st)st.textContent='Failed to load'}
+}
+async function addGeminiKey(){
+  const el=document.getElementById('gkeysNew');const key=el?el.value.trim():'';if(!key)return modalAlert('Empty','Paste a Gemini API key first.');
+  try{const res=await fetch('/api/gemini-keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});const d=await res.json();if(!res.ok)throw new Error(d.detail||'Failed');if(el)el.value='';await loadGeminiKeys();refreshAgentStatus();modalAlert('Added',`Key ${d.added.index} added.`)}catch(e){modalAlert('Error',e.message,'error')}
+}
+async function setActiveGeminiKey(idx){
+  try{const res=await fetch('/api/gemini-keys/active',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:idx})});const d=await res.json();if(!res.ok)throw new Error(d.detail||'Failed');await loadGeminiKeys();refreshAgentStatus()}catch(e){modalAlert('Error',e.message,'error')}
+}
+async function deleteGeminiKey(idx){
+  const ok=await modalConfirm('Delete Key',`Remove Key ${idx}? This cannot be undone.`);if(!ok)return;
+  try{const res=await fetch('/api/gemini-keys/'+idx,{method:'DELETE'});const d=await res.json();if(!res.ok)throw new Error(d.detail||'Failed');await loadGeminiKeys();refreshAgentStatus()}catch(e){modalAlert('Error',e.message,'error')}
+}
 
 async function refreshApprovals(){try{const res=await fetch('/api/approvals');S.approvals=await res.json();const count=S.approvals.length;const el=document.getElementById('approvalCount');if(el)el.textContent=count;const badge=document.querySelector('[data-page="approvals"] .nb');if(badge)badge.classList.toggle('alert',count>0);if(S.rtab==='approvals')renderApprovalPanel(document.getElementById('rpanelBody'))}catch(e){}}
 

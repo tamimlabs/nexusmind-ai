@@ -21,6 +21,8 @@ from pydantic import BaseModel
 
 import agent.config as _cfg
 from agent.core import command_gate
+from agent.core.steering import list_for as _steer_list
+from agent.core.steering import push as _steer_push
 from agent.core.executor import (
     get_pending_approvals,
     get_trusted_tasks,
@@ -36,6 +38,7 @@ from agent.core.skill_library import skill_library as _skill_library
 from agent.models import MemoryEntry, Task, TaskPriority, TaskStatus
 from agent.observability import create_trace, get_trace, list_traces
 from api.credentials_routes import router as credentials_router
+from api.gemini_keys_routes import router as gemini_keys_router
 from api.watcher_routes import router as watcher_router
 from cloud.pubsub.events import publish_task_event
 
@@ -135,6 +138,7 @@ app.include_router(watcher_router)
 
 # Credentials management routes
 app.include_router(credentials_router)
+app.include_router(gemini_keys_router)
 
 
 async def restore_watchers_on_startup():
@@ -383,6 +387,12 @@ async def agent_status():
         github_token_fp = _token_fingerprint()
     except Exception:
         github_token_fp = "<unknown>"
+    try:
+        from agent.core.gemini_client import rotator as _rot
+
+        gemini_keys = {"count": _rot.key_count, "active_index": _rot.active_index, "active_masked": _rot.active_key_masked}
+    except Exception:
+        gemini_keys = {"count": 0, "active_index": 0, "active_masked": ""}
     return {
         "online": True,
         "model": _cfg.settings.gemini_model,
@@ -390,6 +400,7 @@ async def agent_status():
         "tools_count": len(tools),
         "memory_size": memory_store.size,
         "memory_categories": memory_store.categories(),
+        "gemini_keys": gemini_keys,
         "github": {
             "token_fingerprint": github_token_fp,
             "token_loaded": github_token_fp not in ("<none>", "<unknown>"),
@@ -493,18 +504,9 @@ async def _run_task_background(task_id: str, task: Task) -> None:
                         task.context["max_steps_override"] = min(req_max, _MAX_STEPS_HARD)
                 except Exception:
                     pass
-            # Enforce overall task deadline (config.py:132) — prevents forever EXECUTING on LLM stall
+            # No overall task deadline — agent runs until steps exhausted or completed (timeout removed per user request)
             try:
-                tout = int(getattr(settings, "agent_timeout_seconds", 300))
-                if tout and tout > 0:
-                    task = await asyncio.wait_for(orchestrator.handle_task(task, emit=_live_emit), timeout=tout)
-                else:
-                    task = await orchestrator.handle_task(task, emit=_live_emit)
-            except asyncio.TimeoutError:
-                _emit(task_id, "error", f"Task timed out after {tout}s — aborting")
-                _update_task_status(task_id, "failed", error=f"Task timed out after {tout}s")
-                task.status = TaskStatus.FAILED
-                task.error = f"Task timed out after {tout}s (agent_timeout_seconds)"
+                task = await orchestrator.handle_task(task, emit=_live_emit)
             except asyncio.CancelledError:
                 raise
 
@@ -1375,6 +1377,146 @@ async def run_command(req: CommandRequest):
     """
     response = await command_gate.handle_command(req.text)
     return {"handled": response is not None, "response": response}
+
+
+# ── Steering (Option A: follow-up without new chat) ─────────────
+
+
+class SteerRequest(BaseModel):
+    message: str
+    # if true and target is terminal, spawn follow-up linked to parent
+
+
+@app.get("/api/tasks/{task_id}/steer")
+async def list_steers(task_id: str):
+    """List steering messages queued for a task (history)."""
+    # Don't 404 on evicted tasks — history is still useful and UI expects 200
+    if task_id not in _live_tasks:
+        # also check Firestore mirror (if any) so stale cards still show steers
+        with contextlib.suppress(Exception):
+            from agent.config import settings as _s
+
+            if _s.database_backend.lower() == "firestore":
+                from cloud.firestore.client import firestore_tasks
+
+                if firestore_tasks.get_task(task_id):
+                    return {"task_id": task_id, "steers": _steer_list(task_id)}
+        # still return steers (empty or prior pushes) even if task fully evicted
+        return {"task_id": task_id, "steers": _steer_list(task_id)}
+    return {"task_id": task_id, "steers": _steer_list(task_id)}
+
+
+@app.post("/api/tasks/{task_id}/steer")
+async def steer_task(task_id: str, req: SteerRequest):
+    """Add direction to an existing task without opening a new chat.
+
+    Option A (minimal risk):
+    - Always queues the message and emits a `user_steer` live event so the
+      dashboard shows it immediately.
+    - If the target is still running (pending/planning/executing + bg task),
+      no new task is spawned — the steer is visible for the human and stored
+      for audit. The running agent does not get its prompt mutated in Option A.
+    - If the target is terminal (completed/failed/needs_instruction) or not
+      running, spawns a linked follow-up task with goal:
+      `original_goal + "\\n\\nFOLLOW-UP DIRECTION: " + message` and returns
+      its id. Dashboard can render it as a continuation of the same thread.
+    """
+    msg = (req.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Message must not be empty")
+    if len(msg) > 4000:
+        raise HTTPException(status_code=400, detail="Message too long (max 4000)")
+    live = _live_tasks.get(task_id)
+    if live is None:
+        # Fallback: _live_tasks is in-memory and evicts after 1h / on restart.
+        # Try Firestore mirror so old cards are still steerable without "not found".
+        with contextlib.suppress(Exception):
+            from agent.config import settings as _s2
+
+            if _s2.database_backend.lower() == "firestore":
+                from cloud.firestore.client import firestore_tasks
+
+                fs = firestore_tasks.get_task(task_id)
+                if fs:
+                    # rehydrate minimal live entry so follow-up can inherit goal
+                    live = {
+                        "id": fs.get("id", task_id),
+                        "goal": fs.get("goal", ""),
+                        "status": fs.get("status", "completed"),
+                        "result": fs.get("result"),
+                        "error": fs.get("error"),
+                        "steps_count": fs.get("steps_count", 0),
+                        "steps": fs.get("steps", []),
+                        "todos": fs.get("todos", []),
+                        "context": fs.get("context", {}),
+                    }
+                    _live_tasks[task_id] = live  # cache for this request
+                    _live_tasks_created[task_id] = time.time()
+        if live is None:
+            # Last resort: task fully evicted (or SQLite mode). Still allow steer
+            # as a standalone follow-up using just the message — don't 404 the user.
+            # Create a new task whose goal is the steer itself.
+            _steer_push(task_id, msg)
+            follow = Task(goal=f"FOLLOW-UP DIRECTION (parent {task_id[:8]} evicted): {msg}", context={"parent_id": task_id, "parent_evicted": True})
+            trace = create_trace(follow.id)
+            trace.start_span("task_received", kind="reasoning")
+            trace.end_span("success")
+            _update_task_status(follow.id, "pending", goal=follow.goal)
+            _emit(follow.id, "received", f"Steer follow-up for evicted {task_id[:8]}: {msg[:120]}", follow.goal[:500])
+            with contextlib.suppress(Exception):
+                publish_task_event(follow.id, follow.goal, "pending", context={"parent_id": task_id})
+            bg2 = asyncio.create_task(_run_task_background(follow.id, follow))
+            _bg_tasks.add(bg2)
+            _bg_task_by_id[follow.id] = bg2
+            bg2.add_done_callback(_bg_tasks.discard)
+            bg2.add_done_callback(lambda t: _bg_task_by_id.pop(follow.id, None))
+            return {"task_id": task_id, "steered": True, "mode": "follow_up", "follow_up_id": follow.id, "note": "parent was evicted from memory, started standalone follow-up"}
+    # queue + live event (always)
+    _steer_push(task_id, msg)
+    _emit(task_id, "user_steer", f"Steer: {msg[:160]}", msg[:1500])
+    # also emit globally so the Thinking panel picks it up
+    _update_task_status(task_id, live.get("status", "unknown"), goal=live.get("goal", ""))
+
+    status = live.get("status", "unknown")
+    bg = _bg_task_by_id.get(task_id)
+    is_running = bool(bg and not bg.done()) or status in ("pending", "planning", "executing")
+
+    if is_running:
+        # No new task — just visible steer attached to the running task.
+        # Caller can poll GET /steer or live events to see it.
+        return {"task_id": task_id, "steered": True, "mode": "queued_live", "follow_up_id": None}
+
+    # Terminal or idle -> spawn linked follow-up task (same thread, new card)
+    original_goal = live.get("goal", "")
+    follow_goal = original_goal + "\n\nFOLLOW-UP DIRECTION (user correction for same thread): " + msg
+    # Keep parent linkage for dashboard grouping
+    parent_ctx: dict[str, Any] = {"parent_id": task_id, "parent_goal": original_goal[:300]}
+    # Preserve max_steps if parent had one
+    if live.get("context", {}).get("max_steps"):
+        parent_ctx["max_steps"] = live["context"]["max_steps"]
+    follow = Task(goal=follow_goal, context=parent_ctx)
+    # link back to parent in live store for UI grouping
+    follow_ctx_extra = {"steer_parent": task_id}
+    follow.context.update(follow_ctx_extra)
+
+    trace = create_trace(follow.id)
+    trace.start_span("task_received", kind="reasoning")
+    trace.end_span("success")
+
+    _update_task_status(follow.id, "pending", goal=follow.goal)
+    _emit(follow.id, "received", f"Follow-up for {task_id[:8]}: {msg[:120]}", follow_goal[:500])
+    _emit(task_id, "thinking", f"Follow-up spawned: {follow.id[:8]}", msg[:300])
+
+    with contextlib.suppress(Exception):
+        publish_task_event(follow.id, follow.goal, "pending", context=parent_ctx)
+
+    bg2 = asyncio.create_task(_run_task_background(follow.id, follow))
+    _bg_tasks.add(bg2)
+    _bg_task_by_id[follow.id] = bg2
+    bg2.add_done_callback(_bg_tasks.discard)
+    bg2.add_done_callback(lambda t: _bg_task_by_id.pop(follow.id, None))
+
+    return {"task_id": task_id, "steered": True, "mode": "follow_up", "follow_up_id": follow.id}
 
 
 # ── Watchers ──────────────────────────────────────────────────────

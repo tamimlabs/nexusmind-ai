@@ -474,26 +474,19 @@ Return ONLY the JSON array."""
 
     async def _generate(feedback: str = "") -> str:
         suffix = f"\n\n{feedback}" if feedback else ""
-        # Streaming path: forward token deltas word-to-word when a live sink is present
+        # Buffered-only (free-tier streaming is 5-20x slower and truncates).
+        # One buffered response arrives in ~15-30s and the fast-path then
+        # executes its concrete steps with ZERO per-step model calls.
         if on_event is not None:
             try:
-                from agent.core.gemini_client import generate_content_stream as _stream
-
-                buf = ""
-                async for _delta in _stream(
-                    model=settings.gemini_model,
-                    system=system_prompt,
-                    user=user_prompt + suffix,
-                    max_tokens=_PLANNER_MAX_TOKENS,
-                ):
-                    if _delta:
-                        buf += _delta
-                        _emit_token(_delta)
-                if buf:
-                    return buf
-                logger.debug("planner generate_content_stream yielded no text; falling back to buffered")
+                on_event(task.id, "thinking", "Compiling full step plan (buffered, faster than streaming)…", "")
+            except TypeError:
+                try:
+                    on_event("thinking", "Compiling full step plan (buffered, faster than streaming)…", "")
+                except Exception:
+                    pass
             except Exception:
-                logger.debug("planner streaming failed, falling back to buffered generate_content", exc_info=True)
+                pass
         return await generate_content(
             model=settings.gemini_model,
             system=system_prompt,

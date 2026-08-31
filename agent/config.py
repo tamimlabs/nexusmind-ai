@@ -85,13 +85,18 @@ class Settings(BaseSettings):
     # CONTINUES instead of stopping on an unfinished step.
     gemini_model_pro: str = "gemini-3.5-pro"
     # Quota fallback chain: when the primary model hits its daily quota (429
-    # per-project-per-model, free tier 20 req/day), the client automatically
-    # retries the SAME prompt on the next model in this comma-separated list
-    # — each model has its own quota bucket, so a build keeps going instead
-    # of dying with "retry in 86400s".  Change without restart via .env.
-    # Example: "gemini-2.0-flash-lite,gemini-2.0-flash,gemini-2.5-flash"
-    gemini_fallback_models: str = "gemini-2.0-flash-lite,gemini-2.0-flash,gemini-2.5-flash"
+    # per-project-per-model, free tier 20 req/day) OR model 404, the client
+    # automatically retries the SAME prompt on the next model in this
+    # comma-separated list — each model has its own quota bucket, so a build
+    # keeps going instead of dying with "retry in 86400s". Change via .env.
+    # Valid 2026 names: gemini-3.5-flash-lite, gemini-2.5-flash, gemini-1.5-flash
+    gemini_fallback_models: str = "gemini-3.5-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-1.5-flash"
     gemini_api_key: str = ""
+    # Manual key selection: 1-based index into the comma-separated GEMINI_API_KEY list.
+    # The dashboard lets the user add as many keys as needed (Key 1, Key 2, ...) and
+    # pick which one is active. No automatic rotation — quota errors surface
+    # immediately so the user can switch keys manually.
+    gemini_active_key_index: int = 1
     # When True, Gemini controls tool selection, file naming and memory policy.
     # Deterministic heuristics remain only as fallback/validator.
     gemini_full_control: bool = True
@@ -121,6 +126,15 @@ class Settings(BaseSettings):
             return 15
         return min(max(val, 0), 10000)
 
+    @field_validator("gemini_active_key_index", mode="before")
+    @classmethod
+    def _clamp_key_index(cls, v: object) -> int:
+        try:
+            val = int(v)
+        except (TypeError, ValueError):
+            return 1
+        return min(max(val, 1), 100)
+
     # --- Firestore ---
     firestore_collection_tasks: str = "tasks"
     firestore_collection_memory: str = "agent_memory"
@@ -136,7 +150,7 @@ class Settings(BaseSettings):
     # agent to a quarter of its intended budget.
     agent_max_steps: int = 40
     agent_max_retries: int = 3
-    agent_timeout_seconds: int = 300
+    agent_timeout_seconds: int = 0  # 0 = unlimited (no overall task deadline)
     agent_memory_max_items: int = 1000
 
     # --- Approval Mode ---

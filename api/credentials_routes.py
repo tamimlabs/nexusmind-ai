@@ -17,8 +17,9 @@ router = APIRouter(prefix="/api/credentials", tags=["credentials"])
 # All supported credential fields grouped by category
 CREDENTIAL_FIELDS: dict[str, list[dict[str, Any]]] = {
     "AI & LLM": [
-        {"key": "GEMINI_API_KEY", "label": "Gemini API Keys", "placeholder": "key1,key2,key3 (comma-separated)", "secret": True, "multi": True},
+        {"key": "GEMINI_API_KEY", "label": "Gemini API Keys (legacy — use Gemini Keys manager below)", "placeholder": "Managed via Gemini Keys: Key 1, Key 2...", "secret": True, "multi": True},
         {"key": "GEMINI_MODEL", "label": "Gemini Model", "placeholder": "gemini-3.5-flash", "secret": False},
+        {"key": "GEMINI_ACTIVE_KEY_INDEX", "label": "Active Gemini Key", "placeholder": "1", "secret": False},
     ],
     "Google Cloud": [
         {"key": "GOOGLE_CLOUD_PROJECT", "label": "Project ID", "placeholder": "my-gcp-project", "secret": False},

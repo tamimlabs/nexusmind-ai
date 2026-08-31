@@ -673,7 +673,7 @@ class Orchestrator:
                             skill_context or None,
                             on_event=emit,
                         ),
-                        timeout=12,
+                        timeout=120,
                     )
                     logger.info("Roadmap ready (%d suggested steps) for task %s", len(roadmap), task.id)
                 except _aio.TimeoutError:

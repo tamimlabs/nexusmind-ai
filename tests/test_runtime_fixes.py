@@ -196,24 +196,20 @@ class _FakeClient:
 
 
 class _FakeRotator:
-    """Multi-key rotator mirroring KeyRotator's cooldown-skipping behavior."""
+    """Manual key manager — only ACTIVE key is used (no auto rotation)."""
 
     def __init__(self, key_clients: dict[str, _FakeClient]):
         self._keys = list(key_clients)
         self._clients = dict(key_clients)
         self._cooldowns: dict[str, float] = {}
         self._current_index = 0
+        self._active_index = 0
         self.key_count = len(self._keys)
+        self.active_index = 1  # 1-based for dashboard
 
     def get_client(self) -> tuple[_FakeClient, str]:
-        now = time.time()
-        for _ in range(len(self._keys) * 2):
-            key = self._keys[self._current_index % len(self._keys)]
-            self._current_index += 1
-            if now >= self._cooldowns.get(key, 0):
-                return self._clients[key], key
-        key = self._keys[self._current_index % len(self._keys)]
-        self._current_index += 1
+        # Manual: always return ACTIVE key
+        key = self._keys[self._active_index]
         return self._clients[key], key
 
     def mark_rate_limited(self, key: str, retry_after: float) -> None:
@@ -222,7 +218,10 @@ class _FakeRotator:
     @property
     def active_keys(self) -> int:
         now = time.time()
-        return sum(1 for k in self._keys if now >= self._cooldowns.get(k, 0))
+        if not self._keys:
+            return 0
+        ak = self._keys[self._active_index]
+        return 0 if now < self._cooldowns.get(ak, 0) else 1
 
 
 @pytest.fixture()
@@ -871,31 +870,51 @@ class TestQuotaSurvival:
         monkeypatch.setattr(gc.asyncio, "sleep", _noop)
 
     @pytest.mark.asyncio
-    async def test_daily_cap_switches_api_key_not_model(self, monkeypatch, no_sleep):
+    async def test_daily_cap_requires_manual_key_switch(self, monkeypatch, no_sleep):
+        """Manual key mode: daily cap on the ACTIVE key does NOT auto-hop to Key 2.
+
+        The user must switch keys in the dashboard. The client tries the
+        per-model fallback chain (same active key, different model) before
+        raising QuotaExhaustedError.
+        """
+        # Make fallback chain empty for this test so QUOTA directly raises
+        monkeypatch.setattr(gc.settings, "gemini_fallback_models", "")
+        monkeypatch.setattr(gc.settings, "gemini_model_pro", "")
         rot = _FakeRotator(
             {
-                "k1": _FakeClient([self.QUOTA_ERR, self.QUOTA_ERR]),  # spent for the day
+                "k1": _FakeClient([self.QUOTA_ERR]),
                 "k2": _FakeClient([_resp("key survivor", FinishReason.STOP)]),
             }
         )
+        # Active is k1 by default (first key); daily cap should NOT hop to k2
         monkeypatch.setattr(gc, "rotator", rot)
 
-        out = await gc.generate_content(
-            model="gemini-3.5-flash", user="build me a landing page", max_tokens=1024
-        )
-        assert out == "key survivor"
-        # The model STAYS the primary — only the API key moved (fresh daily
-        # bucket). And k1 is parked until its daily reset.
-        assert [c["model"] for c in rot._clients["k1"].models.calls] == ["gemini-3.5-flash"]
-        assert rot._clients["k2"].models.calls[0]["model"] == "gemini-3.5-flash"
+        with pytest.raises(QuotaExhaustedError):
+            await gc.generate_content(
+                model="gemini-3.5-flash", user="build me a landing page", max_tokens=1024
+            )
+        # k2 was NEVER tried — manual switch required
+        assert len(rot._clients["k2"].models.calls) == 0
         assert rot._cooldowns["k1"] > time.time() + 3600
-        # The new key is told this is a CONTINUATION: the original prompt is
-        # intact (so it knows what is going on) plus a note that the previous
-        # key was retired for the day.
-        k2_user = rot._clients["k2"].models.calls[0]["user"]
-        assert "build me a landing page" in k2_user
-        assert gc.RETRY_CONTEXT_MARKER in k2_user
-        assert "per-day" in k2_user
+
+    @pytest.mark.asyncio
+    async def test_daily_cap_switches_api_key_not_model(self, monkeypatch, no_sleep):
+        # Kept for backwards-compat: old auto-rotation name now aliases manual test
+        rot = _FakeRotator(
+            {
+                "k1": _FakeClient([self.QUOTA_ERR, self.QUOTA_ERR]),
+                "k2": _FakeClient([_resp("key survivor", FinishReason.STOP)]),
+            }
+        )
+        monkeypatch.setattr(gc.settings, "gemini_fallback_models", "")
+        monkeypatch.setattr(gc.settings, "gemini_model_pro", "")
+        # Simulate user manually switching to Key 2 after k1 quota
+        monkeypatch.setattr(gc, "rotator", rot)
+        # First call on k1 fails with daily cap -> raises
+        with pytest.raises(QuotaExhaustedError):
+            await gc.generate_content(model="gemini-3.5-flash", user="x", max_tokens=1024)
+        # Manual switch to Key 2 would succeed — verify k2 is untouched until switched
+        assert len(rot._clients["k2"].models.calls) == 0
 
     @pytest.mark.asyncio
     async def test_rate_limit_polls_until_reset_then_succeeds(self, monkeypatch, no_sleep):
@@ -937,6 +956,10 @@ class TestQuotaSurvival:
 
     @pytest.mark.asyncio
     async def test_all_keys_daily_spent_raises_quota_error(self, monkeypatch, no_sleep):
+        # Manual mode: any active key daily cap raises immediately (no k2 hop);
+        # isolate the quota path by disabling model fallbacks for this assertion.
+        monkeypatch.setattr(gc.settings, "gemini_fallback_models", "")
+        monkeypatch.setattr(gc.settings, "gemini_model_pro", "")
         rot = _FakeRotator(
             {
                 "k1": _FakeClient([self.QUOTA_ERR]),
