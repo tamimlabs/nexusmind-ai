@@ -833,9 +833,10 @@ async def run_adaptive_loop(
                 import asyncio as _aio_decide
 
                 try:
-                    decision = await _aio_decide.wait_for(_call_decide(decide_fn, state, on_event=on_event), timeout=90)
+                    decision = await _aio_decide.wait_for(_call_decide(decide_fn, state, on_event=on_event), timeout=180)
                 except _aio_decide.TimeoutError:
-                    return _abort("Gemini decision timed out after 90s — aborting round")
+                    _emit("error", "Gemini decide 180s timeout", "Model slow — will retry this round")
+                    decision = {"_error": "SYSTEM NOTE: Gemini decision timed out after 180s, retrying. If this repeats, the model may be overloaded.", "_raw": ""}
                 raw_preview = _trim(str(decision.get("_raw") or decision)[:800], 500)
                 _emit("thinking", "Decision received", raw_preview)
             except QuotaExhaustedError as exc:
