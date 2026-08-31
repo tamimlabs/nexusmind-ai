@@ -107,16 +107,22 @@ jobs:
     name: update badge
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && always()
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: pytest-report-*
           merge-multiple: true
       - name: Merge JUnit reports and update badge
         run: |
           mkdir -p .github/badges
+          if ! compgen -G "pytest_report_*.xml" > /dev/null; then
+            echo "No JUnit artifacts (quota hit) — skipping badge update, keeping existing"
+            cat .github/badges/tests.json || echo "no badge file"
+            exit 0
+          fi
           python -c "
           import xml.etree.ElementTree as ET, glob
           total=err=fail=0
@@ -134,7 +140,8 @@ jobs:
           read total fail err < merged.txt
           if [ "$fail" -eq 0 ] && [ "$err" -eq 0 ]; then outcome=success; else outcome=failure; fi
           echo "Overall: $outcome"
-          cp pytest_report_1.xml pytest_report.xml 2>/dev/null || cp pytest_report_*.xml pytest_report.xml
+          cp pytest_report_1.xml pytest_report.xml 2>/dev/null || cp pytest_report_*.xml pytest_report.xml 2>/dev/null || true
+          if [ ! -f pytest_report.xml ]; then echo "no pytest_report.xml"; exit 0; fi
           python .github/scripts/update_badge.py pytest_report.xml .github/badges/tests.json "$outcome"
           python -c "
           import json, glob, xml.etree.ElementTree as ET
